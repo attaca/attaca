@@ -1,0 +1,33 @@
+[package]
+authors = ["Sean Leffler <sean@errno.com>"]
+name = "attaca"
+version = "0.1.0"
+
+[[bin]]
+doc = false
+name = "attaca"
+required-features = ["binaries"]
+
+[dependencies]
+error-chain = "0.11.0-rc.2"
+histogram = "0.6.6"
+memmap = "0.5.2"
+seahash = "3.0.5"
+serde = "1.0.11"
+serde_derive = "1.0.11"
+sha3 = "0.6.0"
+slog = "2.0.6"
+toml = "0.4.4"
+
+[dependencies.clap]
+optional = true
+version = "2.26.0"
+
+[dependencies.rad]
+path = "../rad-rs"
+
+[features]
+binaries = ["clap"]
+default = ["dev"]
+dev = ["binaries"]
+max_level_trace = ["slog/max_level_trace"]
