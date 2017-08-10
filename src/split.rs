@@ -207,7 +207,7 @@ impl FileChunker {
         let slice = unsafe { self.mmap.as_slice() };
 
         for (i, chunk) in SliceChunker::new(slice).enumerate() {
-            let chunk_size = chunk.as_slice().len() as u64;
+            let chunk_size = chunk.len() as u64;
             bytes_processed += chunk_size;
 
             eprintln!("Chunk {} :: size {}, total MB: {} / {}", i, chunk_size, bytes_processed / 1_000_000, slice.len() as u64 / 1_000_000);
@@ -227,12 +227,12 @@ impl FileChunker {
         let chunks = SliceChunker::new(slice)
             .enumerate()
             .inspect(|&(i, ref chunk)| {
-                bytes_processed += chunk.as_slice().len() as u64;
+                bytes_processed += chunk.len() as u64;
 
-                eprintln!("Chunk {} :: size {}, total MB: {}", i, chunk.as_slice().len(), bytes_processed / 1_000_000);
+                eprintln!("Chunk {} :: size {}, total MB: {}", i, chunk.len(), bytes_processed / 1_000_000);
 
                 chunk_sizes
-                    .increment(chunk.as_slice().len() as u64)
+                    .increment(chunk.len() as u64)
                     .unwrap();
             })
             .map(|(_, chunk)| chunk)

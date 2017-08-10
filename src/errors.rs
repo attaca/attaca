@@ -1,5 +1,6 @@
 //! `errors` - error-chain generated `Error` types.
 
+
 error_chain! {
     types { Error, ErrorKind, ResultExt, Result; }
 
@@ -8,7 +9,10 @@ error_chain! {
     }
 
     foreign_links {
+        Bincode(::bincode::Error);
         Io(::std::io::Error);
+        TomlSer(::toml::ser::Error);
+        TomlDe(::toml::de::Error);
     }
 
     errors {}
