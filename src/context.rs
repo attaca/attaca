@@ -1,3 +1,10 @@
+//! # `context` - manage a valid repository.
+//!
+//! `Context` is the main point of entry for the Attaca API. Important pieces of functionality in
+//! this module include:
+//!
+//! * Creating/using `Context` and `RemoteContext`s.
+
 use std::fs::File;
 use std::path::Path;
 use std::rc::Rc;
@@ -27,7 +34,11 @@ impl Files {
 }
 
 
-/// A context for marshalling and local operations on a repository.
+/// A context for marshalling and local operations on a repository. `RemoteContext`s must be built
+/// from a `Context`.
+///
+/// `Context` may optionally be supplied with a type `T` implementing `Trace`. This "trace object"
+/// is useful for doing things like tracking the progress of long-running operations.
 pub struct Context<T: Trace = ()> {
     trace: T,
 
@@ -38,7 +49,7 @@ pub struct Context<T: Trace = ()> {
 
 
 impl Context {
-    /// Consume a loaded repository configuration to produce a working context.
+    /// Create a context from a loaded repository.
     pub fn new(repository: Repository) -> Self {
         Self::with_trace(repository, ())
     }
@@ -46,8 +57,7 @@ impl Context {
 
 
 impl<T: Trace> Context<T> {
-    /// Consume a loaded repository configuration and a context trace object to produce a working
-    /// context which will call trace methods.
+    /// Create a context from a loaded repository, with a supplied trace object.
     pub fn with_trace(repository: Repository, trace: T) -> Self {
         let repository = Rc::new(repository);
         let local = Local::new(repository.clone());
@@ -60,12 +70,7 @@ impl<T: Trace> Context<T> {
     }
 
 
-    /// Get an immutable reference to the `Context`'s trace object.
-    pub fn trace(&self) -> &T {
-        &self.trace
-    }
-
-
+    /// Chunk the file at the given path.
     pub fn chunk_file<'files, P: AsRef<Path>>(
         &mut self,
         files: &'files mut Files,
@@ -81,6 +86,8 @@ impl<T: Trace> Context<T> {
     }
 
 
+    /// Marshal a chunked file into a tree of objects, returning the marshalled objects along with
+    /// the hash of the root object.
     pub fn marshal_file<'files>(
         &mut self,
         chunked: ChunkedFile<'files>,
@@ -115,6 +122,7 @@ impl<T: Trace> Context<T> {
     }
 
 
+    /// Load a remote configuration, producing a `RemoteContext`.
     pub fn with_remote<U: AsRef<str>>(&mut self, remote: U) -> Result<RemoteContext<T>> {
         let remote = {
             let remote_cfg = match self.repository.config.remotes.get(remote.as_ref()) {
@@ -130,6 +138,8 @@ impl<T: Trace> Context<T> {
 }
 
 
+/// A `RemoteContext` is a context for dealing with a specific remote of this repository.
+// TODO: Abstract away the backend so that other K/V stores than Ceph/RADOS may be used.
 pub struct RemoteContext<'ctx, T: Trace + 'ctx = ()> {
     ctx: &'ctx mut Context<T>,
 

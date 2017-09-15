@@ -5,6 +5,7 @@ use marshal::{Marshal, Marshaller, ObjectHash, SmallObject, LargeObject};
 use trace::MarshalTrace;
 
 
+/// The branching factor of the data object B+ tree structure.
 const BRANCH_FACTOR: usize = 1024;
 
 const ERR_BRANCH_FACTOR_TOO_SMALL: &'static str = "BRANCH_FACTOR too small (less than 2?) freshly split node should always have space for one more child!";
@@ -12,15 +13,20 @@ const ERR_BYTE_OUTSIDE_OF_TREE: &'static str = "Node::search_bytes should only b
 const ERR_INTERNAL_NONEMPTY: &'static str = "Internal nodes should never be empty!";
 
 
+/// A `Record` is the leaf of a data object tree structure.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Record<'a> {
+    /// A locally stored byte slice to be marshalled into a fresh small blob.
     Deep(Cow<'a, [u8]>),
+
+    /// A pointer to a small blob, along with its size.
     Shallow(u64, ObjectHash),
 }
 
 
 impl<'a> Record<'a> {
-    fn size(&self) -> u64 {
+    /// The size, in bytes, of the record.
+    pub fn size(&self) -> u64 {
         match *self {
             Record::Deep(ref bytes) => bytes.len() as u64,
             Record::Shallow(sz, _) => sz,
@@ -29,6 +35,7 @@ impl<'a> Record<'a> {
 }
 
 
+/// A `Leaf` node of a B+ tree contains a list of records.
 #[derive(Clone, Debug)]
 struct Leaf<'a> {
     size: u64,
@@ -67,16 +74,20 @@ impl<'a> Leaf<'a> {
     }
 
 
+    /// The size, in bytes, of the data the `Leaf` represents.
     fn size(&self) -> u64 {
         self.size
     }
 
 
+    /// The total number of records in this leaf.
     fn count(&self) -> usize {
         self.records.len()
     }
 
 
+    /// Append a record to a leaf; if the leaf cannot hold the record and must split, this function
+    /// will return `Err` with the left-hand side of the split.
     fn append(&mut self, record: Record<'a>) -> Result<(), Leaf<'a>> {
         if self.records.len() < BRANCH_FACTOR {
             self.size += record.size();
@@ -96,6 +107,7 @@ impl<'a> Leaf<'a> {
 }
 
 
+/// An internal node of a B+ tree.
 #[derive(Clone, Debug)]
 struct Internal<'a> {
     size: u64,
@@ -134,6 +146,7 @@ impl<'a> From<Vec<Node<'a>>> for Internal<'a> {
 
 
 impl<'a> Internal<'a> {
+    /// Construct an internal node containing a single child.
     fn singleton(elem: Node<'a>) -> Self {
         Internal {
             size: elem.size(),
@@ -143,16 +156,20 @@ impl<'a> Internal<'a> {
     }
 
 
+    /// The size, in bytes, of the contiguous range of a file this `Internal` node represents.
     fn size(&self) -> u64 {
         self.size
     }
 
 
+    /// The total number of records held in child nodes.
     fn count(&self) -> usize {
         self.count
     }
 
 
+    /// Append a node; if we must split to accomodate the new node, the left-hand side of the split
+    /// is returned as `Err`.
     fn append(&mut self, node: Node<'a>) -> Result<(), Self> {
         if self.children.len() < BRANCH_FACTOR {
             self.size += node.size();
@@ -174,6 +191,7 @@ impl<'a> Internal<'a> {
 }
 
 
+/// The general `Node` enum representing either an internal or leaf node in the B+ tree.
 #[derive(Clone, Debug)]
 enum Node<'a> {
     Internal(Internal<'a>),
@@ -192,11 +210,13 @@ impl<'fresh> Marshal<'fresh> for Node<'fresh> {
 
 
 impl<'a> Node<'a> {
+    /// Convenience function to construct an internal node from a vec of child nodes.
     fn internal(children: Vec<Node<'a>>) -> Self {
         Node::Internal(Internal::from(children))
     }
 
 
+    /// Get the size, in bytes, of the data this node represents.
     fn size(&self) -> u64 {
         match *self {
             Node::Internal(ref internal) => internal.size(),
@@ -205,6 +225,7 @@ impl<'a> Node<'a> {
     }
 
 
+    /// The number of records held in child nodes of this node.
     fn count(&self) -> usize {
         match *self {
             Node::Internal(ref internal) => internal.count(),
@@ -213,6 +234,9 @@ impl<'a> Node<'a> {
     }
 
 
+    /// Perform a "bulk-loading" operation, constructing a whole B+ tree from an iterator of
+    /// records.
+    // TODO: This could probably be made *much* simpler and *much* more efficient.
     fn load<I>(iterable: I) -> Self
     where
         I: IntoIterator<Item = Record<'a>>,
@@ -275,32 +299,35 @@ impl<'a> Node<'a> {
     }
 
 
-    fn push(&mut self, record: Record<'a>) -> Result<(), Self> {
-        // Attempt to push this node into our local children (whether we are a leaf or an internal
-        // node.) If `left` is not empty, we swap ourselves with it and return it as `Err`; it is
-        // the left side of our new split.
-        let left = match *self {
-            Node::Internal(ref mut internal) => {
-                match internal
-                    .children
-                    .last_mut()
-                    .expect(ERR_INTERNAL_NONEMPTY)
-                    .push(record) {
-                    Ok(()) => return Ok(()),
-                    Err(left) => left,
-                }
-            }
+    // TODO: While we will eventually  need this functionality, at the moment this implementation
+    // of `push` does not correctly preserve record counts.
+    //
+    // fn push(&mut self, record: Record<'a>) -> Result<(), Self> {
+    //     // Attempt to push this node into our local children (whether we are a leaf or an internal
+    //     // node.) If `left` is not empty, we swap ourselves with it and return it as `Err`; it is
+    //     // the left side of our new split.
+    //     let left = match *self {
+    //         Node::Internal(ref mut internal) => {
+    //             match internal
+    //                 .children
+    //                 .last_mut()
+    //                 .expect(ERR_INTERNAL_NONEMPTY)
+    //                 .push(record) {
+    //                 Ok(()) => return Ok(()),
+    //                 Err(left) => left,
+    //             }
+    //         }
 
-            Node::Leaf(ref mut leaf) => {
-                match leaf.append(record) {
-                    Ok(()) => return Ok(()),
-                    Err(left) => Node::Leaf(left),
-                }
-            }
-        };
+    //         Node::Leaf(ref mut leaf) => {
+    //             match leaf.append(record) {
+    //                 Ok(()) => return Ok(()),
+    //                 Err(left) => Node::Leaf(left),
+    //             }
+    //         }
+    //     };
 
-        Err(mem::replace(self, left))
-    }
+    //     Err(mem::replace(self, left))
+    // }
 
 
     /// Search the tree to find out what chunk a given byte lives in.
@@ -362,6 +389,8 @@ impl<'a> Node<'a> {
 }
 
 
+/// A B+ tree used to marshal small objects into a B+ tree structure with large objects as nodes
+/// and small objects as records.
 #[derive(Clone, Debug)]
 pub struct Tree<'a> {
     root: Node<'a>,
@@ -377,21 +406,25 @@ impl<'fresh> Marshal<'fresh> for Tree<'fresh> {
 
 
 impl<'a> Tree<'a> {
+    /// Bulk-load the tree.
     pub fn load<I: IntoIterator<Item = Record<'a>>>(iterable: I) -> Self {
         Tree { root: Node::load(iterable) }
     }
 
 
+    /// The number of records in the tree.
     pub fn len(&self) -> usize {
         self.root.count()
     }
 
 
+    /// The size of the file represented by the tree, in bytes.
     pub fn size(&self) -> u64 {
         self.root.size()
     }
 
 
+    /// Search the tree for the `nth` chunk.
     pub fn search(&self, idx: usize) -> Option<&Record<'a>> {
         if idx < self.root.count() {
             Some(self.root.search(idx))
@@ -401,6 +434,7 @@ impl<'a> Tree<'a> {
     }
 
 
+    /// Find the chunk that a given byte lives in.
     pub fn search_bytes(&self, byte: u64) -> Option<usize> {
         if byte < self.root.size() {
             Some(self.root.search_bytes(byte))
@@ -410,15 +444,15 @@ impl<'a> Tree<'a> {
     }
 
 
-    pub fn push(&mut self, record: Record<'a>) {
-        if let Err(right) = self.root.push(record) {
-            // Replace `left` with a dummy value.
-            let left = mem::replace(&mut self.root, Node::internal(Vec::new()));
+    // pub fn push(&mut self, record: Record<'a>) {
+    //     if let Err(right) = self.root.push(record) {
+    //         // Replace `left` with a dummy value.
+    //         let left = mem::replace(&mut self.root, Node::internal(Vec::new()));
 
-            // Fill in `left` with a fresh two-element root node.
-            self.root = Node::internal(vec![left, right]);
-        }
-    }
+    //         // Fill in `left` with a fresh two-element root node.
+    //         self.root = Node::internal(vec![left, right]);
+    //     }
+    // }
 }
 
 

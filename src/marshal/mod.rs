@@ -1,12 +1,10 @@
 //! `marshal` - marshal chunked files and commits into a format which can be uploaded to the store.
 //!
-//! This includes several pieces of key functionality:
-//! - Compute the hashes of chunks.
-//! - Insert chunks into subtree/large-file nodes.
-//! - Deduplicate chunks.
+//! Important pieces of functionality in this module include:
 //!
-//! Key types in `marshal` include:
-//! - `Chunk`, the hashed chunk type. Any split file should result in a `Vec` or iterator of `Chunk`s.
+//! * Compute the hashes of chunks.
+//! * Insert chunks into subtree/large-file nodes.
+//! * Deduplicate chunks.
 
 pub mod object;
 pub mod tree;
@@ -30,7 +28,7 @@ use trace::MarshalTrace;
 pub use self::object::{Object, SmallObject, LargeObject, DataObject, SubtreeObject, CommitObject};
 
 
-/// The SHA3-512 hash of a stored object.
+/// The SHA3-256 hash of a stored object.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct ObjectHash(GenericArray<u8, U32>);
 
@@ -77,6 +75,9 @@ impl fmt::Display for ObjectHash {
 }
 
 
+/// A `Marshaller` is responsible for managing the environment of the transformation of an
+/// in-memory representation of the Git-like data structure to the encoded, serialized
+/// representation.
 pub struct Marshaller<'fresh, T: MarshalTrace = ()> {
     trace: T,
     objects: HashMap<ObjectHash, Option<Object<'fresh>>>,
@@ -149,6 +150,7 @@ impl<'fresh, T: MarshalTrace> Marshaller<'fresh, T> {
 }
 
 
+/// `Marshalled` is a frozen `Marshaller`, also no longer holding onto a trace object.
 pub struct Marshalled<'fresh> {
     objects: HashMap<ObjectHash, Option<Object<'fresh>>>,
 }
@@ -163,6 +165,7 @@ impl<'fresh> Deref for Marshalled<'fresh> {
 }
 
 
+/// The `Marshal` trait is implemented by any object which can be marshalled into `Object` form.
 pub trait Marshal<'fresh> {
     fn marshal<T: MarshalTrace>(self, marshaller: &mut Marshaller<'fresh, T>) -> ObjectHash;
 }

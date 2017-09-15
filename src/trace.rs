@@ -1,7 +1,18 @@
+//! `trace` - traits and default implementations for "trace objects"
+//!
+//! A "trace object" here is essentially a bundle of callbacks, implemented as a type implementing
+//! a given trait. This is useful for monitoring long-running operations and producing a nice-looking
+//! user interface, for example to drive a progress bar.
+//!
+//! All `Trace` traits have a default implementation for `()` which does nothing, discarded all
+//! passed-in information. This dummy implementation should be perfectly efficient, as any calls to
+//! it can be optimized out.
+
 use marshal::{Object, ObjectHash};
 use split::Chunk;
 
 
+/// `SplitTrace` tracks the progress of hashsplitting a file.
 pub trait SplitTrace: Sized {
     fn on_chunk(&mut self, _offset: u64, _chunk: &Chunk) {}
 }
@@ -10,6 +21,7 @@ pub trait SplitTrace: Sized {
 impl SplitTrace for () {}
 
 
+/// `MarshalTrace` tracks the process of marshalling objects.
 pub trait MarshalTrace: Sized {
     fn on_reserve(&mut self, _n: usize) {}
     fn on_register(&mut self, _object: &Object, _object_hash: &ObjectHash, _cache_hit: bool) {}
@@ -19,6 +31,8 @@ pub trait MarshalTrace: Sized {
 impl MarshalTrace for () {}
 
 
+/// `WriteMarshalledTrace` tracks the process of writing marshalled objects to the local object
+/// store.
 pub trait WriteMarshalledTrace: Sized {
     fn on_write(&mut self, _object_hash: &ObjectHash) {}
 }
@@ -27,6 +41,8 @@ pub trait WriteMarshalledTrace: Sized {
 impl WriteMarshalledTrace for () {}
 
 
+/// `Trace` is the parent trace object; it is passed to a `Context` once created, and other trace
+/// objects are intended to be created from a `Trace` type used as a factory.
 pub trait Trace {
     type MarshalTrace: MarshalTrace;
     type SplitTrace: SplitTrace;

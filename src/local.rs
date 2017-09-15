@@ -1,3 +1,5 @@
+//! `local` - operate on the locally stored files and blobs of a given repository.
+
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs::{self, File};
@@ -29,7 +31,6 @@ impl<'obj> AsRef<Object<'obj>> for LocalObject {
 
 
 /// The type of a local object store.
-///
 // TODO: Store `Weak` references to `Mmap`s in `Local` so that we cut down on the number of file
 // descriptors that our process owns.
 #[derive(Debug)]

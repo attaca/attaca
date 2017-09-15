@@ -1,3 +1,7 @@
+//! `remote` - operations on remote repositories.
+//!
+//! At current the only supported remote is a Ceph/RADOS cluster.
+
 use std::ffi::CString;
 
 use rad::{RadosConnectionBuilder, RadosConnection};

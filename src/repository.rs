@@ -26,6 +26,7 @@ use toml;
 use errors::{Result, ResultExt};
 
 
+/// The persistent configuration data for a single pool of a RADOS cluster.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RadosCfg {
     /// The directory in which `ceph.conf` is stored.
@@ -39,6 +40,7 @@ pub struct RadosCfg {
 }
 
 
+/// The persistent configuration data for an etcd cluster.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EtcdCfg {
     /// A list of cluster members to attempt connections to.
@@ -46,6 +48,7 @@ pub struct EtcdCfg {
 }
 
 
+/// The persistent configuration data for a single remote.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RemoteCfg {
     /// The remote object store.
@@ -60,6 +63,7 @@ pub struct RemoteCfg {
 }
 
 
+/// The persistent data, stored in a repository's config.toml.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     /// Named remotes for this repository.
@@ -74,6 +78,7 @@ impl Default for Config {
 }
 
 
+/// The type of a valid repository.
 #[derive(Debug, Clone)]
 pub struct Repository {
     /// Loaded configuration from `.attaca/config.toml`.
@@ -83,6 +88,7 @@ pub struct Repository {
     pub path: PathBuf,
 
     /// The absolute path to the blob store of the repository.
+    // TODO: Better manage this. It should probably be configurable.
     pub blob_path: PathBuf,
 }
 

@@ -1,3 +1,5 @@
+//! `object` - the (de)serialized encoding of the Git-like data-structure
+
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::ops::Deref;
@@ -44,10 +46,6 @@ impl<'fresh> Marshal<'fresh> for SmallObject<'fresh> {
 }
 
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct SmallObjectHash(ObjectHash);
-
-
 /// The marshaled, deserialized representation of a "large" object (composed of smaller chunks.)
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct LargeObject<'a> {
@@ -84,10 +82,6 @@ impl<'fresh> Marshal<'fresh> for LargeObject<'fresh> {
 }
 
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct LargeObjectHash(ObjectHash);
-
-
 /// The marshaled, deserialized representation of a subtree.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SubtreeObject<'a> {
@@ -115,6 +109,7 @@ pub struct CommitObject<'a> {
 }
 
 
+/// The marshaled, deserialized representation of a "data" object - either a small or large object.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum DataObject<'a> {
     /// A "small" blob is a single chunk.
@@ -154,10 +149,6 @@ impl Deref for DataObjectHash {
 }
 
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct DataObjectHash(ObjectHash);
-
-
 /// The marshaled, deserialized representation of an object in the distributed store.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Object<'a> {
@@ -190,11 +181,13 @@ impl<'a> AsRef<Object<'a>> for Object<'a> {
 
 
 impl<'a> Object<'a> {
+    /// Deserialize and borrow an `Object` from a byte slice.
     pub fn from_bytes(slice: &'a [u8]) -> Result<Object<'a>> {
         bincode::deserialize(slice).map_err(Into::into)
     }
 
 
+    /// Serialize an `Object` into a byte vector.
     pub fn to_bytes(&self) -> Result<Vec<u8>> {
         bincode::serialize(self, bincode::Infinite).map_err(Into::into)
     }

@@ -1,8 +1,9 @@
 //! `split` - split extremely large files into consistently-sized deterministic chunks.
 //!
 //! Key functionality of this module includes:
-//! - Splitting large files into chunks, via memory-mapped files.
-//! - Splitting streams of bytes into chunks, for use with lazily-downloaded files.
+//!
+//! * Splitting large files into chunks, via memory-mapped files.
+//! * Splitting streams of bytes into chunks, for use with lazily-downloaded files.
 
 
 use std::borrow::Cow;
@@ -20,6 +21,8 @@ use trace::SplitTrace;
 pub type Chunk<'a> = Cow<'a, [u8]>;
 
 
+/// A "splitter" over a slice, which functions as an iterator producing ~10 kb [citation needed]
+/// chunks.
 pub struct SliceSplitter<'a> {
     slice: &'a [u8],
 }
@@ -85,6 +88,7 @@ impl<'a> Iterator for SliceSplitter<'a> {
 }
 
 
+/// A ring buffer used to implement the rolling rsync-style checksum.
 pub struct Ring {
     buf: [u8; CHUNK_WINDOW],
     loc: usize,
@@ -100,11 +104,13 @@ impl Ring {
     }
 
 
+    /// Push a new byte into the ring buffer, ignoring the last byte.
     fn push(&mut self, byte: u8) {
         self.push_pop(byte);
     }
 
 
+    /// Remove the last byte from the ring buffer, replacing it.
     fn push_pop(&mut self, byte: u8) -> u8 {
         let popped = mem::replace(&mut self.buf[self.loc], byte);
         self.loc = (self.loc + 1) % CHUNK_WINDOW;
@@ -114,6 +120,7 @@ impl Ring {
 }
 
 
+/// "Chunk" a slice, producing ~3 MB chunks.
 pub struct SliceChunker<'a> {
     rest: &'a [u8],
     splitter: SliceSplitter<'a>,
@@ -184,12 +191,14 @@ impl<'a> Iterator for SliceChunker<'a> {
 }
 
 
+/// A chunker for a memory-mapped file.
 pub struct FileChunker {
     mmap: Mmap,
 }
 
 
 impl FileChunker {
+    /// Create a new chunker from a file, which *must* be open with read permissions.
     pub fn new(file: &File) -> Result<FileChunker> {
         let mmap = Mmap::open(file, Protection::Read)?;
 
@@ -197,14 +206,9 @@ impl FileChunker {
     }
 
 
+    /// The length of the file to be chunked, in bytes.
     pub fn len(&self) -> usize {
         self.mmap.len()
-    }
-
-
-    pub fn iter(&self) -> SliceChunker {
-        let slice = unsafe { self.mmap.as_slice() };
-        SliceChunker::new(slice)
     }
 
 
@@ -230,6 +234,7 @@ impl FileChunker {
 }
 
 
+/// The type of a chunked file.
 pub struct ChunkedFile<'a> {
     slice: &'a [u8],
     chunks: Vec<Chunk<'a>>,
@@ -237,6 +242,7 @@ pub struct ChunkedFile<'a> {
 
 
 impl<'a> ChunkedFile<'a> {
+    /// View the entire chunked file as a contiguous slice.
     pub fn as_slice(&self) -> &'a [u8] {
         self.slice
     }
