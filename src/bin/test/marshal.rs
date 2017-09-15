@@ -12,8 +12,17 @@ use errors::Result;
 use trace::ProgressTrace;
 
 
+const HELP_STR: &'static str = r#"
+Run the hashsplitter and marshaller on a single file, and then write all resulting objects to the local store.
+
+Written objects can be found in .attaca/blobs. For some object with a given hash, say 0a1b2c3d..., the resulting path will be .attaca/blobs/0a/1b/2c3d... as blobs are stored in a directory structure like so: [0]/[1]/[2..32] where [n] represents the hex representation of the nth byte of the hash of the object.
+"#;
+
+
 pub fn command() -> App<'static, 'static> {
     SubCommand::with_name("marshal")
+        .about("Chunk and marshal a single file, writing all resulting objects to disk.")
+        .after_help(HELP_STR)
         .arg(
             Arg::with_name("INPUT")
                 .help("Sets the input file to marshal.")

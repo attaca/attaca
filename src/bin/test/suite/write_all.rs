@@ -12,9 +12,18 @@ use errors::*;
 use trace::ProgressTrace;
 
 
+const HELP_STR: &'static str = r#"
+This test will first hashsplit and marshal a file; then, it will attempt to connect to a remote and
+send all objects created in the process of marshalling. By default, it will display the progress
+made in a progress bar; if this test is being used as part of a larger test suite, it may be a good
+idea to run with with the --quiet option, which will suppress all output.
+"#;
+
+
 pub fn command() -> App<'static, 'static> {
     SubCommand::with_name("write_all")
-        .help("Chunk, marshal, and then send a file to a remote.")
+        .about("Chunk, marshal, and then send a file to a remote.")
+        .after_help(HELP_STR)
         .arg(
             Arg::with_name("INPUT")
                 .help("Sets the input file.")

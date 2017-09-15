@@ -9,6 +9,7 @@ mod suite;
 
 pub fn command() -> App<'static, 'static> {
     SubCommand::with_name("test")
+        .about("Run internal commands and tests.")
         .subcommand(chunk::command())
         .subcommand(marshal::command())
         .subcommand(suite::command())

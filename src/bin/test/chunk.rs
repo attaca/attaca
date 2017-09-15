@@ -10,12 +10,15 @@ use errors::Result;
 
 
 pub fn command() -> App<'static, 'static> {
-    SubCommand::with_name("chunk").arg(
-        Arg::with_name("INPUT")
-            .help("Sets the input file to chunk.")
-            .required(true)
-            .index(1),
-    )
+    SubCommand::with_name("chunk")
+        .about("Dry-run the hashsplitter on a single file.")
+        .after_help("Chunk a file and list statistics for the resulting chunks. This is a \"dry-run\" and will not write any files to disk.")
+        .arg(
+            Arg::with_name("INPUT")
+                .help("Sets the input file to chunk.")
+                .required(true)
+                .index(1),
+        )
 }
 
 

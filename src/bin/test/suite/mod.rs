@@ -10,11 +10,26 @@ use clap::{App, SubCommand, Arg, ArgMatches};
 use errors::*;
 
 
+const HELP_STR: &'static str = r#"
+Run a full test with a remote.
+
+This will make calls to the outside environment and assumes you are running on a Unix-like system
+with cat and git installed. As such there is no way it will currently work on Windows, at least not
+without a significant amount of work.
+
+This subcommand also relies on a set of scripts which it will automatically clone from a remote git
+repository. These scripts are used to start, manage, and shutdown a makeshift RADOS cluster for
+testing, when necessary.
+
+TODO: Allow the user to pass the IP of a RADOS cluster to use for this test. Currently, we simply
+use 127.0.0.1, which works with the test cluster scripts.
+"#;
+
+
 pub fn command() -> App<'static, 'static> {
     SubCommand::with_name("suite")
-        .help(
-            "Run a full test suite with a remote. N.B. as of now will not work on Windows!",
-        )
+        .about("Run a test which requires a remote repository.")
+        .after_help(HELP_STR)
         .arg(Arg::with_name("fetch-tools")
              .long("fetch-tools")
              .takes_value(true)
@@ -34,10 +49,10 @@ pub fn command() -> App<'static, 'static> {
         .arg(Arg::with_name("no-takedown")
              .long("no-takedown")
              .help("Do not run the 'stop.sh' script, leaving a RADOS container running."))
-        .subcommand(SubCommand::with_name("noop").help(
+        .subcommand(SubCommand::with_name("noop").about(
             "Test the test suite infrastructure. I.S.M.E.T.A.",
         ))
-        .subcommand(write_all::command().help("Chunk, marshal, and then write all objects corresponding to a single file into a RADOS cluster."))
+        .subcommand(write_all::command())
 }
 
 
