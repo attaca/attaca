@@ -3,14 +3,14 @@
 /// An Attaca repository's metadata is stored in the `.attaca` folder of a repository. The internal
 /// structure of the metadata folder looks like this:
 ///
-/// ```
-/// .attaca
+/// ```ignore
+/// _ .attaca
 /// +-- config.toml
-/// +--_ceph
-/// |  +-- ceph.conf
-/// |  +-- ceph.client.admin.keyring
-/// |  +-- ceph.*.keyring
-/// +--_blobs
+/// +-_ ceph
+/// | +-- ceph.conf
+/// | +-- ceph.client.admin.keyring
+/// | +-- ceph.*.keyring
+/// +-_ blobs
 ///    +-- ... locally stored blobs named by hash
 /// ```
 
@@ -26,7 +26,7 @@ use toml;
 use errors::{Result, ResultExt};
 
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RadosCfg {
     /// The directory in which `ceph.conf` is stored.
     pub conf_dir: PathBuf,
@@ -39,14 +39,14 @@ pub struct RadosCfg {
 }
 
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EtcdCfg {
     /// A list of cluster members to attempt connections to.
     pub cluster: Vec<String>,
 }
 
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RemoteCfg {
     /// The remote object store.
     ///
@@ -60,7 +60,7 @@ pub struct RemoteCfg {
 }
 
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     /// Named remotes for this repository.
     pub remotes: HashMap<String, RemoteCfg>,
@@ -74,22 +74,25 @@ impl Default for Config {
 }
 
 
-#[derive(Clone)]
-pub struct Attaca {
+#[derive(Debug, Clone)]
+pub struct Repository {
     /// Loaded configuration from `.attaca/config.toml`.
-    config: Config,
+    pub config: Config,
 
     /// The absolute path to the root of the repository.
-    path: PathBuf,
+    pub path: PathBuf,
+
+    /// The absolute path to the blob store of the repository.
+    pub blob_path: PathBuf,
 }
 
 
-impl Attaca {
+impl Repository {
     /// Initialize a repository.
     pub fn init<P: AsRef<Path>>(path: P) -> Result<()> {
         let mut attaca_path = path.as_ref().to_owned();
 
-        attaca_path.push(".attaca");
+        attaca_path.push(".attaca/");
         if attaca_path.is_dir() {
             bail!(
                 "a repository already exists at {}!",
@@ -101,13 +104,11 @@ impl Attaca {
             || "error creating .attaca",
         )?;
 
-        attaca_path.set_file_name("blobs");
-        fs::create_dir_all(&attaca_path).chain_err(
+        fs::create_dir_all(&attaca_path.join("blobs")).chain_err(
             || "error creating .attaca/blobs",
         )?;
 
-        attaca_path.set_file_name("config.toml");
-        File::create(&attaca_path)
+        File::create(&attaca_path.join("config.toml"))
             .and_then(|mut cfg_file| {
                 cfg_file.write_all(&toml::to_vec(&Config::default()).unwrap())
             })
@@ -118,17 +119,15 @@ impl Attaca {
 
 
     /// Load repository data.
-    pub fn load<P: AsRef<Path>>(path: P) -> Result<Attaca> {
-        let mut attaca_path = path.as_ref().to_owned();
-        attaca_path.push(".attaca");
+    pub fn load<P: AsRef<Path>>(path: P) -> Result<Repository> {
+        let attaca_path = path.as_ref().join(".attaca");
 
         if !attaca_path.is_dir() {
             bail!("no repository found at {}!", attaca_path.to_string_lossy());
         }
 
         let config = {
-            let mut cfg_path = path.as_ref().to_owned();
-            cfg_path.push(".attaca/config.toml");
+            let cfg_path = path.as_ref().join(".attaca/config.toml");
 
             let mut config_file = File::open(&cfg_path).chain_err(|| {
                 format!("malformed repository at {}", attaca_path.to_string_lossy())
@@ -139,9 +138,26 @@ impl Attaca {
             toml::from_str(&config_string)?
         };
 
-        Ok(Attaca {
+        Ok(Repository {
             config,
             path: path.as_ref().to_owned(),
+            blob_path: path.as_ref().join(".attaca/blobs"),
         })
+    }
+
+
+    /// Move backwards towards the root of the filesystem searching for a valid repository.
+    pub fn find<P: AsRef<Path>>(path: P) -> Result<Repository> {
+        let mut attaca_path = path.as_ref().to_owned();
+
+        while !attaca_path.join(".attaca").is_dir() {
+            println!("Searching: {:?}", attaca_path);
+
+            if !attaca_path.pop() {
+                bail!("the directory {} is not a subdirectory of a repository!", path.as_ref().to_string_lossy());
+            }
+        }
+
+        Self::load(attaca_path)
     }
 }

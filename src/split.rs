@@ -5,16 +5,19 @@
 //! - Splitting streams of bytes into chunks, for use with lazily-downloaded files.
 
 
+use std::borrow::Cow;
 use std::fs::File;
 use std::hash::{Hash, Hasher};
 use std::mem;
 
-use histogram::Histogram;
 use memmap::{Mmap, Protection};
 use seahash::SeaHasher;
 
 use errors::Result;
-use marshal::Chunk;
+use trace::SplitTrace;
+
+
+pub type Chunk<'a> = Cow<'a, [u8]>;
 
 
 pub struct SliceSplitter<'a> {
@@ -194,55 +197,35 @@ impl FileChunker {
     }
 
 
+    pub fn len(&self) -> usize {
+        self.mmap.len()
+    }
+
+
     pub fn iter(&self) -> SliceChunker {
         let slice = unsafe { self.mmap.as_slice() };
         SliceChunker::new(slice)
     }
 
 
-    pub fn chunk_stats(&self) -> Histogram {
-        let mut chunk_sizes = Histogram::new();
-        let mut bytes_processed = 0u64;
-
-        let slice = unsafe { self.mmap.as_slice() };
-
-        for (i, chunk) in SliceChunker::new(slice).enumerate() {
-            let chunk_size = chunk.len() as u64;
-            bytes_processed += chunk_size;
-
-            eprintln!("Chunk {} :: size {}, total MB: {} / {}", i, chunk_size, bytes_processed / 1_000_000, slice.len() as u64 / 1_000_000);
-
-            chunk_sizes.increment(chunk_size).unwrap();
-        }
-
-        chunk_sizes
+    pub fn chunk(&self) -> ChunkedFile {
+        self.chunk_with_trace(&mut ())
     }
 
 
-    pub fn chunk(&self) -> ChunkedFile {
-        let mut chunk_sizes = Histogram::new();
-        let mut bytes_processed = 0u64;
+    pub fn chunk_with_trace<T: SplitTrace>(&self, trace: &mut T) -> ChunkedFile {
+        let mut offset = 0u64;
 
         let slice = unsafe { self.mmap.as_slice() };
         let chunks = SliceChunker::new(slice)
-            .enumerate()
-            .inspect(|&(i, ref chunk)| {
-                bytes_processed += chunk.len() as u64;
+            .inspect(|chunk| {
+                trace.on_chunk(offset, chunk);
 
-                eprintln!("Chunk {} :: size {}, total MB: {}", i, chunk.len(), bytes_processed / 1_000_000);
-
-                chunk_sizes
-                    .increment(chunk.len() as u64)
-                    .unwrap();
+                offset += chunk.len() as u64;
             })
-            .map(|(_, chunk)| chunk)
             .collect();
 
-        ChunkedFile {
-            slice,
-            chunks,
-            chunk_sizes,
-        }
+        ChunkedFile { slice, chunks }
     }
 }
 
@@ -250,8 +233,6 @@ impl FileChunker {
 pub struct ChunkedFile<'a> {
     slice: &'a [u8],
     chunks: Vec<Chunk<'a>>,
-
-    chunk_sizes: Histogram,
 }
 
 
@@ -263,10 +244,5 @@ impl<'a> ChunkedFile<'a> {
 
     pub fn chunks(&self) -> &[Chunk<'a>] {
         &self.chunks
-    }
-
-
-    pub fn sizes(&self) -> &Histogram {
-        &self.chunk_sizes
     }
 }
