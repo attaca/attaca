@@ -1,17 +1,17 @@
 # `attaca` - prototype for a distributed version control system for extremely large quantities of data
 
-This is currently a do-nothing tool. It is capable of only one thing: splitting single files into small, deterministic chunks. Installation can be performed like so:
+This tool is under development and not in working condition!
+
+Install with:
 
 ```
 cargo install
 ```
 
-And a file can be chunked with the command:
+## Commands
 
 ```
-attaca test chunk <FILE>
+attaca init                 # Initialize a repository in the current directory.
+attaca test chunk   <INPUT> # Hashsplit a file and print chunk statistics.
+attaca test marshal <INPUT> # Split and marshal a file, and then write its chunks to disk in the local blob store.
 ```
-
-The chunker will not create any output files - it will chunk the file and then display statistics (minimum, average, maximum, and standard deviation) of generated chunk sizes.
-
-This data will be printed to standard output.
