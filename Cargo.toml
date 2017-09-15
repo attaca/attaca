@@ -2,6 +2,7 @@
 authors = ["Sean Leffler <sean@errno.com>"]
 name = "attaca"
 version = "0.1.0"
+description = "A resilient, distributed version control system based on Git and designed for use with extremely large repositories."
 
 [lib]
 name = "attaca"
