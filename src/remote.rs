@@ -25,10 +25,25 @@ pub struct Remote {
 impl Remote {
     /// Connect to a remote repository, given appropriate configuration data.
     pub fn connect(cfg: &RemoteCfg) -> Result<Self> {
-        let conf_dir = CString::new(cfg.object_store.conf_dir.to_str().unwrap()).unwrap();
-        let conn = RadosConnectionBuilder::with_user(&*cfg.object_store.user)?
-            .read_conf_file(&*conf_dir)?
-            .connect()?;
+        let conf_dir = CString::new(cfg.object_store.conf.to_str().unwrap()).unwrap();
+        let keyring_dir = cfg.object_store.keyring.as_ref().map(|keyring| {
+            CString::new(keyring.to_str().unwrap()).unwrap()
+        });
+
+        let conn = {
+            let mut builder = RadosConnectionBuilder::with_user(cfg.object_store.user.as_c_str())?
+                .read_conf_file(conf_dir.as_c_str())?;
+
+            if let Some(ref keyring) = keyring_dir {
+                builder = builder.conf_set(
+                    CString::new("keyring")?,
+                    keyring.as_c_str(),
+                )?;
+            }
+
+            builder.connect()?
+        };
+
         let pool = cfg.object_store.pool.clone();
 
         Ok(Remote { conn, pool })

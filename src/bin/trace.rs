@@ -6,7 +6,7 @@ use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 
 use attaca::marshal::{Object, ObjectHash};
 use attaca::split::Chunk;
-use attaca::trace::{Trace, MarshalTrace, SplitTrace, WriteMarshalledTrace};
+use attaca::trace::{Trace, MarshalTrace, SplitTrace, WriteDestination, WriteMarshalledTrace};
 
 
 pub struct MarshalProgressTrace {
@@ -18,7 +18,7 @@ pub struct MarshalProgressTrace {
 impl MarshalProgressTrace {
     pub fn new(pb: ProgressBar) -> Self {
         pb.set_style(ProgressStyle::default_bar().template(
-            "[{elapsed_precise}] {bar:40.green/blue} {pos:>12}/{len:>12} {msg}",
+            "[{elapsed_precise}] {bar:40.green/blue} marshaled {pos}/{len} chunks, last marshalled {msg}",
         ));
 
         Self { total_known: 0, pb }
@@ -60,7 +60,7 @@ pub struct SplitProgressTrace {
 impl SplitProgressTrace {
     pub fn new(pb: ProgressBar) -> Self {
         pb.set_style(ProgressStyle::default_bar().template(
-            "[{elapsed_precise}] {bar:40.cyan/blue} {bytes:>12}/{total_bytes:>12} {msg}",
+            "[{elapsed_precise}] {bar:40.cyan/blue} split {bytes}/{total_bytes}",
         ));
 
         Self { pb }
@@ -88,10 +88,16 @@ pub struct WriteMarshalledProgressTrace {
 
 
 impl WriteMarshalledProgressTrace {
-    pub fn new(pb: ProgressBar) -> Self {
+    pub fn new(pb: ProgressBar, destination: WriteDestination) -> Self {
         pb.set_style(ProgressStyle::default_bar().template(
-            "[{elapsed_precise}] {bar:40.yellow/blue} {pos:>12}/{len:>12} {msg}",
+            "[{elapsed_precise}] {bar:40.yellow/blue} wrote {pos}/{len} objects to {prefix}, writing {msg}",
         ));
+
+        match destination {
+            WriteDestination::Local => pb.set_prefix("local"),
+            WriteDestination::Remote(&Some(ref name), _) => pb.set_prefix(&format!("remote {}", name)),
+            WriteDestination::Remote(&None, _) => pb.set_prefix("remote"),
+        }
 
         Self { pb }
     }
@@ -165,9 +171,13 @@ impl Trace for ProgressTrace {
         SplitProgressTrace::new(progress_bar)
     }
 
-    fn on_write_marshalled(&mut self, objects: usize) -> Self::WriteMarshalledTrace {
+    fn on_write_marshalled(
+        &mut self,
+        objects: usize,
+        destination: WriteDestination,
+    ) -> Self::WriteMarshalledTrace {
         let progress_bar = self.multi.add(ProgressBar::new(objects as u64));
 
-        WriteMarshalledProgressTrace::new(progress_bar)
+        WriteMarshalledProgressTrace::new(progress_bar, destination)
     }
 }

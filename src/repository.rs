@@ -30,13 +30,17 @@ use errors::{Result, ResultExt};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RadosCfg {
     /// The directory in which `ceph.conf` is stored.
-    pub conf_dir: PathBuf,
+    pub conf: PathBuf,
 
     /// The working RADOS object pool.
     pub pool: CString,
 
     /// The working RADOS user.
     pub user: CString,
+
+    /// The path to the keyring file for the working RADOS user, if it exists and is not stored in
+    /// `/etc/ceph/ceph.*****.keyring`.
+    pub keyring: Option<PathBuf>,
 }
 
 
@@ -160,7 +164,10 @@ impl Repository {
             println!("Searching: {:?}", attaca_path);
 
             if !attaca_path.pop() {
-                bail!("the directory {} is not a subdirectory of a repository!", path.as_ref().to_string_lossy());
+                bail!(
+                    "the directory {} is not a subdirectory of a repository!",
+                    path.as_ref().to_string_lossy()
+                );
             }
         }
 

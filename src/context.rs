@@ -16,9 +16,9 @@ use local::Local;
 use marshal::{Marshaller, Marshalled, ObjectHash};
 use marshal::tree::{Record, Tree};
 use remote::Remote;
-use repository::Repository;
+use repository::{Repository, RemoteCfg};
 use split::{FileChunker, ChunkedFile};
-use trace::{Trace, WriteMarshalledTrace};
+use trace::{Trace, WriteDestination, WriteMarshalledTrace};
 
 
 /// A batch of files being marshalled.
@@ -106,7 +106,10 @@ impl<T: Trace> Context<T> {
 
     /// Write a fully marshalled batch to the local repository.
     pub fn write_marshalled(&mut self, marshalled: &Marshalled) -> Result<()> {
-        let mut wm_trace = self.trace.on_write_marshalled(marshalled.len());
+        let mut wm_trace = self.trace.on_write_marshalled(
+            marshalled.len(),
+            WriteDestination::Local,
+        );
 
         for (object_hash, entry) in marshalled.iter() {
             match *entry {
@@ -124,16 +127,30 @@ impl<T: Trace> Context<T> {
 
     /// Load a remote configuration, producing a `RemoteContext`.
     pub fn with_remote<U: AsRef<str>>(&mut self, remote: U) -> Result<RemoteContext<T>> {
-        let remote = {
-            let remote_cfg = match self.repository.config.remotes.get(remote.as_ref()) {
-                Some(remote_cfg) => remote_cfg,
-                None => bail!("Unknown remote!"),
-            };
-
-            Remote::connect(remote_cfg)?
+        let remote_cfg = match self.repository.config.remotes.get(remote.as_ref()) {
+            Some(remote_cfg) => remote_cfg.to_owned(),
+            None => bail!("Unknown remote!"),
         };
 
-        Ok(RemoteContext { ctx: self, remote })
+        self.with_remote_from_cfg(Some(remote.as_ref().to_owned()), remote_cfg)
+    }
+
+
+    pub fn with_remote_from_cfg(
+        &mut self,
+        name: Option<String>,
+        cfg: RemoteCfg,
+    ) -> Result<RemoteContext<T>> {
+        let remote = Remote::connect(&cfg)?;
+
+        Ok(RemoteContext {
+            ctx: self,
+
+            name,
+            cfg,
+
+            remote,
+        })
     }
 }
 
@@ -143,16 +160,26 @@ impl<T: Trace> Context<T> {
 pub struct RemoteContext<'ctx, T: Trace + 'ctx = ()> {
     ctx: &'ctx mut Context<T>,
 
+    name: Option<String>,
+    cfg: RemoteCfg,
+
     remote: Remote,
 }
 
 
-impl<'local> RemoteContext<'local> {
+impl<'ctx, T: Trace + 'ctx> RemoteContext<'ctx, T> {
     /// Write a fully marshalled batch to the remote repository.
     // TODO: Make asynchronous.
     // TODO: Recover from errors when sending objects.
     pub fn write_marshalled(&mut self, marshalled: &Marshalled) -> Result<()> {
+        let mut wm_trace = self.ctx.trace.on_write_marshalled(
+            marshalled.len(),
+            WriteDestination::Remote(&self.name, &self.cfg),
+        );
+
         for (object_hash, entry) in marshalled.iter() {
+            wm_trace.on_write(object_hash);
+
             match *entry {
                 Some(ref object) => self.remote.write_object(object_hash, object)?,
                 None => {

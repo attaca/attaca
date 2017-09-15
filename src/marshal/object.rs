@@ -2,7 +2,6 @@
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
-use std::ops::Deref;
 use std::path::Path;
 
 use bincode;
@@ -18,15 +17,6 @@ use trace::MarshalTrace;
 pub struct SmallObject<'a> {
     #[serde(borrow)]
     pub chunk: Cow<'a, [u8]>,
-}
-
-
-impl Deref for SmallObjectHash {
-    type Target = ObjectHash;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
 }
 
 
@@ -53,15 +43,6 @@ pub struct LargeObject<'a> {
 
     #[serde(borrow)]
     pub children: Cow<'a, [(u64, ObjectHash)]>,
-}
-
-
-impl Deref for LargeObjectHash {
-    type Target = ObjectHash;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
 }
 
 
@@ -136,15 +117,6 @@ impl<'a> DataObject<'a> {
                               }) => children.len() == 0,
             _ => false,
         }
-    }
-}
-
-
-impl Deref for DataObjectHash {
-    type Target = ObjectHash;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
     }
 }
 

@@ -9,6 +9,7 @@
 //! it can be optimized out.
 
 use marshal::{Object, ObjectHash};
+use repository::RemoteCfg;
 use split::Chunk;
 
 
@@ -31,8 +32,15 @@ pub trait MarshalTrace: Sized {
 impl MarshalTrace for () {}
 
 
-/// `WriteMarshalledTrace` tracks the process of writing marshalled objects to the local object
-/// store.
+/// The destination of marshalled objects being written.
+pub enum WriteDestination<'a> {
+    Local,
+    Remote(&'a Option<String>, &'a RemoteCfg),
+}
+
+
+/// `WriteMarshalledTrace` tracks the process of writing marshalled objects to a local or remote
+/// object store.
 pub trait WriteMarshalledTrace: Sized {
     fn on_write(&mut self, _object_hash: &ObjectHash) {}
 }
@@ -50,7 +58,11 @@ pub trait Trace {
 
     fn on_marshal(&mut self, chunks: usize) -> Self::MarshalTrace;
     fn on_split(&mut self, size: u64) -> Self::SplitTrace;
-    fn on_write_marshalled(&mut self, objects: usize) -> Self::WriteMarshalledTrace;
+    fn on_write_marshalled(
+        &mut self,
+        objects: usize,
+        destination: WriteDestination,
+    ) -> Self::WriteMarshalledTrace;
 }
 
 
@@ -67,7 +79,11 @@ impl Trace for () {
         ()
     }
 
-    fn on_write_marshalled(&mut self, _objects: usize) -> Self::WriteMarshalledTrace {
+    fn on_write_marshalled(
+        &mut self,
+        _objects: usize,
+        _destination: WriteDestination,
+    ) -> Self::WriteMarshalledTrace {
         ()
     }
 }

@@ -10,7 +10,6 @@ const BRANCH_FACTOR: usize = 1024;
 
 const ERR_BRANCH_FACTOR_TOO_SMALL: &'static str = "BRANCH_FACTOR too small (less than 2?) freshly split node should always have space for one more child!";
 const ERR_BYTE_OUTSIDE_OF_TREE: &'static str = "Node::search_bytes should only be called when we know the byte is in the tree!";
-const ERR_INTERNAL_NONEMPTY: &'static str = "Internal nodes should never be empty!";
 
 
 /// A `Record` is the leaf of a data object tree structure.
