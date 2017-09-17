@@ -9,12 +9,13 @@ use std::fs::File;
 use std::path::Path;
 use std::rc::Rc;
 
+use futures::prelude::*;
 use typed_arena::Arena;
 
 use errors::Result;
 use local::Local;
-use marshal::{Marshaller, Marshalled, ObjectHash};
-use marshal::tree::{Record, Tree};
+use marshal::{Marshaller, Marshalled, ObjectHash, SmallObject, Record, SmallRecord};
+use marshal::tree::Tree;
 use remote::Remote;
 use repository::{Repository, RemoteCfg};
 use split::{FileChunker, ChunkedFile};
@@ -93,11 +94,11 @@ impl<T: Trace> Context<T> {
         chunked: ChunkedFile<'files>,
     ) -> (ObjectHash, Marshalled<'files>) {
         let tree = Tree::load(chunked.chunks().iter().map(
-            |chunk| Record::Deep(chunk.clone()),
+            |chunk| SmallRecord::Deep(SmallObject { chunk: chunk.clone() }),
         ));
 
         let mut marshaller = Marshaller::with_trace(self.trace.on_marshal(tree.len()));
-        let object_hash = marshaller.put(tree);
+        let object_hash = tree.marshal(&marshaller).wait().unwrap();
         let marshalled = marshaller.finish();
 
         (object_hash, marshalled)

@@ -4,7 +4,7 @@ use std::thread::{self, JoinHandle};
 
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 
-use attaca::marshal::{Object, ObjectHash};
+use attaca::marshal::ObjectHash;
 use attaca::split::Chunk;
 use attaca::trace::{Trace, MarshalTrace, SplitTrace, WriteDestination, WriteMarshalledTrace};
 
@@ -34,7 +34,7 @@ impl MarshalTrace for MarshalProgressTrace {
     }
 
 
-    fn on_register(&mut self, _object: &Object, object_hash: &ObjectHash, cache_hit: bool) {
+    fn on_register(&mut self, object_hash: &ObjectHash, cache_hit: bool) {
         self.pb.inc(1);
         self.pb.set_message(&format!(
             "({}) {}",
@@ -95,7 +95,9 @@ impl WriteMarshalledProgressTrace {
 
         match destination {
             WriteDestination::Local => pb.set_prefix("local"),
-            WriteDestination::Remote(&Some(ref name), _) => pb.set_prefix(&format!("remote {}", name)),
+            WriteDestination::Remote(&Some(ref name), _) => {
+                pb.set_prefix(&format!("remote {}", name))
+            }
             WriteDestination::Remote(&None, _) => pb.set_prefix("remote"),
         }
 

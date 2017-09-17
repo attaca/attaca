@@ -8,8 +8,7 @@ use bincode;
 use chrono::{DateTime, Utc};
 
 use errors::Result;
-use marshal::{Marshal, Marshaller, ObjectHash};
-use trace::MarshalTrace;
+use marshal::{MarshalContext, Marshaller, ObjectHash};
 
 
 /// The marshaled, deserialized representation of a "small" object (composed of a single chunk.)
@@ -20,18 +19,9 @@ pub struct SmallObject<'a> {
 }
 
 
-impl<'fresh> Marshal<'fresh> for &'fresh SmallObject<'fresh> {
-    fn marshal<T: MarshalTrace>(self, ctx: &mut Marshaller<'fresh, T>) -> ObjectHash {
-        ctx.register(Object::Data(DataObject::Small(
-            SmallObject { chunk: Cow::Borrowed(&self.chunk) },
-        )))
-    }
-}
-
-
-impl<'fresh> Marshal<'fresh> for SmallObject<'fresh> {
-    fn marshal<T: MarshalTrace>(self, ctx: &mut Marshaller<'fresh, T>) -> ObjectHash {
-        ctx.register(Object::Data(DataObject::Small(self)))
+impl<'a> SmallObject<'a> {
+    pub fn size(&self) -> u64 {
+        self.chunk.len() as u64
     }
 }
 
@@ -46,19 +36,9 @@ pub struct LargeObject<'a> {
 }
 
 
-impl<'fresh> Marshal<'fresh> for &'fresh LargeObject<'fresh> {
-    fn marshal<T: MarshalTrace>(self, ctx: &mut Marshaller<'fresh, T>) -> ObjectHash {
-        ctx.register(Object::Data(DataObject::Large(LargeObject {
-            size: self.size,
-            children: Cow::Borrowed(&self.children),
-        })))
-    }
-}
-
-
-impl<'fresh> Marshal<'fresh> for LargeObject<'fresh> {
-    fn marshal<T: MarshalTrace>(self, ctx: &mut Marshaller<'fresh, T>) -> ObjectHash {
-        ctx.register(Object::Data(DataObject::Large(self)))
+impl<'a> LargeObject<'a> {
+    pub fn size(&self) -> u64 {
+        self.size
     }
 }
 
@@ -109,6 +89,14 @@ pub enum DataObject<'a> {
 
 
 impl<'a> DataObject<'a> {
+    pub fn size(&self) -> u64 {
+        match *self {
+            DataObject::Small(ref small) => small.size(),
+            DataObject::Large(ref large) => large.size(),
+        }
+    }
+
+
     pub fn is_empty(&self) -> bool {
         match *self {
             DataObject::Large(LargeObject {

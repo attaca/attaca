@@ -1,8 +1,13 @@
 use std::borrow::Cow;
 use std::mem;
+use std::sync::Arc;
 
-use marshal::{Marshal, Marshaller, ObjectHash, SmallObject, LargeObject};
-use trace::MarshalTrace;
+use futures::prelude::*;
+use futures::future;
+use futures::stream::{self, FuturesOrdered};
+
+use errors::*;
+use marshal::{MarshalContext, ObjectHash, SmallObject, LargeObject, SmallRecord};
 
 
 /// The branching factor of the data object B+ tree structure.
@@ -12,55 +17,17 @@ const ERR_BRANCH_FACTOR_TOO_SMALL: &'static str = "BRANCH_FACTOR too small (less
 const ERR_BYTE_OUTSIDE_OF_TREE: &'static str = "Node::search_bytes should only be called when we know the byte is in the tree!";
 
 
-/// A `Record` is the leaf of a data object tree structure.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Record<'a> {
-    /// A locally stored byte slice to be marshalled into a fresh small blob.
-    Deep(Cow<'a, [u8]>),
-
-    /// A pointer to a small blob, along with its size.
-    Shallow(u64, ObjectHash),
-}
-
-
-impl<'a> Record<'a> {
-    /// The size, in bytes, of the record.
-    pub fn size(&self) -> u64 {
-        match *self {
-            Record::Deep(ref bytes) => bytes.len() as u64,
-            Record::Shallow(sz, _) => sz,
-        }
-    }
-}
-
-
 /// A `Leaf` node of a B+ tree contains a list of records.
 #[derive(Clone, Debug)]
 struct Leaf<'a> {
     size: u64,
-    records: Vec<Record<'a>>,
+    records: Vec<SmallRecord<'a>>,
 }
 
 
-impl<'fresh> Marshal<'fresh> for Leaf<'fresh> {
-    fn marshal<T: MarshalTrace>(self, ctx: &mut Marshaller<'fresh, T>) -> ObjectHash {
-        let size = self.size();
-        let children = self.records
-            .into_iter()
-            .map(|record| match record {
-                Record::Deep(bytes) => (bytes.len() as u64, ctx.put(SmallObject { chunk: bytes })),
-                Record::Shallow(sz, hash) => (sz, hash),
-            })
-            .collect();
-
-        ctx.put(LargeObject { size, children })
-    }
-}
-
-
-impl<'a> From<Vec<Record<'a>>> for Leaf<'a> {
-    fn from(records: Vec<Record<'a>>) -> Self {
-        let size = records.iter().map(Record::size).sum();
+impl<'a> From<Vec<SmallRecord<'a>>> for Leaf<'a> {
+    fn from(records: Vec<SmallRecord<'a>>) -> Self {
+        let size = records.iter().map(SmallRecord::size).sum();
 
         Leaf { size, records }
     }
@@ -87,7 +54,7 @@ impl<'a> Leaf<'a> {
 
     /// Append a record to a leaf; if the leaf cannot hold the record and must split, this function
     /// will return `Err` with the left-hand side of the split.
-    fn append(&mut self, record: Record<'a>) -> Result<(), Leaf<'a>> {
+    fn append(&mut self, record: SmallRecord<'a>) -> ::std::result::Result<(), Leaf<'a>> {
         if self.records.len() < BRANCH_FACTOR {
             self.size += record.size();
             self.records.push(record);
@@ -103,6 +70,37 @@ impl<'a> Leaf<'a> {
             Err(mem::replace(self, right))
         }
     }
+
+
+    pub fn marshal<'ctx, M: MarshalContext<'a, 'ctx>>(
+        self,
+        ctx: &'ctx M,
+    ) -> Box<Future<Item = ObjectHash, Error = Error> + Send + 'ctx>
+    where
+        'a: 'ctx,
+    {
+        let ctx = ctx.clone();
+        let mut futures = FuturesOrdered::new();
+
+        let size = self.size();
+
+        for child in self.records {
+            let child_size = child.size();
+
+            futures.push(ctx.register(child).map(move |child_hash| {
+                (child_size, child_hash)
+            }));
+        }
+
+        let result = futures.collect().and_then(move |children| {
+            ctx.register(LargeObject {
+                size,
+                children: Cow::Owned(children),
+            })
+        });
+
+        Box::new(result)
+    }
 }
 
 
@@ -112,21 +110,6 @@ struct Internal<'a> {
     size: u64,
     count: usize,
     children: Vec<Node<'a>>,
-}
-
-
-impl<'fresh> Marshal<'fresh> for Internal<'fresh> {
-    fn marshal<T: MarshalTrace>(self, ctx: &mut Marshaller<'fresh, T>) -> ObjectHash {
-        let children = self.children
-            .into_iter()
-            .map(|child| (child.size(), ctx.put(child)))
-            .collect();
-
-        ctx.put(LargeObject {
-            size: self.size,
-            children,
-        })
-    }
 }
 
 
@@ -169,7 +152,7 @@ impl<'a> Internal<'a> {
 
     /// Append a node; if we must split to accomodate the new node, the left-hand side of the split
     /// is returned as `Err`.
-    fn append(&mut self, node: Node<'a>) -> Result<(), Self> {
+    fn append(&mut self, node: Node<'a>) -> ::std::result::Result<(), Self> {
         if self.children.len() < BRANCH_FACTOR {
             self.size += node.size();
             self.count += node.count();
@@ -187,6 +170,34 @@ impl<'a> Internal<'a> {
             Err(mem::replace(self, right))
         }
     }
+
+
+    fn marshal<'ctx, M: MarshalContext<'a, 'ctx>>(
+        self,
+        ctx: &'ctx M,
+    ) -> Box<Future<Item = ObjectHash, Error = Error> + Send + 'ctx>
+    where
+        'a: 'ctx,
+    {
+        let children_future = stream::futures_ordered(self.children.into_iter().map(move |child| {
+            let child_size = child.size();
+
+            child.marshal(ctx).map(
+                move |child_hash| (child_size, child_hash),
+            )
+        })).collect();
+
+        let self_size = self.size;
+
+        let result = children_future.and_then(move |children| {
+            ctx.register(LargeObject {
+                size: self_size,
+                children: Cow::Owned(children),
+            })
+        });
+
+        Box::new(result)
+    }
 }
 
 
@@ -195,16 +206,6 @@ impl<'a> Internal<'a> {
 enum Node<'a> {
     Internal(Internal<'a>),
     Leaf(Leaf<'a>),
-}
-
-
-impl<'fresh> Marshal<'fresh> for Node<'fresh> {
-    fn marshal<T: MarshalTrace>(self, ctx: &mut Marshaller<'fresh, T>) -> ObjectHash {
-        match self {
-            Node::Internal(internal) => ctx.put(internal),
-            Node::Leaf(leaf) => ctx.put(leaf),
-        }
-    }
 }
 
 
@@ -238,7 +239,7 @@ impl<'a> Node<'a> {
     // TODO: This could probably be made *much* simpler and *much* more efficient.
     fn load<I>(iterable: I) -> Self
     where
-        I: IntoIterator<Item = Record<'a>>,
+        I: IntoIterator<Item = SmallRecord<'a>>,
     {
         fn insert_into_spine<'a, 'b: 'a, I>(mut stack: I, node: Node<'b>) -> Option<Internal<'b>>
         where
@@ -301,7 +302,7 @@ impl<'a> Node<'a> {
     // TODO: While we will eventually  need this functionality, at the moment this implementation
     // of `push` does not correctly preserve record counts.
     //
-    // fn push(&mut self, record: Record<'a>) -> Result<(), Self> {
+    // fn push(&mut self, record: SmallRecord<'a>) -> Result<(), Self> {
     //     // Attempt to push this node into our local children (whether we are a leaf or an internal
     //     // node.) If `left` is not empty, we swap ourselves with it and return it as `Err`; it is
     //     // the left side of our new split.
@@ -366,7 +367,7 @@ impl<'a> Node<'a> {
 
 
     /// Search the tree to find the `n`th chunk.
-    fn search(&self, idx: usize) -> &Record<'a> {
+    fn search(&self, idx: usize) -> &SmallRecord<'a> {
         match *self {
             Node::Internal(ref internal) => {
                 let mut loc = 0;
@@ -385,6 +386,20 @@ impl<'a> Node<'a> {
             Node::Leaf(ref leaf) => &leaf.records[idx],
         }
     }
+
+
+    fn marshal<'ctx, M: MarshalContext<'a, 'ctx>>(
+        self,
+        ctx: &'ctx M,
+    ) -> Box<Future<Item = ObjectHash, Error = Error> + Send + 'ctx>
+    where
+        'a: 'ctx,
+    {
+        match self {
+            Node::Internal(internal) => internal.marshal(ctx),
+            Node::Leaf(leaf) => leaf.marshal(ctx),
+        }
+    }
 }
 
 
@@ -396,17 +411,9 @@ pub struct Tree<'a> {
 }
 
 
-impl<'fresh> Marshal<'fresh> for Tree<'fresh> {
-    fn marshal<T: MarshalTrace>(self, ctx: &mut Marshaller<'fresh, T>) -> ObjectHash {
-        ctx.reserve(self.len());
-        ctx.put(self.root)
-    }
-}
-
-
 impl<'a> Tree<'a> {
     /// Bulk-load the tree.
-    pub fn load<I: IntoIterator<Item = Record<'a>>>(iterable: I) -> Self {
+    pub fn load<I: IntoIterator<Item = SmallRecord<'a>>>(iterable: I) -> Self {
         Tree { root: Node::load(iterable) }
     }
 
@@ -424,7 +431,7 @@ impl<'a> Tree<'a> {
 
 
     /// Search the tree for the `nth` chunk.
-    pub fn search(&self, idx: usize) -> Option<&Record<'a>> {
+    pub fn search(&self, idx: usize) -> Option<&SmallRecord<'a>> {
         if idx < self.root.count() {
             Some(self.root.search(idx))
         } else {
@@ -443,7 +450,7 @@ impl<'a> Tree<'a> {
     }
 
 
-    // pub fn push(&mut self, record: Record<'a>) {
+    // pub fn push(&mut self, record: SmallRecord<'a>) {
     //     if let Err(right) = self.root.push(record) {
     //         // Replace `left` with a dummy value.
     //         let left = mem::replace(&mut self.root, Node::internal(Vec::new()));
@@ -452,6 +459,17 @@ impl<'a> Tree<'a> {
     //         self.root = Node::internal(vec![left, right]);
     //     }
     // }
+
+
+    pub fn marshal<'ctx, M: MarshalContext<'a, 'ctx>>(
+        self,
+        ctx: &'ctx M,
+    ) -> Box<Future<Item = ObjectHash, Error = Error> + Send + 'ctx>
+    where
+        'a: 'ctx,
+    {
+        self.root.marshal(ctx)
+    }
 }
 
 
@@ -478,7 +496,7 @@ mod tests {
                 index.push((pos, slice));
                 pos += chunk.len() as u64;
 
-                Record::Deep(Cow::Borrowed(chunk))
+                SmallRecord::Deep(Cow::Borrowed(chunk))
             }));
 
             if tree.len() != chunks.len() || tree.size() != pos {
@@ -487,9 +505,9 @@ mod tests {
 
             for (i, (pos, chunk)) in index.into_iter().enumerate() {
                 if tree.search_bytes(pos) != Some(i) ||
-                    tree.search(i) != Some(&Record::Deep(Cow::Borrowed(chunk)))
+                    tree.search(i) != Some(&SmallRecord::Deep(Cow::Borrowed(chunk)))
                 {
-                    panic!("byte search: {}, search: {}, tree: {:?}", tree.search_bytes(pos) != Some(i), tree.search(i) != Some(&Record::Deep(Cow::Borrowed(chunk))), tree);
+                    panic!("byte search: {}, search: {}, tree: {:?}", tree.search_bytes(pos) != Some(i), tree.search(i) != Some(&SmallRecord::Deep(Cow::Borrowed(chunk))), tree);
 
                     return TestResult::failed();
                 }
@@ -502,7 +520,7 @@ mod tests {
 
     #[test]
     fn load() {
-        let chunk = Record::Deep(Cow::Borrowed(&[0][..]));
+        let chunk = SmallRecord::Deep(Cow::Borrowed(&[0][..]));
 
         let tree = Tree::load(vec![chunk; BRANCH_FACTOR + 1]);
 

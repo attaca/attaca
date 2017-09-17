@@ -23,9 +23,9 @@ impl SplitTrace for () {}
 
 
 /// `MarshalTrace` tracks the process of marshalling objects.
-pub trait MarshalTrace: Sized {
+pub trait MarshalTrace: Send + Sized {
     fn on_reserve(&mut self, _n: usize) {}
-    fn on_register(&mut self, _object: &Object, _object_hash: &ObjectHash, _cache_hit: bool) {}
+    fn on_register(&mut self, _object_hash: &ObjectHash, _cache_hit: bool) {}
 }
 
 

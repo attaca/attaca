@@ -7,6 +7,7 @@
 //! * Deduplicate chunks.
 
 pub mod object;
+pub mod record;
 pub mod tree;
 
 use std::collections::HashMap;
@@ -15,17 +16,32 @@ use std::fmt::{self, Write};
 use std::io::BufWriter;
 use std::ops::Deref;
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 use bincode;
 use digest_writer::{FixedOutput, Writer};
+use futures::prelude::*;
+use futures::future::{self, FutureResult};
 use generic_array::GenericArray;
 use sha3::{Sha3_256, Digest};
 use typenum::U32;
 
+use errors::*;
 use trace::MarshalTrace;
 
 
 pub use self::object::{Object, SmallObject, LargeObject, DataObject, SubtreeObject, CommitObject};
+pub use self::record::{Record, DataRecord, MetaRecord, SmallRecord};
+
+
+pub trait Marshal<'data, 'ctx>: Send + Sync + 'ctx
+where
+    'data: 'ctx,
+{
+    type Registered: Future<Item = ObjectHash, Error = Error> + Send + 'ctx;
+
+    fn register<T: Into<Record<'data>>>(&'ctx self, object: T) -> Self::Registered;
+}
 
 
 /// The SHA3-256 hash of a stored object.
@@ -79,6 +95,11 @@ impl fmt::Display for ObjectHash {
 /// in-memory representation of the Git-like data structure to the encoded, serialized
 /// representation.
 pub struct Marshaller<'fresh, T: MarshalTrace = ()> {
+    inner: Mutex<MarshallerInner<'fresh, T>>,
+}
+
+
+struct MarshallerInner<'fresh, T: MarshalTrace = ()> {
     trace: T,
     objects: HashMap<ObjectHash, Option<Object<'fresh>>>,
 }
@@ -90,62 +111,74 @@ impl<'fresh, T: MarshalTrace> Marshaller<'fresh, T> {
         T: Default,
     {
         Marshaller {
-            trace: T::default(),
-            objects: HashMap::new(),
+            inner: Mutex::new(MarshallerInner {
+                trace: T::default(),
+                objects: HashMap::new(),
+            }),
         }
     }
 
 
     pub fn with_trace(trace: T) -> Self {
         Marshaller {
-            trace,
-            objects: HashMap::new(),
+            inner: Mutex::new(MarshallerInner {
+                trace,
+                objects: HashMap::new(),
+            }),
         }
     }
 
 
     pub fn reserve(&mut self, n: usize) {
-        self.trace.on_reserve(n);
-        self.objects.reserve(n);
-    }
+        let mut inner = self.inner.lock().unwrap();
 
-
-    pub fn register(&mut self, object: Object<'fresh>) -> ObjectHash {
-        let mut dw = BufWriter::new(Writer::new(Sha3_256::new()));
-        bincode::serialize_into(&mut dw, &object, bincode::Infinite).unwrap();
-
-        let digest = match dw.into_inner() {
-            Ok(writer) => writer.fixed_result(),
-            Err(_) => unreachable!(),
-        };
-
-        let object_hash = ObjectHash(digest);
-        let entry = self.objects.entry(object_hash);
-
-        match entry {
-            Entry::Occupied(_) => {
-                self.trace.on_register(&object, &object_hash, true);
-            }
-            Entry::Vacant(vacant) => {
-                self.trace.on_register(&object, &object_hash, false);
-                vacant.insert(Some(object));
-            }
-        }
-
-        object_hash
-    }
-
-
-    pub fn put<U>(&mut self, object: U) -> ObjectHash
-    where
-        U: Marshal<'fresh>,
-    {
-        object.marshal(self)
+        inner.trace.on_reserve(n);
+        inner.objects.reserve(n);
     }
 
 
     pub fn finish(self) -> Marshalled<'fresh> {
-        Marshalled { objects: self.objects }
+        Marshalled { objects: self.inner.into_inner().unwrap().objects }
+    }
+}
+
+
+impl<'ctx, 'data: 'ctx, T: MarshalTrace + 'ctx> MarshalContext<'data, 'ctx> for Marshaller<'data, T> {
+    type Registered = FutureResult<ObjectHash, Error>;
+
+    fn register<R: Into<Record<'data>>>(&'ctx self, target: R) -> Self::Registered {
+        let mut inner = self.inner.lock().unwrap();
+
+        let (object_hash, object) = match target.into().to_deep() {
+            Ok(object) => {
+                let mut dw = BufWriter::new(Writer::new(Sha3_256::new()));
+                bincode::serialize_into(&mut dw, &object, bincode::Infinite).unwrap();
+
+                let digest = match dw.into_inner() {
+                    Ok(writer) => writer.fixed_result(),
+                    Err(_) => unreachable!(),
+                };
+
+                (ObjectHash(digest), Some(object))
+            }
+
+            Err(hash) => (hash, None),
+        };
+
+        let inner = &mut *inner;
+        let entry = inner.objects.entry(object_hash);
+
+        match entry {
+            Entry::Occupied(_) => {
+                inner.trace.on_register(&object_hash, true);
+            }
+            Entry::Vacant(vacant) => {
+                inner.trace.on_register(&object_hash, false);
+                vacant.insert(object);
+            }
+        }
+
+        future::ok(object_hash)
     }
 }
 
@@ -162,10 +195,4 @@ impl<'fresh> Deref for Marshalled<'fresh> {
     fn deref(&self) -> &Self::Target {
         &self.objects
     }
-}
-
-
-/// The `Marshal` trait is implemented by any object which can be marshalled into `Object` form.
-pub trait Marshal<'fresh> {
-    fn marshal<T: MarshalTrace>(self, marshaller: &mut Marshaller<'fresh, T>) -> ObjectHash;
 }

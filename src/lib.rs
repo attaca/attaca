@@ -1,4 +1,4 @@
-#![feature(conservative_impl_trait)]
+#![feature(conservative_impl_trait, never_type)]
 
 #[cfg(test)]
 #[macro_use]
@@ -9,6 +9,7 @@ extern crate chrono;
 extern crate digest_writer;
 #[macro_use]
 extern crate error_chain;
+extern crate futures;
 extern crate generic_array;
 extern crate memmap;
 extern crate rad;

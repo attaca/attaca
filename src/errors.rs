@@ -16,5 +16,10 @@ error_chain! {
         TomlDe(::toml::de::Error);
     }
 
-    errors {}
+    errors {
+        Impossible(never: !) {
+            description("This error can never occur.")
+            display("This error can literally never happen.")
+        }
+    }
 }
