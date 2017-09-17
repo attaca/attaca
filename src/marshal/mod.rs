@@ -143,7 +143,7 @@ impl<'fresh, T: MarshalTrace> Marshaller<'fresh, T> {
 }
 
 
-impl<'ctx, 'data: 'ctx, T: MarshalTrace + 'ctx> MarshalContext<'data, 'ctx> for Marshaller<'data, T> {
+impl<'ctx, 'data: 'ctx, T: MarshalTrace + 'ctx> Marshal<'data, 'ctx> for Marshaller<'data, T> {
     type Registered = FutureResult<ObjectHash, Error>;
 
     fn register<R: Into<Record<'data>>>(&'ctx self, target: R) -> Self::Registered {

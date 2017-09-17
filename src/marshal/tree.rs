@@ -7,7 +7,7 @@ use futures::future;
 use futures::stream::{self, FuturesOrdered};
 
 use errors::*;
-use marshal::{MarshalContext, ObjectHash, SmallObject, LargeObject, SmallRecord};
+use marshal::{Marshal, ObjectHash, SmallObject, LargeObject, SmallRecord};
 
 
 /// The branching factor of the data object B+ tree structure.
@@ -72,7 +72,7 @@ impl<'a> Leaf<'a> {
     }
 
 
-    pub fn marshal<'ctx, M: MarshalContext<'a, 'ctx>>(
+    pub fn marshal<'ctx, M: Marshal<'a, 'ctx>>(
         self,
         ctx: &'ctx M,
     ) -> Box<Future<Item = ObjectHash, Error = Error> + Send + 'ctx>
@@ -172,7 +172,7 @@ impl<'a> Internal<'a> {
     }
 
 
-    fn marshal<'ctx, M: MarshalContext<'a, 'ctx>>(
+    fn marshal<'ctx, M: Marshal<'a, 'ctx>>(
         self,
         ctx: &'ctx M,
     ) -> Box<Future<Item = ObjectHash, Error = Error> + Send + 'ctx>
@@ -295,7 +295,11 @@ impl<'a> Node<'a> {
             stack.push(Node::Internal(node));
         }
 
-        Node::internal(stack)
+        if stack.len() == 1 {
+            stack.pop().unwrap()
+        } else {
+            Node::internal(stack)
+        }
     }
 
 
@@ -388,7 +392,7 @@ impl<'a> Node<'a> {
     }
 
 
-    fn marshal<'ctx, M: MarshalContext<'a, 'ctx>>(
+    fn marshal<'ctx, M: Marshal<'a, 'ctx>>(
         self,
         ctx: &'ctx M,
     ) -> Box<Future<Item = ObjectHash, Error = Error> + Send + 'ctx>
@@ -461,7 +465,7 @@ impl<'a> Tree<'a> {
     // }
 
 
-    pub fn marshal<'ctx, M: MarshalContext<'a, 'ctx>>(
+    pub fn marshal<'ctx, M: Marshal<'a, 'ctx>>(
         self,
         ctx: &'ctx M,
     ) -> Box<Future<Item = ObjectHash, Error = Error> + Send + 'ctx>

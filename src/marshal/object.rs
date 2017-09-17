@@ -8,7 +8,7 @@ use bincode;
 use chrono::{DateTime, Utc};
 
 use errors::Result;
-use marshal::{MarshalContext, Marshaller, ObjectHash};
+use marshal::{Marshal, Marshaller, ObjectHash};
 
 
 /// The marshaled, deserialized representation of a "small" object (composed of a single chunk.)
