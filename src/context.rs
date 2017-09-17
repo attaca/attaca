@@ -16,7 +16,7 @@ use typed_arena::Arena;
 
 use errors::Result;
 use local::Local;
-use marshal::{Marshaller, Marshalled, ObjectHash, SmallObject, Record, SmallRecord};
+use marshal::{Marshaller, Marshalled, ObjectHash, SmallObject, SmallRecord};
 use marshal::tree::Tree;
 use remote::Remote;
 use repository::{Repository, RemoteCfg};

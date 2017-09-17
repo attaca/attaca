@@ -1,13 +1,11 @@
 use std::borrow::Cow;
 use std::mem;
-use std::sync::Arc;
 
 use futures::prelude::*;
-use futures::future;
 use futures::stream::{self, FuturesOrdered};
 
 use errors::*;
-use marshal::{Marshal, ObjectHash, SmallObject, LargeObject, SmallRecord};
+use marshal::{Marshal, ObjectHash, LargeObject, SmallRecord};
 
 
 /// The branching factor of the data object B+ tree structure.

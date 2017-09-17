@@ -8,7 +8,7 @@
 //! passed-in information. This dummy implementation should be perfectly efficient, as any calls to
 //! it can be optimized out.
 
-use marshal::{Object, ObjectHash};
+use marshal::ObjectHash;
 use repository::RemoteCfg;
 use split::Chunk;
 

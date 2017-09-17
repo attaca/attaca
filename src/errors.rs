@@ -1,5 +1,7 @@
 //! `errors` - error-chain generated `Error` types.
 
+#![allow(unreachable_patterns)]
+#![allow(unreachable_code)]
 
 error_chain! {
     types { Error, ErrorKind, ResultExt, Result; }

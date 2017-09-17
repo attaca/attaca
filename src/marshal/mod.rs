@@ -22,6 +22,7 @@ use bincode;
 use digest_writer::{FixedOutput, Writer};
 use futures::prelude::*;
 use futures::future::{self, FutureResult};
+use futures::sync::mpsc::Sender;
 use generic_array::GenericArray;
 use sha3::{Sha3_256, Digest};
 use typenum::U32;
@@ -143,7 +144,8 @@ impl<'fresh, T: MarshalTrace> Marshaller<'fresh, T> {
 }
 
 
-impl<'ctx, 'data: 'ctx, T: MarshalTrace + Send + 'ctx> Marshal<'data, 'ctx> for Marshaller<'data, T> {
+impl<'ctx, 'data: 'ctx, T: MarshalTrace + Send + 'ctx> Marshal<'data, 'ctx>
+    for Marshaller<'data, T> {
     type Registered = FutureResult<ObjectHash, Error>;
 
     fn register<R: Into<Record<'data>>>(&'ctx self, target: R) -> Self::Registered {
@@ -179,6 +181,68 @@ impl<'ctx, 'data: 'ctx, T: MarshalTrace + Send + 'ctx> Marshal<'data, 'ctx> for 
         }
 
         future::ok(object_hash)
+    }
+}
+
+
+pub struct StreamingMarshaller<'fresh, T: MarshalTrace = ()> {
+    inner: Mutex<StreamingMarshallerInner<'fresh, T>>,
+}
+
+
+pub struct StreamingMarshallerInner<'fresh, T: MarshalTrace = ()> {
+    trace: T,
+    sender: Sender<(ObjectHash, Option<Object<'fresh>>)>,
+    objects: HashMap<ObjectHash, Option<Object<'fresh>>>,
+}
+
+
+impl<'ctx, 'data: 'ctx, T: MarshalTrace + Send + 'ctx> Marshal<'data, 'ctx>
+    for StreamingMarshaller<'data, T> {
+    type Registered = Box<Future<Item = ObjectHash, Error = Error> + Send + 'ctx>;
+
+    fn register<R: Into<Record<'data>>>(&'ctx self, target: R) -> Self::Registered {
+        let (object_hash, object) = match target.into().to_deep() {
+            Ok(object) => {
+                let mut dw = BufWriter::new(Writer::new(Sha3_256::new()));
+                bincode::serialize_into(&mut dw, &object, bincode::Infinite).unwrap();
+
+                let digest = match dw.into_inner() {
+                    Ok(writer) => writer.fixed_result(),
+                    Err(_) => unreachable!(),
+                };
+
+                (ObjectHash(digest), Some(object))
+            }
+
+            Err(hash) => (hash, None),
+        };
+
+        let sender = self.inner.lock().unwrap().sender.clone();
+        // TODO: Don't clone `object`! Bad! BAD!
+        let result = sender.send((object_hash, object.clone())).then(move |result| {
+            match result {
+                Ok(_) => {
+                    let inner = &mut *self.inner.lock().unwrap();
+                    let entry = inner.objects.entry(object_hash);
+
+                    match entry {
+                        Entry::Occupied(_) => {
+                            inner.trace.on_register(&object_hash, true);
+                        }
+                        Entry::Vacant(vacant) => {
+                            inner.trace.on_register(&object_hash, false);
+                            vacant.insert(object);
+                        }
+                    }
+
+                    Ok(object_hash)
+                }
+                Err(_) => Err("Error sending marshalled object/hash pair!".into()),
+            }
+        });
+
+        Box::new(result)
     }
 }
 
