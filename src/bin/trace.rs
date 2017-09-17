@@ -93,6 +93,8 @@ impl WriteMarshalledProgressTrace {
             "[{elapsed_precise}] {bar:40.yellow/blue} wrote {pos}/{len} objects to {prefix}, writing {msg}",
         ));
 
+        pb.enable_steady_tick(500);
+
         match destination {
             WriteDestination::Local => pb.set_prefix("local"),
             WriteDestination::Remote(&Some(ref name), _) => {

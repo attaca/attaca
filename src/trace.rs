@@ -14,7 +14,7 @@ use split::Chunk;
 
 
 /// `SplitTrace` tracks the progress of hashsplitting a file.
-pub trait SplitTrace: Sized {
+pub trait SplitTrace: Send + Sized {
     fn on_chunk(&mut self, _offset: u64, _chunk: &Chunk) {}
 }
 
@@ -41,7 +41,7 @@ pub enum WriteDestination<'a> {
 
 /// `WriteMarshalledTrace` tracks the process of writing marshalled objects to a local or remote
 /// object store.
-pub trait WriteMarshalledTrace: Sized {
+pub trait WriteMarshalledTrace: Send + Sized {
     fn on_write(&mut self, _object_hash: &ObjectHash) {}
 }
 

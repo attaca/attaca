@@ -4,7 +4,9 @@
 
 use std::ffi::CString;
 
+use futures::prelude::*;
 use rad::{RadosConnectionBuilder, RadosConnection};
+use rad::async::RadosCaution;
 
 use errors::*;
 use marshal::{ObjectHash, Object};
@@ -58,12 +60,17 @@ impl Remote {
         &mut self,
         object_hash: &ObjectHash,
         object: T,
-    ) -> Result<()> {
+    ) -> Result<Box<Future<Item = (), Error = Error> + Send>> {
         let mut ctx = self.conn.get_pool_context(&*self.pool)?;
         let object_id = CString::new(object_hash.to_string()).unwrap();
 
-        ctx.write_full(&*object_id, &object.as_ref().to_bytes()?)?;
-
-        return Ok(());
+        Ok(Box::new(
+            ctx.write_full_async(
+                RadosCaution::Complete,
+                &*object_id,
+                &object.as_ref().to_bytes()?,
+            )?
+                .from_err(),
+        ))
     }
 }

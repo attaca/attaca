@@ -34,7 +34,7 @@ pub use self::object::{Object, SmallObject, LargeObject, DataObject, SubtreeObje
 pub use self::record::{Record, DataRecord, MetaRecord, SmallRecord};
 
 
-pub trait Marshal<'data, 'ctx>: Send + Sync + 'ctx
+pub trait Marshal<'data, 'ctx>: Sync + 'ctx
 where
     'data: 'ctx,
 {
@@ -143,7 +143,7 @@ impl<'fresh, T: MarshalTrace> Marshaller<'fresh, T> {
 }
 
 
-impl<'ctx, 'data: 'ctx, T: MarshalTrace + 'ctx> Marshal<'data, 'ctx> for Marshaller<'data, T> {
+impl<'ctx, 'data: 'ctx, T: MarshalTrace + Send + 'ctx> Marshal<'data, 'ctx> for Marshaller<'data, T> {
     type Registered = FutureResult<ObjectHash, Error>;
 
     fn register<R: Into<Record<'data>>>(&'ctx self, target: R) -> Self::Registered {

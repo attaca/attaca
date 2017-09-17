@@ -8,8 +8,10 @@
 use std::fs::File;
 use std::path::Path;
 use std::rc::Rc;
+use std::sync::Mutex;
 
 use futures::prelude::*;
+use futures::stream;
 use typed_arena::Arena;
 
 use errors::Result;
@@ -93,11 +95,11 @@ impl<T: Trace> Context<T> {
         &mut self,
         chunked: ChunkedFile<'files>,
     ) -> (ObjectHash, Marshalled<'files>) {
-        let tree = Tree::load(chunked.chunks().iter().map(
-            |chunk| SmallRecord::Deep(SmallObject { chunk: chunk.clone() }),
-        ));
+        let tree = Tree::load(chunked.chunks().iter().map(|chunk| {
+            SmallRecord::Deep(SmallObject { chunk: chunk.clone() })
+        }));
 
-        let mut marshaller = Marshaller::with_trace(self.trace.on_marshal(tree.len()));
+        let marshaller = Marshaller::with_trace(self.trace.on_marshal(tree.len()));
         let object_hash = tree.marshal(&marshaller).wait().unwrap();
         let marshalled = marshaller.finish();
 
@@ -173,24 +175,34 @@ impl<'ctx, T: Trace + 'ctx> RemoteContext<'ctx, T> {
     // TODO: Make asynchronous.
     // TODO: Recover from errors when sending objects.
     pub fn write_marshalled(&mut self, marshalled: &Marshalled) -> Result<()> {
-        let mut wm_trace = self.ctx.trace.on_write_marshalled(
+        let ref wm_trace = Mutex::new(self.ctx.trace.on_write_marshalled(
             marshalled.len(),
-            WriteDestination::Remote(&self.name, &self.cfg),
-        );
+            WriteDestination::Remote(
+                &self.name,
+                &self.cfg,
+            ),
+        ));
 
-        for (object_hash, entry) in marshalled.iter() {
-            wm_trace.on_write(object_hash);
-
-            match *entry {
-                Some(ref object) => self.remote.write_object(object_hash, object)?,
+        let futures = marshalled.iter().map(|(object_hash, entry)| {
+            let result = match *entry {
+                Some(ref object) => self.remote.write_object(&object_hash, object),
                 None => {
-                    // Fetch data from local blob store - it's here, but it's not in memory.
-                    let local_object = self.ctx.local.read_object(object_hash)?;
-                    self.remote.write_object(object_hash, local_object)?;
+                    self.ctx.local.read_object(&object_hash).and_then(
+                        |local_object| {
+                            self.remote.write_object(&object_hash, local_object)
+                        },
+                    )
                 }
-            }
-        }
+            };
 
-        return Ok(());
+            result.into_future().flatten().map(move |_| { wm_trace.lock().unwrap().on_write(&object_hash); })
+        });
+
+        stream::iter_ok(futures)
+            .buffer_unordered(64)
+            .wait()
+            .collect::<::std::result::Result<Vec<_>, _>>()?;
+
+        Ok(())
     }
 }
