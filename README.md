@@ -8,7 +8,7 @@ are an installation of the librados-2 library, specifically the development file
 These can be installed with:
 
 ```
-sudo apt-get librados2-devel # Ubuntu (tested on 14.04 LTS)
+sudo apt-get librados-dev    # Ubuntu (tested on 14.04 LTS)
 dnf install librados2-devel  # Fedora (tested on Fedora 24)
 ```
 
