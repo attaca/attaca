@@ -1,7 +1,6 @@
 //! `errors` - error-chain generated `Error` types.
 
-#![allow(unreachable_patterns)]
-#![allow(unreachable_code)]
+use void::Void;
 
 error_chain! {
     types { Error, ErrorKind, ResultExt, Result; }
@@ -19,7 +18,7 @@ error_chain! {
     }
 
     errors {
-        Impossible(never: !) {
+        Impossible(never: Void) {
             description("This error can never occur.")
             display("This error can literally never happen.")
         }

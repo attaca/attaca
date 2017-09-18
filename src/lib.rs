@@ -18,6 +18,7 @@ extern crate sha3;
 extern crate toml;
 extern crate typed_arena;
 extern crate typenum;
+extern crate void;
 
 pub mod context;
 pub mod errors;
