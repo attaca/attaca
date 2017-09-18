@@ -2,9 +2,18 @@
 
 This tool is under development and not in working condition!
 
-Tested with Rust 1.20.0. Cargo is required for installation.
+A working installation of Rust and Cargo are required to build/install. These
+can be acquired through [rustup](https://www.rustup.rs/). Other dependencies
+are an installation of the librados-2 library, specifically the development files.
+These can be installed with:
 
-Install with:
+```
+sudo apt-get librados2-devel # Ubuntu (tested on 14.04 LTS)
+dnf install librados2-devel  # Fedora (tested on Fedora 24)
+```
+
+Testing requires an installation of Docker. Once Rust, Cargo, and other
+dependencies are installed, `attaca` can be compiled and installed with:
 
 ```
 cargo install
