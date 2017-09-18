@@ -1,5 +1,3 @@
-#![feature(conservative_impl_trait, never_type)]
-
 #[cfg(test)]
 #[macro_use]
 extern crate quickcheck;

@@ -2,6 +2,8 @@
 
 This tool is under development and not in working condition!
 
+Tested with Rust 1.20.0. Cargo is required for installation.
+
 Install with:
 
 ```
