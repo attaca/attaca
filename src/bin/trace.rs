@@ -1,12 +1,12 @@
 use std::io;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::thread::{self, JoinHandle};
 
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 
+use attaca::batch::Batch;
 use attaca::marshal::ObjectHash;
-use attaca::split::Chunk;
-use attaca::trace::{Trace, MarshalTrace, SplitTrace, WriteDestination, WriteMarshalledTrace};
+use attaca::trace::{Trace, BatchTrace, MarshalTrace, SplitTrace, WriteDestination, WriteTrace};
 
 
 pub struct MarshalProgressTrace {
@@ -21,6 +21,8 @@ impl MarshalProgressTrace {
             "[{elapsed_precise}] {bar:40.green/blue} marshaled {pos}/{len} chunks, last marshalled {msg}",
         ));
 
+        pb.enable_steady_tick(500);
+
         Self { total_known: 0, pb }
     }
 }
@@ -34,13 +36,9 @@ impl MarshalTrace for MarshalProgressTrace {
     }
 
 
-    fn on_register(&mut self, object_hash: &ObjectHash, cache_hit: bool) {
+    fn on_register(&mut self, object_hash: &ObjectHash) {
         self.pb.inc(1);
-        self.pb.set_message(&format!(
-            "({}) {}",
-            if cache_hit { "stale" } else { "fresh" },
-            object_hash
-        ));
+        self.pb.set_message(&object_hash.to_string());
     }
 }
 
@@ -69,8 +67,8 @@ impl SplitProgressTrace {
 
 
 impl SplitTrace for SplitProgressTrace {
-    fn on_chunk(&mut self, offset: u64, _chunk: &Chunk) {
-        self.pb.set_position(offset);
+    fn on_chunk(&mut self, _offset: u64, chunk: &[u8]) {
+        self.pb.inc(chunk.len() as u64);
     }
 }
 
@@ -82,12 +80,12 @@ impl Drop for SplitProgressTrace {
 }
 
 
-pub struct WriteMarshalledProgressTrace {
+pub struct WriteProgressTrace {
     pb: ProgressBar,
 }
 
 
-impl WriteMarshalledProgressTrace {
+impl WriteProgressTrace {
     pub fn new(pb: ProgressBar, destination: WriteDestination) -> Self {
         pb.set_style(ProgressStyle::default_bar().template(
             "[{elapsed_precise}] {bar:40.yellow/blue} wrote {pos}/{len} objects to {prefix}, writing {msg}",
@@ -108,7 +106,7 @@ impl WriteMarshalledProgressTrace {
 }
 
 
-impl WriteMarshalledTrace for WriteMarshalledProgressTrace {
+impl WriteTrace for WriteProgressTrace {
     fn on_write(&mut self, object_hash: &ObjectHash) {
         self.pb.inc(1);
         self.pb.set_message(&object_hash.to_string());
@@ -116,9 +114,43 @@ impl WriteMarshalledTrace for WriteMarshalledProgressTrace {
 }
 
 
-impl Drop for WriteMarshalledProgressTrace {
+impl Drop for WriteProgressTrace {
     fn drop(&mut self) {
         self.pb.finish();
+    }
+}
+
+
+pub struct BatchProgressTrace {
+    multi: Weak<MultiProgress>,
+}
+
+
+impl BatchProgressTrace {
+    pub fn new(multi: Weak<MultiProgress>) -> Self {
+        Self { multi }
+    }
+}
+
+
+impl BatchTrace for BatchProgressTrace {
+    type MarshalTrace = MarshalProgressTrace;
+    type SplitTrace = SplitProgressTrace;
+
+    fn on_marshal(&mut self, chunks: usize) -> Self::MarshalTrace {
+        let progress_bar = Weak::upgrade(&self.multi).unwrap().add(ProgressBar::new(
+            chunks as u64,
+        ));
+
+        MarshalProgressTrace::new(progress_bar)
+    }
+
+    fn on_split(&mut self, bytes: u64) -> Self::SplitTrace {
+        let progress_bar = Weak::upgrade(&self.multi).unwrap().add(
+            ProgressBar::new(bytes),
+        );
+
+        SplitProgressTrace::new(progress_bar)
     }
 }
 
@@ -159,29 +191,16 @@ impl Drop for ProgressTrace {
 
 
 impl Trace for ProgressTrace {
-    type MarshalTrace = MarshalProgressTrace;
-    type SplitTrace = SplitProgressTrace;
-    type WriteMarshalledTrace = WriteMarshalledProgressTrace;
+    type BatchTrace = BatchProgressTrace;
+    type WriteTrace = WriteProgressTrace;
 
-    fn on_marshal(&mut self, chunks: usize) -> Self::MarshalTrace {
-        let progress_bar = self.multi.add(ProgressBar::new(chunks as u64));
-
-        MarshalProgressTrace::new(progress_bar)
+    fn on_batch(&mut self) -> Self::BatchTrace {
+        BatchProgressTrace::new(Arc::downgrade(&self.multi))
     }
 
-    fn on_split(&mut self, bytes: u64) -> Self::SplitTrace {
-        let progress_bar = self.multi.add(ProgressBar::new(bytes));
+    fn on_write(&mut self, batch: &Batch<Self::BatchTrace>, destination: WriteDestination) -> Self::WriteTrace {
+        let progress_bar = self.multi.add(ProgressBar::new(batch.len() as u64));
 
-        SplitProgressTrace::new(progress_bar)
-    }
-
-    fn on_write_marshalled(
-        &mut self,
-        objects: usize,
-        destination: WriteDestination,
-    ) -> Self::WriteMarshalledTrace {
-        let progress_bar = self.multi.add(ProgressBar::new(objects as u64));
-
-        WriteMarshalledProgressTrace::new(progress_bar, destination)
+        WriteProgressTrace::new(progress_bar, destination)
     }
 }

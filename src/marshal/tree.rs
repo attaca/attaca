@@ -1,11 +1,13 @@
 use std::borrow::Cow;
 use std::mem;
 
+use futures::future;
 use futures::prelude::*;
 use futures::stream::{self, FuturesOrdered};
 
 use errors::*;
-use marshal::{Marshal, ObjectHash, LargeObject, SmallRecord};
+use marshal::{Hasher, ObjectHash, LargeObject, SmallRecord};
+use trace::MarshalTrace;
 
 
 /// The branching factor of the data object B+ tree structure.
@@ -13,7 +15,6 @@ const BRANCH_FACTOR: usize = 1024;
 
 const ERR_BRANCH_FACTOR_TOO_SMALL: &'static str = "BRANCH_FACTOR too small (less than 2?) freshly split node should always have space for one more child!";
 const ERR_BYTE_OUTSIDE_OF_TREE: &'static str = "Node::search_bytes should only be called when we know the byte is in the tree!";
-
 
 /// A `Leaf` node of a B+ tree contains a list of records.
 #[derive(Clone, Debug)]
@@ -70,30 +71,31 @@ impl<'a> Leaf<'a> {
     }
 
 
-    pub fn marshal<'ctx, M: Marshal<'a, 'ctx>>(
+    fn marshal<T: MarshalTrace>(
         self,
-        ctx: &'ctx M,
-    ) -> Box<Future<Item = ObjectHash, Error = Error> + Send + 'ctx>
-    where
-        'a: 'ctx,
-    {
-        let ctx = ctx.clone();
-        let mut futures = FuturesOrdered::new();
+        mut hasher: Hasher<T>,
+    ) -> Box<Future<Item = ObjectHash, Error = Error> + 'a> {
+        // Being lazy here means that we hash about 3GB a pop, all sequential access.
+        let result = future::lazy(move || {
+            let mut futures = FuturesOrdered::new();
 
-        let size = self.size();
+            let size = self.size();
 
-        for child in self.records {
-            let child_size = child.size();
+            for child in self.records {
+                let child_size = child.size();
+                let mut hasher_captured = hasher.clone();
 
-            futures.push(ctx.register(child).map(move |child_hash| {
-                (child_size, child_hash)
-            }));
-        }
+                let computed = hasher_captured.compute(child);
+                let tupled = computed.map(move |child_hash| (child_size, child_hash));
 
-        let result = futures.collect().and_then(move |children| {
-            ctx.register(LargeObject {
-                size,
-                children: Cow::Owned(children),
+                futures.push(tupled);
+            }
+
+            futures.collect().and_then(move |children| {
+                hasher.compute(LargeObject {
+                    size,
+                    children: Cow::Owned(children),
+                })
             })
         });
 
@@ -170,25 +172,25 @@ impl<'a> Internal<'a> {
     }
 
 
-    fn marshal<'ctx, M: Marshal<'a, 'ctx>>(
+    fn marshal<T: MarshalTrace>(
         self,
-        ctx: &'ctx M,
-    ) -> Box<Future<Item = ObjectHash, Error = Error> + Send + 'ctx>
-    where
-        'a: 'ctx,
-    {
+        mut hasher: Hasher<T>,
+    ) -> Box<Future<Item = ObjectHash, Error = Error> + 'a> {
+        let hasher_captured = hasher.clone();
         let children_future = stream::futures_ordered(self.children.into_iter().map(move |child| {
             let child_size = child.size();
 
-            child.marshal(ctx).map(
-                move |child_hash| (child_size, child_hash),
+            child.marshal(hasher_captured.clone()).map(
+                move |child_hash| {
+                    (child_size, child_hash)
+                },
             )
         })).collect();
 
         let self_size = self.size;
 
         let result = children_future.and_then(move |children| {
-            ctx.register(LargeObject {
+            hasher.compute(LargeObject {
                 size: self_size,
                 children: Cow::Owned(children),
             })
@@ -390,16 +392,13 @@ impl<'a> Node<'a> {
     }
 
 
-    fn marshal<'ctx, M: Marshal<'a, 'ctx>>(
+    fn marshal<T: MarshalTrace>(
         self,
-        ctx: &'ctx M,
-    ) -> Box<Future<Item = ObjectHash, Error = Error> + Send + 'ctx>
-    where
-        'a: 'ctx,
-    {
+        hasher: Hasher<T>,
+    ) -> Box<Future<Item = ObjectHash, Error = Error> + 'a> {
         match self {
-            Node::Internal(internal) => internal.marshal(ctx),
-            Node::Leaf(leaf) => leaf.marshal(ctx),
+            Node::Internal(internal) => internal.marshal(hasher),
+            Node::Leaf(leaf) => leaf.marshal(hasher),
         }
     }
 }
@@ -463,14 +462,11 @@ impl<'a> Tree<'a> {
     // }
 
 
-    pub fn marshal<'ctx, M: Marshal<'a, 'ctx>>(
+    pub fn marshal<T: MarshalTrace>(
         self,
-        ctx: &'ctx M,
-    ) -> Box<Future<Item = ObjectHash, Error = Error> + Send + 'ctx>
-    where
-        'a: 'ctx,
-    {
-        self.root.marshal(ctx)
+        hasher: Hasher<T>,
+    ) -> Box<Future<Item = ObjectHash, Error = Error> + 'a> {
+        self.root.marshal(hasher)
     }
 }
 

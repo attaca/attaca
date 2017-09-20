@@ -2,6 +2,7 @@
 //!
 //! At current the only supported remote is a Ceph/RADOS cluster.
 
+use std::cell::RefCell;
 use std::ffi::CString;
 
 use futures::prelude::*;
@@ -9,7 +10,7 @@ use rad::{RadosConnectionBuilder, RadosConnection};
 use rad::async::RadosCaution;
 
 use errors::*;
-use marshal::{ObjectHash, Object};
+use marshal::Hashed;
 use repository::RemoteCfg;
 
 
@@ -19,7 +20,7 @@ use repository::RemoteCfg;
 //       when the remote already contains them.
 // TODO: Make the act of writing an object asynchronous - return a future instead of a `Result.
 pub struct Remote {
-    conn: RadosConnection,
+    conn: RefCell<RadosConnection>,
     pool: CString,
 }
 
@@ -43,7 +44,7 @@ impl Remote {
                 )?;
             }
 
-            builder.connect()?
+            RefCell::new(builder.connect()?)
         };
 
         let pool = cfg.object_store.pool.clone();
@@ -56,21 +57,28 @@ impl Remote {
     // TODO: Make asynchronous.
     // TODO: Don't send the object if we know the remote already contains it.
     // TODO: Query the remote to see if it contains the object already. If so, don't send.
-    pub fn write_object<'obj, T: AsRef<Object<'obj>>>(
-        &mut self,
-        object_hash: &ObjectHash,
-        object: T,
+    pub fn write_object(
+        &self,
+        hashed: Hashed,
     ) -> Result<Box<Future<Item = (), Error = Error> + Send>> {
-        let mut ctx = self.conn.get_pool_context(&*self.pool)?;
-        let object_id = CString::new(object_hash.to_string()).unwrap();
+        match hashed.as_bytes() {
+            Some(bytes) => {
+                let mut ctx = self.conn.borrow_mut().get_pool_context(&*self.pool)?;
+                let object_id = CString::new(hashed.as_hash().to_string()).unwrap();
 
-        Ok(Box::new(
-            ctx.write_full_async(
-                RadosCaution::Complete,
-                &*object_id,
-                &object.as_ref().to_bytes()?,
-            )?
-                .from_err(),
-        ))
+                Ok(Box::new(
+                    ctx.write_full_async(
+                        RadosCaution::Complete,
+                        &*object_id,
+                        bytes,
+                    )?
+                        .from_err(),
+                ))
+            }
+
+            None => {
+                unimplemented!("Must load local blob!");
+            }
+        }
     }
 }

@@ -2,8 +2,10 @@ use std::env;
 use std::path::Path;
 
 use clap::{App, Arg, SubCommand, ArgMatches};
+use futures::prelude::*;
 
-use attaca::context::{Context, Files};
+use attaca::batch::Files;
+use attaca::context::Context;
 use attaca::marshal::ObjectHash;
 use attaca::repository::Repository;
 use attaca::trace::Trace;
@@ -21,7 +23,9 @@ Written objects can be found in .attaca/blobs. For some object with a given hash
 
 pub fn command() -> App<'static, 'static> {
     SubCommand::with_name("marshal")
-        .about("Chunk and marshal a single file, writing all resulting objects to disk.")
+        .about(
+            "Chunk and marshal a single file, writing all resulting objects to disk.",
+        )
         .after_help(HELP_STR)
         .arg(
             Arg::with_name("INPUT")
@@ -41,12 +45,15 @@ pub fn command() -> App<'static, 'static> {
 fn marshal<T: Trace, P: AsRef<Path>>(trace: T, path: P) -> Result<ObjectHash> {
     let wd = env::current_dir()?;
     let repo = Repository::find(wd)?;
-    let mut context = Context::with_trace(repo, trace);
-    let mut files = Files::new();
+    let context = Context::with_trace(repo, trace);
+    let files = Files::new();
+    let batch = context.batch(&files);
 
-    let chunked = context.chunk_file(&mut files, path)?;
-    let (hash, marshalled) = context.marshal_file(chunked);
-    context.write_marshalled(&marshalled)?;
+    let chunked = batch.chunk_file(path)?;
+    let hash_future = batch.marshal_file(chunked);
+    let batch_future = context.write_batch(batch);
+
+    let ((), hash) = batch_future.join(hash_future).wait()?;
 
     Ok(hash)
 }

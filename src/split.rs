@@ -6,19 +6,12 @@
 //! * Splitting streams of bytes into chunks, for use with lazily-downloaded files.
 
 
-use std::borrow::Cow;
-use std::fs::File;
 use std::hash::{Hash, Hasher};
 use std::mem;
 
-use memmap::{Mmap, Protection};
 use seahash::SeaHasher;
 
-use errors::Result;
 use trace::SplitTrace;
-
-
-pub type Chunk<'a> = Cow<'a, [u8]>;
 
 
 /// A "splitter" over a slice, which functions as an iterator producing ~10 kb [citation needed]
@@ -151,9 +144,9 @@ fn seahash(slice: &[u8]) -> u8 {
 
 
 impl<'a> Iterator for SliceChunker<'a> {
-    type Item = Chunk<'a>;
+    type Item = &'a [u8];
 
-    fn next(&mut self) -> Option<Chunk<'a>> {
+    fn next(&mut self) -> Option<&'a [u8]> {
         if self.rest.len() == 0 {
             return None;
         }
@@ -182,73 +175,43 @@ impl<'a> Iterator for SliceChunker<'a> {
 
                 self.rest = rest;
 
-                return Some(split.into());
+                return Some(split);
             }
         }
 
-        return Some(mem::replace(&mut self.rest, &[]).into());
+        return Some(mem::replace(&mut self.rest, &[]));
     }
 }
 
 
-/// A chunker for a memory-mapped file.
-pub struct FileChunker {
-    mmap: Mmap,
-}
+pub struct Chunked<'batch>(Vec<&'batch [u8]>);
 
 
-impl FileChunker {
-    /// Create a new chunker from a file, which *must* be open with read permissions.
-    pub fn new(file: &File) -> Result<FileChunker> {
-        let mmap = Mmap::open(file, Protection::Read)?;
-
-        Ok(FileChunker { mmap })
-    }
-
-
-    /// The length of the file to be chunked, in bytes.
-    pub fn len(&self) -> usize {
-        self.mmap.len()
-    }
-
-
-    pub fn chunk(&self) -> ChunkedFile {
-        self.chunk_with_trace(&mut ())
-    }
-
-
-    pub fn chunk_with_trace<T: SplitTrace>(&self, trace: &mut T) -> ChunkedFile {
-        let mut offset = 0u64;
-
-        let slice = unsafe { self.mmap.as_slice() };
-        let chunks = SliceChunker::new(slice)
-            .inspect(|chunk| {
-                trace.on_chunk(offset, chunk);
-
-                offset += chunk.len() as u64;
-            })
-            .collect();
-
-        ChunkedFile { slice, chunks }
+impl<'batch> Chunked<'batch> {
+    pub fn to_vec(self) -> Vec<&'batch [u8]> {
+        self.0
     }
 }
 
 
-/// The type of a chunked file.
-pub struct ChunkedFile<'a> {
-    slice: &'a [u8],
-    chunks: Vec<Chunk<'a>>,
+pub fn chunk<'batch>(bytes: &'batch [u8]) -> Chunked<'batch> {
+    chunk_with_trace(bytes, &mut ())
 }
 
 
-impl<'a> ChunkedFile<'a> {
-    /// View the entire chunked file as a contiguous slice.
-    pub fn as_slice(&self) -> &'a [u8] {
-        self.slice
-    }
+pub fn chunk_with_trace<'batch, T: SplitTrace>(
+    bytes: &'batch [u8],
+    trace: &mut T,
+) -> Chunked<'batch> {
+    let mut offset = 0u64;
 
+    let slices = SliceChunker::new(bytes)
+        .inspect(|chunk| {
+            trace.on_chunk(offset, chunk);
 
-    pub fn chunks(&self) -> &[Chunk<'a>] {
-        &self.chunks
-    }
+            offset += chunk.len() as u64;
+        })
+        .collect();
+
+    Chunked(slices)
 }

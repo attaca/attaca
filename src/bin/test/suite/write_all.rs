@@ -3,8 +3,10 @@ use std::ffi::CString;
 use std::path::Path;
 
 use clap::{App, SubCommand, Arg, ArgMatches};
+use futures::prelude::*;
 
-use attaca::context::{Files, Context};
+use attaca::batch::Files;
+use attaca::context::Context;
 use attaca::repository::{Repository, RemoteCfg, RadosCfg, EtcdCfg};
 use attaca::trace::Trace;
 
@@ -48,15 +50,14 @@ fn run<P: AsRef<Path>, T: Trace>(conf_dir: P, matches: &ArgMatches, trace: T) ->
     let repo = Repository::find(wd).chain_err(
         || "unable to find repository",
     )?;
-    let mut context = Context::with_trace(repo, trace);
-    let mut files = Files::new();
+    let context = Context::with_trace(repo, trace);
+    let files = Files::new();
+    let batch = context.batch(&files);
 
-    let chunked = context.chunk_file(&mut files, path).chain_err(
-        || "unable to chunk file",
-    )?;
-    let (_hash, marshalled) = context.marshal_file(chunked);
+    let chunked = batch.chunk_file(path).chain_err(|| "unable to chunk file")?;
+    let hash_future = batch.marshal_file(chunked);
 
-    let mut remote_ctx = context
+    let remote_ctx = context
         .with_remote_from_cfg(
             None,
             RemoteCfg {
@@ -72,9 +73,9 @@ fn run<P: AsRef<Path>, T: Trace>(conf_dir: P, matches: &ArgMatches, trace: T) ->
         )
         .chain_err(|| "unable to open remote context")?;
 
-    remote_ctx.write_marshalled(&marshalled).chain_err(
-        || "unable to write marshalled file",
-    )?;
+    let batch_future = remote_ctx.write_batch(batch);
+
+    batch_future.join(hash_future).wait()?;
 
     Ok(())
 }

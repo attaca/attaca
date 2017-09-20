@@ -8,14 +8,14 @@
 //! passed-in information. This dummy implementation should be perfectly efficient, as any calls to
 //! it can be optimized out.
 
+use batch::Batch;
 use marshal::ObjectHash;
 use repository::RemoteCfg;
-use split::Chunk;
 
 
 /// `SplitTrace` tracks the progress of hashsplitting a file.
-pub trait SplitTrace: Send + Sized {
-    fn on_chunk(&mut self, _offset: u64, _chunk: &Chunk) {}
+pub trait SplitTrace: Sized + 'static {
+    fn on_chunk(&mut self, _offset: u64, _chunk: &[u8]) {}
 }
 
 
@@ -23,9 +23,9 @@ impl SplitTrace for () {}
 
 
 /// `MarshalTrace` tracks the process of marshalling objects.
-pub trait MarshalTrace: Send + Sized {
+pub trait MarshalTrace: Sized + 'static {
     fn on_reserve(&mut self, _n: usize) {}
-    fn on_register(&mut self, _object_hash: &ObjectHash, _cache_hit: bool) {}
+    fn on_register(&mut self, _object_hash: &ObjectHash) {}
 }
 
 
@@ -39,37 +39,28 @@ pub enum WriteDestination<'a> {
 }
 
 
-/// `WriteMarshalledTrace` tracks the process of writing marshalled objects to a local or remote
+/// `WriteTrace` tracks the process of writing marshalled objects to a local or remote
 /// object store.
-pub trait WriteMarshalledTrace: Send + Sized {
+pub trait WriteTrace: Sized + 'static {
     fn on_write(&mut self, _object_hash: &ObjectHash) {}
 }
 
 
-impl WriteMarshalledTrace for () {}
+impl WriteTrace for () {}
 
 
-/// `Trace` is the parent trace object; it is passed to a `Context` once created, and other trace
-/// objects are intended to be created from a `Trace` type used as a factory.
-pub trait Trace {
+pub trait BatchTrace {
     type MarshalTrace: MarshalTrace;
     type SplitTrace: SplitTrace;
-    type WriteMarshalledTrace: WriteMarshalledTrace;
 
     fn on_marshal(&mut self, chunks: usize) -> Self::MarshalTrace;
     fn on_split(&mut self, size: u64) -> Self::SplitTrace;
-    fn on_write_marshalled(
-        &mut self,
-        objects: usize,
-        destination: WriteDestination,
-    ) -> Self::WriteMarshalledTrace;
 }
 
 
-impl Trace for () {
+impl BatchTrace for () {
     type MarshalTrace = ();
     type SplitTrace = ();
-    type WriteMarshalledTrace = ();
 
     fn on_marshal(&mut self, _chunks: usize) -> Self::MarshalTrace {
         ()
@@ -78,12 +69,37 @@ impl Trace for () {
     fn on_split(&mut self, _size: u64) -> Self::SplitTrace {
         ()
     }
+}
 
-    fn on_write_marshalled(
+
+/// `Trace` is the parent trace object; it is passed to a `Context` once created, and other trace
+/// objects are intended to be created from a `Trace` type used as a factory.
+pub trait Trace {
+    type BatchTrace: BatchTrace;
+    type WriteTrace: WriteTrace;
+
+    fn on_batch(&mut self) -> Self::BatchTrace;
+    fn on_write(
         &mut self,
-        _objects: usize,
+        batch: &Batch<Self::BatchTrace>,
+        destination: WriteDestination,
+    ) -> Self::WriteTrace;
+}
+
+
+impl Trace for () {
+    type BatchTrace = ();
+    type WriteTrace = ();
+
+    fn on_batch(&mut self) -> Self::BatchTrace {
+        ()
+    }
+
+    fn on_write(
+        &mut self,
+        _batch: &Batch<Self::BatchTrace>,
         _destination: WriteDestination,
-    ) -> Self::WriteMarshalledTrace {
+    ) -> Self::WriteTrace {
         ()
     }
 }

@@ -1,9 +1,8 @@
-use std::fs::File;
-
 use clap::{App, Arg, SubCommand, ArgMatches};
 use histogram::Histogram;
+use memmap::{Mmap, Protection};
 
-use attaca::split::{Chunk, FileChunker};
+use attaca::split;
 use attaca::trace::SplitTrace;
 
 use errors::Result;
@@ -31,7 +30,7 @@ struct TraceSplit {
 
 
 impl SplitTrace for TraceSplit {
-    fn on_chunk(&mut self, _offset: u64, chunk: &Chunk) {
+    fn on_chunk(&mut self, _offset: u64, chunk: &[u8]) {
         eprintln!(
             "Chunk {:09} :: size {:08}, total MB: {:010}",
             self.processed,
@@ -47,14 +46,9 @@ impl SplitTrace for TraceSplit {
 
 
 pub fn go(matches: &ArgMatches) -> Result<()> {
-    let chunker = {
-        let file = File::open(matches.value_of("INPUT").unwrap())?;
-
-        FileChunker::new(&file)?
-    };
-
+    let mmap = Mmap::open_path(matches.value_of("INPUT").unwrap(), Protection::Read)?;
     let mut trace = TraceSplit::default();
-    chunker.chunk_with_trace(&mut trace);
+    split::chunk_with_trace(unsafe { mmap.as_slice() }, &mut trace);
 
     let stats = trace.stats;
 

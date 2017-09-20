@@ -3,15 +3,17 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs::{self, File};
-use std::io::BufWriter;
 use std::mem;
 use std::rc::Rc;
 
-use bincode;
+use futures::future;
+use futures::prelude::*;
+use futures_bufio::BufWriter;
+use futures_cpupool::CpuPool;
 use memmap::{Mmap, Protection};
 
 use errors::*;
-use marshal::{ObjectHash, Object};
+use marshal::{Hashed, ObjectHash, Object};
 use repository::Repository;
 
 
@@ -37,6 +39,7 @@ impl<'obj> AsRef<Object<'obj>> for LocalObject {
 pub struct Local {
     repository: Rc<Repository>,
 
+    io_pool: CpuPool,
     objects: RefCell<HashMap<ObjectHash, LocalObject>>,
 }
 
@@ -45,33 +48,64 @@ impl Local {
     pub fn new(repository: Rc<Repository>) -> Local {
         Local {
             repository,
+            io_pool: CpuPool::new(1),
             objects: RefCell::new(HashMap::new()),
         }
     }
 
 
     /// Write an object to the file system. This will open and then close a file.
-    pub fn write_object(&self, object_hash: &ObjectHash, object: &Object) -> Result<()> {
-        if self.objects.borrow().contains_key(object_hash) {
-            return Ok(());
+    pub fn write_object(&self, hashed: Hashed) -> Box<Future<Item = (), Error = Error>> {
+        if self.objects.borrow().contains_key(hashed.as_hash()) {
+            return Box::new(future::ok(()));
         }
 
-        let path = self.repository.blob_path.join(object_hash.to_path());
+        match hashed.into_components() {
+            (hash, Some(bytes)) => {
+                let path = self.repository.blob_path.join(hash.to_path());
 
-        if !path.is_file() {
-            let dir_path = {
-                let mut dp = path.clone();
-                dp.pop();
-                dp
-            };
+                if !path.is_file() {
+                    let dir_path = {
+                        let mut dp = path.clone();
+                        dp.pop();
+                        dp
+                    };
 
-            fs::create_dir_all(dir_path)?;
+                    match fs::create_dir_all(dir_path).and_then(|_| File::create(path)) {
+                        Ok(file) => {
+                            let writer =
+                                BufWriter::with_pool_and_capacity(self.io_pool.clone(), 4096, file);
 
-            let mut file = BufWriter::new(File::create(path)?);
-            bincode::serialize_into(&mut file, object, bincode::Infinite)?;
+                            let result = writer
+                                .write_all(bytes)
+                                .then(|res| -> Box<Future<Item = _, Error = _>> {
+                                    match res {
+                                        Ok((writer, _)) => Box::new(writer.flush_buf()),
+                                        Err((writer, _, err)) => Box::new(
+                                            future::err((writer, err)),
+                                        ),
+                                    }
+                                })
+                                .and_then(|writer| writer.flush_inner())
+                                .then(|res| match res {
+                                    Ok(_) => Ok(()),
+                                    Err((_, err)) => Err(err.into()),
+                                });
+
+                            Box::new(result)
+                        }
+
+                        Err(err) => Box::new(future::err(err.into())),
+                    }
+                } else {
+                    Box::new(future::ok(()))
+                }
+            }
+
+            (_, None) => {
+                panic!("Attempted to locally write file which should exist locally!");
+            }
         }
-
-        Ok(())
     }
 
 

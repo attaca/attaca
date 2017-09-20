@@ -3,8 +3,10 @@ extern crate attaca;
 extern crate clap;
 #[macro_use]
 extern crate error_chain;
+extern crate futures;
 extern crate histogram;
 extern crate indicatif;
+extern crate memmap;
 
 
 mod errors;
