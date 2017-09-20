@@ -1,10 +1,9 @@
-use std::borrow::Cow;
 use std::mem;
 
-use futures::future;
 use futures::prelude::*;
-use futures::stream::{self, FuturesOrdered};
+use futures::stream;
 
+use MARSHAL_FUTURE_BUFFER_SIZE;
 use errors::*;
 use marshal::{Hasher, ObjectHash, LargeObject, SmallRecord};
 use trace::MarshalTrace;
@@ -18,14 +17,14 @@ const ERR_BYTE_OUTSIDE_OF_TREE: &'static str = "Node::search_bytes should only b
 
 /// A `Leaf` node of a B+ tree contains a list of records.
 #[derive(Clone, Debug)]
-struct Leaf<'a> {
+struct Leaf {
     size: u64,
-    records: Vec<SmallRecord<'a>>,
+    records: Vec<SmallRecord>,
 }
 
 
-impl<'a> From<Vec<SmallRecord<'a>>> for Leaf<'a> {
-    fn from(records: Vec<SmallRecord<'a>>) -> Self {
+impl From<Vec<SmallRecord>> for Leaf {
+    fn from(records: Vec<SmallRecord>) -> Self {
         let size = records.iter().map(SmallRecord::size).sum();
 
         Leaf { size, records }
@@ -33,7 +32,7 @@ impl<'a> From<Vec<SmallRecord<'a>>> for Leaf<'a> {
 }
 
 
-impl<'a> Leaf<'a> {
+impl Leaf {
     fn new() -> Self {
         Vec::new().into()
     }
@@ -53,7 +52,7 @@ impl<'a> Leaf<'a> {
 
     /// Append a record to a leaf; if the leaf cannot hold the record and must split, this function
     /// will return `Err` with the left-hand side of the split.
-    fn append(&mut self, record: SmallRecord<'a>) -> ::std::result::Result<(), Leaf<'a>> {
+    fn append(&mut self, record: SmallRecord) -> ::std::result::Result<(), Leaf> {
         if self.records.len() < BRANCH_FACTOR {
             self.size += record.size();
             self.records.push(record);
@@ -74,30 +73,24 @@ impl<'a> Leaf<'a> {
     fn marshal<T: MarshalTrace>(
         self,
         mut hasher: Hasher<T>,
-    ) -> Box<Future<Item = ObjectHash, Error = Error> + 'a> {
-        // Being lazy here means that we hash about 3GB a pop, all sequential access.
-        let result = future::lazy(move || {
-            let mut futures = FuturesOrdered::new();
-
+    ) -> Box<Future<Item = ObjectHash, Error = Error> + Send> {
+        let result = {
+            let mut hasher_captured = hasher.clone();
             let size = self.size();
-
-            for child in self.records {
+            let futures = self.records.into_iter().map(move |child| {
                 let child_size = child.size();
-                let mut hasher_captured = hasher.clone();
 
                 let computed = hasher_captured.compute(child);
-                let tupled = computed.map(move |child_hash| (child_size, child_hash));
+                computed.map(move |child_hash| (child_size, child_hash))
+            });
 
-                futures.push(tupled);
-            }
-
-            futures.collect().and_then(move |children| {
-                hasher.compute(LargeObject {
-                    size,
-                    children: Cow::Owned(children),
+            stream::iter_ok(futures)
+                .buffered(MARSHAL_FUTURE_BUFFER_SIZE)
+                .collect()
+                .and_then(move |children| {
+                    hasher.compute(LargeObject { size, children })
                 })
-            })
-        });
+        };
 
         Box::new(result)
     }
@@ -106,15 +99,15 @@ impl<'a> Leaf<'a> {
 
 /// An internal node of a B+ tree.
 #[derive(Clone, Debug)]
-struct Internal<'a> {
+struct Internal {
     size: u64,
     count: usize,
-    children: Vec<Node<'a>>,
+    children: Vec<Node>,
 }
 
 
-impl<'a> From<Vec<Node<'a>>> for Internal<'a> {
-    fn from(children: Vec<Node<'a>>) -> Self {
+impl From<Vec<Node>> for Internal {
+    fn from(children: Vec<Node>) -> Self {
         let size = children.iter().map(Node::size).sum();
         let count = children.iter().map(Node::count).sum();
 
@@ -127,9 +120,9 @@ impl<'a> From<Vec<Node<'a>>> for Internal<'a> {
 }
 
 
-impl<'a> Internal<'a> {
+impl Internal {
     /// Construct an internal node containing a single child.
-    fn singleton(elem: Node<'a>) -> Self {
+    fn singleton(elem: Node) -> Self {
         Internal {
             size: elem.size(),
             count: elem.count(),
@@ -152,7 +145,7 @@ impl<'a> Internal<'a> {
 
     /// Append a node; if we must split to accomodate the new node, the left-hand side of the split
     /// is returned as `Err`.
-    fn append(&mut self, node: Node<'a>) -> ::std::result::Result<(), Self> {
+    fn append(&mut self, node: Node) -> ::std::result::Result<(), Self> {
         if self.children.len() < BRANCH_FACTOR {
             self.size += node.size();
             self.count += node.count();
@@ -175,9 +168,9 @@ impl<'a> Internal<'a> {
     fn marshal<T: MarshalTrace>(
         self,
         mut hasher: Hasher<T>,
-    ) -> Box<Future<Item = ObjectHash, Error = Error> + 'a> {
+    ) -> Box<Future<Item = ObjectHash, Error = Error> + Send> {
         let hasher_captured = hasher.clone();
-        let children_future = stream::futures_ordered(self.children.into_iter().map(move |child| {
+        let children_future = stream::iter_ok(self.children.into_iter().map(move |child| {
             let child_size = child.size();
 
             child.marshal(hasher_captured.clone()).map(
@@ -185,14 +178,15 @@ impl<'a> Internal<'a> {
                     (child_size, child_hash)
                 },
             )
-        })).collect();
+        })).buffered(MARSHAL_FUTURE_BUFFER_SIZE)
+            .collect();
 
         let self_size = self.size;
 
         let result = children_future.and_then(move |children| {
             hasher.compute(LargeObject {
                 size: self_size,
-                children: Cow::Owned(children),
+                children: children,
             })
         });
 
@@ -203,15 +197,15 @@ impl<'a> Internal<'a> {
 
 /// The general `Node` enum representing either an internal or leaf node in the B+ tree.
 #[derive(Clone, Debug)]
-enum Node<'a> {
-    Internal(Internal<'a>),
-    Leaf(Leaf<'a>),
+enum Node {
+    Internal(Internal),
+    Leaf(Leaf),
 }
 
 
-impl<'a> Node<'a> {
+impl Node {
     /// Convenience function to construct an internal node from a vec of child nodes.
-    fn internal(children: Vec<Node<'a>>) -> Self {
+    fn internal(children: Vec<Node>) -> Self {
         Node::Internal(Internal::from(children))
     }
 
@@ -239,11 +233,11 @@ impl<'a> Node<'a> {
     // TODO: This could probably be made *much* simpler and *much* more efficient.
     fn load<I>(iterable: I) -> Self
     where
-        I: IntoIterator<Item = SmallRecord<'a>>,
+        I: IntoIterator<Item = SmallRecord>,
     {
-        fn insert_into_spine<'a, 'b: 'a, I>(mut stack: I, node: Node<'b>) -> Option<Internal<'b>>
+        fn insert_into_spine<'a, I>(mut stack: I, node: Node) -> Option<Internal>
         where
-            I: Iterator<Item = &'a mut Internal<'b>>,
+            I: Iterator<Item = &'a mut Internal>,
         {
             let free = match stack.next() {
                 Some(parent) => {
@@ -306,7 +300,7 @@ impl<'a> Node<'a> {
     // TODO: While we will eventually  need this functionality, at the moment this implementation
     // of `push` does not correctly preserve record counts.
     //
-    // fn push(&mut self, record: SmallRecord<'a>) -> Result<(), Self> {
+    // fn push(&mut self, record: SmallRecord) -> Result<(), Self> {
     //     // Attempt to push this node into our local children (whether we are a leaf or an internal
     //     // node.) If `left` is not empty, we swap ourselves with it and return it as `Err`; it is
     //     // the left side of our new split.
@@ -371,7 +365,7 @@ impl<'a> Node<'a> {
 
 
     /// Search the tree to find the `n`th chunk.
-    fn search(&self, idx: usize) -> &SmallRecord<'a> {
+    fn search(&self, idx: usize) -> &SmallRecord {
         match *self {
             Node::Internal(ref internal) => {
                 let mut loc = 0;
@@ -395,7 +389,7 @@ impl<'a> Node<'a> {
     fn marshal<T: MarshalTrace>(
         self,
         hasher: Hasher<T>,
-    ) -> Box<Future<Item = ObjectHash, Error = Error> + 'a> {
+    ) -> Box<Future<Item = ObjectHash, Error = Error> + Send> {
         match self {
             Node::Internal(internal) => internal.marshal(hasher),
             Node::Leaf(leaf) => leaf.marshal(hasher),
@@ -407,14 +401,14 @@ impl<'a> Node<'a> {
 /// A B+ tree used to marshal small objects into a B+ tree structure with large objects as nodes
 /// and small objects as records.
 #[derive(Clone, Debug)]
-pub struct Tree<'a> {
-    root: Node<'a>,
+pub struct Tree {
+    root: Node,
 }
 
 
-impl<'a> Tree<'a> {
+impl Tree {
     /// Bulk-load the tree.
-    pub fn load<I: IntoIterator<Item = SmallRecord<'a>>>(iterable: I) -> Self {
+    pub fn load<I: IntoIterator<Item = SmallRecord>>(iterable: I) -> Self {
         Tree { root: Node::load(iterable) }
     }
 
@@ -432,7 +426,7 @@ impl<'a> Tree<'a> {
 
 
     /// Search the tree for the `nth` chunk.
-    pub fn search(&self, idx: usize) -> Option<&SmallRecord<'a>> {
+    pub fn search(&self, idx: usize) -> Option<&SmallRecord> {
         if idx < self.root.count() {
             Some(self.root.search(idx))
         } else {
@@ -451,7 +445,7 @@ impl<'a> Tree<'a> {
     }
 
 
-    // pub fn push(&mut self, record: SmallRecord<'a>) {
+    // pub fn push(&mut self, record: SmallRecord) {
     //     if let Err(right) = self.root.push(record) {
     //         // Replace `left` with a dummy value.
     //         let left = mem::replace(&mut self.root, Node::internal(Vec::new()));
@@ -465,7 +459,7 @@ impl<'a> Tree<'a> {
     pub fn marshal<T: MarshalTrace>(
         self,
         hasher: Hasher<T>,
-    ) -> Box<Future<Item = ObjectHash, Error = Error> + 'a> {
+    ) -> Box<Future<Item = ObjectHash, Error = Error> + Send> {
         self.root.marshal(hasher)
     }
 }

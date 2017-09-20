@@ -14,7 +14,7 @@ use repository::RemoteCfg;
 
 
 /// `SplitTrace` tracks the progress of hashsplitting a file.
-pub trait SplitTrace: Sized + 'static {
+pub trait SplitTrace: Send + Sized + 'static {
     fn on_chunk(&mut self, _offset: u64, _chunk: &[u8]) {}
 }
 
@@ -23,9 +23,10 @@ impl SplitTrace for () {}
 
 
 /// `MarshalTrace` tracks the process of marshalling objects.
-pub trait MarshalTrace: Sized + 'static {
+pub trait MarshalTrace: Send + Sized + 'static {
     fn on_reserve(&mut self, _n: usize) {}
-    fn on_register(&mut self, _object_hash: &ObjectHash) {}
+    fn on_hashed(&mut self, _object_hash: &ObjectHash) {}
+    fn on_sent(&mut self, _object_hash: &ObjectHash) {}
 }
 
 
@@ -41,7 +42,7 @@ pub enum WriteDestination<'a> {
 
 /// `WriteTrace` tracks the process of writing marshalled objects to a local or remote
 /// object store.
-pub trait WriteTrace: Sized + 'static {
+pub trait WriteTrace: Send + Sized + 'static {
     fn on_write(&mut self, _object_hash: &ObjectHash) {}
 }
 
@@ -49,7 +50,7 @@ pub trait WriteTrace: Sized + 'static {
 impl WriteTrace for () {}
 
 
-pub trait BatchTrace {
+pub trait BatchTrace: Send + Sized + 'static {
     type MarshalTrace: MarshalTrace;
     type SplitTrace: SplitTrace;
 
@@ -74,7 +75,7 @@ impl BatchTrace for () {
 
 /// `Trace` is the parent trace object; it is passed to a `Context` once created, and other trace
 /// objects are intended to be created from a `Trace` type used as a factory.
-pub trait Trace {
+pub trait Trace: Send + Sized + 'static {
     type BatchTrace: BatchTrace;
     type WriteTrace: WriteTrace;
 

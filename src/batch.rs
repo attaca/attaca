@@ -1,60 +1,45 @@
-use std::borrow::Cow;
-use std::cell::{Cell, RefCell};
 use std::fs::File;
 use std::path::Path;
 
-use colosseum::unsync::Arena;
 use futures::prelude::*;
-use futures::unsync::mpsc::{self, Sender, Receiver};
+use futures::sync::mpsc::{self, Sender, Receiver};
+use futures_cpupool::CpuPool;
 use memmap::{Mmap, Protection};
 
+use ::BATCH_FUTURE_BUFFER_SIZE;
+use arc_slice::{ArcSlice, Source};
 use errors::*;
-use marshal::{Hashed, Hasher, ObjectHash, SmallObject, SmallRecord, Tree};
+use marshal::{Hashed, Hasher, ObjectHash, SmallRecord, Tree};
 use split::{self, Chunked};
 use trace::BatchTrace;
 
 
-const MARSHAL_BUFFER_SIZE: usize = 64;
-
-
-pub struct Files {
-    arena: Arena<Mmap>,
-}
-
-
-impl Files {
-    pub fn new() -> Self {
-        Self { arena: Arena::new() }
-    }
-}
-
-
 /// A batch of files being marshalled.
-pub struct Batch<'data, T: BatchTrace = ()> {
-    trace: RefCell<T>,
-
-    files: &'data Files,
+pub struct Batch<T: BatchTrace = ()> {
+    trace: T,
 
     marshal_tx: Sender<Hashed>,
     marshal_rx: Receiver<Hashed>,
 
-    size_chunks: Cell<usize>,
+    marshal_pool: CpuPool,
+
+    size_chunks: usize,
 }
 
 
-impl<'data, T: BatchTrace> Batch<'data, T> {
-    pub fn with_trace(files: &'data Files, trace: T) -> Self {
-        let (marshal_tx, marshal_rx) = mpsc::channel(MARSHAL_BUFFER_SIZE);
+impl<T: BatchTrace> Batch<T> {
+    pub fn with_trace(marshal_pool: CpuPool, trace: T) -> Self {
+        let (marshal_tx, marshal_rx) = mpsc::channel(BATCH_FUTURE_BUFFER_SIZE);
 
         Batch {
-            trace: RefCell::new(trace),
-
-            files,
+            trace,
 
             marshal_tx,
             marshal_rx,
 
-            size_chunks: Cell::new(0),
+            marshal_pool,
+
+            size_chunks: 0,
         }
     }
 
@@ -62,25 +47,24 @@ impl<'data, T: BatchTrace> Batch<'data, T> {
     /// Read a file as a byte slice. This will memory-map the underlying file.
     ///
     /// * `file` - the file to read. *Must be opened with read permissions!*
-    fn read(&self, file: &File) -> Result<&'data [u8]> {
-        let mmap = self.files.arena.alloc(Mmap::open(file, Protection::Read)?);
-        Ok(unsafe { mmap.as_slice() })
+    fn read(&mut self, file: &File) -> Result<ArcSlice> {
+        Ok(
+            Source::Mapped(Mmap::open(file, Protection::Read)?).into_bytes(),
+        )
     }
 
 
     /// Read a file as a byte slice. This will memory-map the underlying file.
-    fn read_path<P: AsRef<Path>>(&self, path: P) -> Result<&'data [u8]> {
+    fn read_path<P: AsRef<Path>>(&mut self, path: P) -> Result<ArcSlice> {
         self.read(&File::open(path)?)
     }
 
 
     /// Chunk the file at the given path.
-    pub fn chunk_file<P: AsRef<Path>>(&self, path: P) -> Result<Chunked<'data>> {
+    pub fn chunk_file<P: AsRef<Path>>(&mut self, path: P) -> Result<Chunked> {
         let slice = self.read_path(path)?;
-        let chunked = split::chunk_with_trace(
-            slice,
-            &mut self.trace.borrow_mut().on_split(slice.len() as u64),
-        );
+        let mut trace = self.trace.on_split(slice.len() as u64);
+        let chunked = split::chunk_with_trace(slice, &mut trace);
 
         Ok(chunked)
     }
@@ -88,31 +72,31 @@ impl<'data, T: BatchTrace> Batch<'data, T> {
 
     /// Marshal a chunked file into a tree of objects, returning the marshalled objects along with
     /// the hash of the root object.
-    pub fn marshal_file(&self, chunked: Chunked<'data>) -> Box<Future<Item = ObjectHash, Error = Error> + 'data> {
-        let tree = Tree::load(chunked.to_vec().into_iter().map(|chunk| {
-            SmallRecord::Deep(SmallObject { chunk: Cow::Borrowed(chunk) })
-        }));
-
+    pub fn marshal_file(
+        &mut self,
+        chunked: Chunked,
+    ) -> Box<Future<Item = ObjectHash, Error = Error> + Send> {
+        let tree = Tree::load(chunked.to_vec().into_iter().map(SmallRecord::from));
         let tree_len = tree.len();
 
-        self.size_chunks.set(self.size_chunks.get() + tree_len);
+        self.size_chunks += tree_len;
 
-        let result = tree.marshal(Hasher::with_trace(
+        let marshal = tree.marshal(Hasher::with_trace(
             self.marshal_tx.clone(),
-            self.trace.borrow_mut().on_marshal(tree_len),
+            self.trace.on_marshal(tree_len),
         ));
 
-        Box::new(result)
+        Box::new(self.marshal_pool.spawn(marshal))
     }
 
 
     pub fn len(&self) -> usize {
-        self.size_chunks.get()
+        self.size_chunks
     }
 
 
     /// Convert this `Batch` into a stream of `Hashed` objects.
-    pub fn into_stream(self) -> Box<Stream<Item = Hashed, Error = Error> + 'data> {
+    pub fn into_stream(self) -> Box<Stream<Item = Hashed, Error = Error> + Send> {
         Box::new(self.marshal_rx.map_err(|()| "Upstream error!".into()))
     }
 }

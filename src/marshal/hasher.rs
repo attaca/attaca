@@ -1,14 +1,13 @@
-use std::cell::RefCell;
 use std::fmt;
 use std::io::{self, BufWriter, Write};
 use std::path::PathBuf;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 use bincode;
 use digest_writer::{FixedOutput, Writer};
 use futures::future;
 use futures::prelude::*;
-use futures::unsync::mpsc::Sender;
+use futures::sync::mpsc::Sender;
 use generic_array::GenericArray;
 use sha3::{Sha3_256, Digest};
 use typenum::U32;
@@ -127,7 +126,7 @@ impl Hashed {
 #[derive(Debug)]
 pub struct Hasher<T: MarshalTrace> {
     output: Sender<Hashed>,
-    trace: Rc<RefCell<T>>,
+    trace: Arc<Mutex<T>>,
 }
 
 
@@ -145,25 +144,28 @@ impl<T: MarshalTrace> Hasher<T> {
     pub fn with_trace(output: Sender<Hashed>, trace: T) -> Self {
         Self {
             output,
-            trace: Rc::new(RefCell::new(trace)),
+            trace: Arc::new(Mutex::new(trace)),
         }
     }
 
 
-    pub fn compute<'data, R: Into<Record<'data>>>(
+    pub fn compute<R: Into<Record>>(
         &mut self,
         object: R,
-    ) -> Box<Future<Item = ObjectHash, Error = Error> + 'data> {
+    ) -> Box<Future<Item = ObjectHash, Error = Error> + Send> {
+        let trace = self.trace.clone();
+
         let (hash, bytes) = match object.into().to_deep() {
             Ok(object) => {
-                let size = bincode::serialized_size(&object);
+                let raw_object = object.as_raw();
+                let size = bincode::serialized_size(&raw_object);
 
                 let mut buf = Vec::with_capacity(size as usize);
                 let mut digest_writer = Writer::new(Sha3_256::new());
 
                 bincode::serialize_into(
                     &mut Fork::new(&mut buf, BufWriter::new(&mut digest_writer)),
-                    &object,
+                    &raw_object,
                     bincode::Infinite,
                 ).expect("No actual I/O, impossible to have an I/O error.");
 
@@ -175,11 +177,14 @@ impl<T: MarshalTrace> Hasher<T> {
             Err(hash) => (hash, None),
         };
 
-        self.trace.borrow_mut().on_register(&hash);
+        trace.lock().unwrap().on_hashed(&hash);
 
         let result = self.output.clone().send(Hashed { hash, bytes }).then(
             move |result| match result {
-                Ok(_) => future::ok(hash),
+                Ok(_) => {
+                    trace.lock().unwrap().on_sent(&hash);
+                    future::ok(hash)
+                }
                 Err(_) => future::err("Channel closed!".into()),
             },
         );
@@ -188,10 +193,10 @@ impl<T: MarshalTrace> Hasher<T> {
     }
 
 
-    //     pub fn compute<'data, R: Into<Record<'data>>>(
+    //     pub fn compute<R: Into<Record>>(
     //         &mut self,
     //         object: R,
-    //     ) -> Box<Future<Item = ObjectHash, Error = Error> + 'data> {
+    //     ) -> Box<Future<Item = ObjectHash, Error = Error> + Send> {
     //         let trace = self.trace.clone();
     //         let output = self.output.clone();
     //         let record = object.into();
@@ -199,14 +204,15 @@ impl<T: MarshalTrace> Hasher<T> {
     //         let lazy_hash = future::lazy(move || {
     //             let (hash, bytes) = match record.to_deep() {
     //                 Ok(object) => {
-    //                     let size = bincode::serialized_size(&object);
+    //                     let raw_object = object.as_raw();
+    //                     let size = bincode::serialized_size(&raw_object);
     //
     //                     let mut buf = Vec::with_capacity(size as usize);
     //                     let mut digest_writer = Writer::new(Sha3_256::new());
     //
     //                     bincode::serialize_into(
     //                         &mut Fork::new(&mut buf, BufWriter::new(&mut digest_writer)),
-    //                         &object,
+    //                         &raw_object,
     //                         bincode::Infinite,
     //                     ).expect("No actual I/O, impossible to have an I/O error.");
     //
@@ -225,7 +231,7 @@ impl<T: MarshalTrace> Hasher<T> {
     //             output.send(Hashed { hash, bytes }).then(move |result| {
     //                 match result {
     //                     Ok(_) => {
-    //                         trace.borrow_mut().on_register(&hash);
+    //                         trace.lock().unwrap().on_register(&hash);
     //                         future::ok(hash)
     //                     }
     //                     Err(_) => future::err("Channel closed!".into()),

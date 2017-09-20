@@ -2,16 +2,18 @@
 //!
 //! At current the only supported remote is a Ceph/RADOS cluster.
 
-use std::cell::RefCell;
 use std::ffi::CString;
+use std::sync::{Arc, Mutex};
 
 use futures::prelude::*;
 use rad::{RadosConnectionBuilder, RadosConnection};
 use rad::async::RadosCaution;
 
+use context::Context;
 use errors::*;
 use marshal::Hashed;
 use repository::RemoteCfg;
+use trace::Trace;
 
 
 /// The type of a remote repository.
@@ -19,15 +21,22 @@ use repository::RemoteCfg;
 // TODO: Locally store what objects we know the remote to contain so that we can avoid writing them
 //       when the remote already contains them.
 // TODO: Make the act of writing an object asynchronous - return a future instead of a `Result.
-pub struct Remote {
-    conn: RefCell<RadosConnection>,
+pub struct Remote<T: Trace> {
+    ctx: Context<T>,
+
+    inner: Arc<RemoteInner>,
+}
+
+
+struct RemoteInner {
+    conn: Mutex<RadosConnection>,
     pool: CString,
 }
 
 
-impl Remote {
+impl<T: Trace> Remote<T> {
     /// Connect to a remote repository, given appropriate configuration data.
-    pub fn connect(cfg: &RemoteCfg) -> Result<Self> {
+    pub fn connect(ctx: Context<T>, cfg: &RemoteCfg) -> Result<Self> {
         let conf_dir = CString::new(cfg.object_store.conf.to_str().unwrap()).unwrap();
         let keyring_dir = cfg.object_store.keyring.as_ref().map(|keyring| {
             CString::new(keyring.to_str().unwrap()).unwrap()
@@ -44,12 +53,15 @@ impl Remote {
                 )?;
             }
 
-            RefCell::new(builder.connect()?)
+            Mutex::new(builder.connect()?)
         };
 
         let pool = cfg.object_store.pool.clone();
 
-        Ok(Remote { conn, pool })
+        Ok(Remote {
+            ctx,
+            inner: Arc::new(RemoteInner { conn, pool }),
+        })
     }
 
 
@@ -63,7 +75,7 @@ impl Remote {
     ) -> Result<Box<Future<Item = (), Error = Error> + Send>> {
         match hashed.as_bytes() {
             Some(bytes) => {
-                let mut ctx = self.conn.borrow_mut().get_pool_context(&*self.pool)?;
+                let mut ctx = self.inner.conn.lock().unwrap().get_pool_context(&*self.inner.pool)?;
                 let object_id = CString::new(hashed.as_hash().to_string()).unwrap();
 
                 Ok(Box::new(
@@ -79,6 +91,16 @@ impl Remote {
             None => {
                 unimplemented!("Must load local blob!");
             }
+        }
+    }
+}
+
+
+impl<T: Trace> Clone for Remote<T> {
+    fn clone(&self) -> Self {
+        Self {
+            ctx: self.ctx.clone(),
+            inner: self.inner.clone(),
         }
     }
 }

@@ -11,18 +11,19 @@ use std::mem;
 
 use seahash::SeaHasher;
 
+use arc_slice::{ArcSlice, Source};
 use trace::SplitTrace;
 
 
 /// A "splitter" over a slice, which functions as an iterator producing ~10 kb [citation needed]
 /// chunks.
-pub struct SliceSplitter<'a> {
-    slice: &'a [u8],
+pub struct SliceSplitter {
+    slice: ArcSlice,
 }
 
 
-impl<'a> SliceSplitter<'a> {
-    pub fn new(slice: &'a [u8]) -> SliceSplitter<'a> {
+impl SliceSplitter {
+    pub fn new(slice: ArcSlice) -> SliceSplitter {
         SliceSplitter { slice }
     }
 }
@@ -49,10 +50,10 @@ const SPLIT_CONSTANT: u16 = 1;
 const SPLIT_WINDOW: usize = 1 << 13;
 
 
-impl<'a> Iterator for SliceSplitter<'a> {
-    type Item = &'a [u8];
+impl Iterator for SliceSplitter {
+    type Item = ArcSlice;
 
-    fn next(&mut self) -> Option<&'a [u8]> {
+    fn next(&mut self) -> Option<ArcSlice> {
         if self.slice.len() == 0 {
             return None;
         }
@@ -68,7 +69,8 @@ impl<'a> Iterator for SliceSplitter<'a> {
             acc &= SPLIT_MODULUS_MASK;
 
             if acc == SPLIT_CONSTANT && i >= SPLIT_MINIMUM {
-                let (split, rest) = self.slice.split_at(i);
+                let split = self.slice.clone().map(|slice| slice.split_at(i).0);
+                let rest = self.slice.clone().map(|slice| slice.split_at(i).1);
 
                 self.slice = rest;
 
@@ -76,7 +78,10 @@ impl<'a> Iterator for SliceSplitter<'a> {
             }
         }
 
-        return Some(mem::replace(&mut self.slice, &[]));
+        return Some(mem::replace(
+            &mut self.slice,
+            Source::Empty.into_bytes(),
+        ));
     }
 }
 
@@ -114,16 +119,16 @@ impl Ring {
 
 
 /// "Chunk" a slice, producing ~3 MB chunks.
-pub struct SliceChunker<'a> {
-    rest: &'a [u8],
-    splitter: SliceSplitter<'a>,
+pub struct SliceChunker {
+    rest: ArcSlice,
+    splitter: SliceSplitter,
 }
 
 
-impl<'a> SliceChunker<'a> {
-    pub fn new(slice: &'a [u8]) -> SliceChunker<'a> {
+impl SliceChunker {
+    pub fn new(slice: ArcSlice) -> SliceChunker {
         SliceChunker {
-            rest: slice,
+            rest: slice.clone(),
             splitter: SliceSplitter::new(slice),
         }
     }
@@ -143,10 +148,10 @@ fn seahash(slice: &[u8]) -> u8 {
 }
 
 
-impl<'a> Iterator for SliceChunker<'a> {
-    type Item = &'a [u8];
+impl Iterator for SliceChunker {
+    type Item = ArcSlice;
 
-    fn next(&mut self) -> Option<&'a [u8]> {
+    fn next(&mut self) -> Option<ArcSlice> {
         if self.rest.len() == 0 {
             return None;
         }
@@ -157,7 +162,7 @@ impl<'a> Iterator for SliceChunker<'a> {
         let mut acc = 0;
 
         for (i, slice) in self.splitter.by_ref().enumerate() {
-            let sig = seahash(slice);
+            let sig = seahash(&slice);
 
             if i >= CHUNK_WINDOW {
                 acc -= ring.push_pop(sig) as u16;
@@ -171,7 +176,8 @@ impl<'a> Iterator for SliceChunker<'a> {
             offset += slice.len();
 
             if acc == CHUNK_CONSTANT && i >= CHUNK_MINIMUM {
-                let (split, rest) = self.rest.split_at(offset);
+                let split = self.rest.clone().map(|slice| slice.split_at(offset).0);
+                let rest = self.rest.clone().map(|slice| slice.split_at(offset).1);
 
                 self.rest = rest;
 
@@ -179,30 +185,27 @@ impl<'a> Iterator for SliceChunker<'a> {
             }
         }
 
-        return Some(mem::replace(&mut self.rest, &[]));
+        return Some(mem::replace(&mut self.rest, Source::Empty.into_bytes()));
     }
 }
 
 
-pub struct Chunked<'batch>(Vec<&'batch [u8]>);
+pub struct Chunked(Vec<ArcSlice>);
 
 
-impl<'batch> Chunked<'batch> {
-    pub fn to_vec(self) -> Vec<&'batch [u8]> {
+impl Chunked {
+    pub fn to_vec(self) -> Vec<ArcSlice> {
         self.0
     }
 }
 
 
-pub fn chunk<'batch>(bytes: &'batch [u8]) -> Chunked<'batch> {
+pub fn chunk(bytes: ArcSlice) -> Chunked {
     chunk_with_trace(bytes, &mut ())
 }
 
 
-pub fn chunk_with_trace<'batch, T: SplitTrace>(
-    bytes: &'batch [u8],
-    trace: &mut T,
-) -> Chunked<'batch> {
+pub fn chunk_with_trace<'batch, T: SplitTrace>(bytes: ArcSlice, trace: &mut T) -> Chunked {
     let mut offset = 0u64;
 
     let slices = SliceChunker::new(bytes)

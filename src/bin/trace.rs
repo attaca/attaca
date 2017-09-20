@@ -11,19 +11,29 @@ use attaca::trace::{Trace, BatchTrace, MarshalTrace, SplitTrace, WriteDestinatio
 
 pub struct MarshalProgressTrace {
     total_known: usize,
-    pb: ProgressBar,
+    hashed: ProgressBar,
+    sent: ProgressBar,
 }
 
 
 impl MarshalProgressTrace {
-    pub fn new(pb: ProgressBar) -> Self {
-        pb.set_style(ProgressStyle::default_bar().template(
-            "[{elapsed_precise}] {bar:40.green/blue} marshaled {pos}/{len} chunks, last marshalled {msg}",
+    pub fn new(hashed: ProgressBar, sent: ProgressBar) -> Self {
+        hashed.set_style(ProgressStyle::default_bar().template(
+            "[{elapsed_precise}] {bar:40.green/blue} hashed {pos}/{len} chunks, last hashed {msg}",
         ));
 
-        pb.enable_steady_tick(500);
+        hashed.enable_steady_tick(500);
 
-        Self { total_known: 0, pb }
+        sent.set_style(ProgressStyle::default_bar().template(
+                "[{elapsed_precise}] {bar:40.yellow/blue} marshalled {pos}/{len} chunks, last marshalled {msg}",));
+
+        sent.enable_steady_tick(500);
+
+        Self {
+            total_known: 0,
+            hashed,
+            sent,
+        }
     }
 }
 
@@ -32,20 +42,28 @@ impl MarshalTrace for MarshalProgressTrace {
     fn on_reserve(&mut self, n: usize) {
         self.total_known += n;
 
-        self.pb.set_length(self.total_known as u64);
+        self.hashed.set_length(self.total_known as u64);
+        self.sent.set_length(self.total_known as u64);
     }
 
 
-    fn on_register(&mut self, object_hash: &ObjectHash) {
-        self.pb.inc(1);
-        self.pb.set_message(&object_hash.to_string());
+    fn on_hashed(&mut self, object_hash: &ObjectHash) {
+        self.hashed.inc(1);
+        self.hashed.set_message(&object_hash.to_string());
+    }
+
+
+    fn on_sent(&mut self, object_hash: &ObjectHash) {
+        self.sent.inc(1);
+        self.sent.set_message(&object_hash.to_string());
     }
 }
 
 
 impl Drop for MarshalProgressTrace {
     fn drop(&mut self) {
-        self.pb.finish();
+        self.hashed.finish();
+        self.sent.finish();
     }
 }
 
@@ -88,7 +106,7 @@ pub struct WriteProgressTrace {
 impl WriteProgressTrace {
     pub fn new(pb: ProgressBar, destination: WriteDestination) -> Self {
         pb.set_style(ProgressStyle::default_bar().template(
-            "[{elapsed_precise}] {bar:40.yellow/blue} wrote {pos}/{len} objects to {prefix}, writing {msg}",
+            "[{elapsed_precise}] {bar:40.red/blue} wrote {pos}/{len} objects to {prefix}, writing {msg}",
         ));
 
         pb.enable_steady_tick(500);
@@ -138,11 +156,11 @@ impl BatchTrace for BatchProgressTrace {
     type SplitTrace = SplitProgressTrace;
 
     fn on_marshal(&mut self, chunks: usize) -> Self::MarshalTrace {
-        let progress_bar = Weak::upgrade(&self.multi).unwrap().add(ProgressBar::new(
-            chunks as u64,
-        ));
+        let multi = Weak::upgrade(&self.multi).unwrap();
+        let hashed = multi.add(ProgressBar::new(chunks as u64));
+        let sent = multi.add(ProgressBar::new(chunks as u64));
 
-        MarshalProgressTrace::new(progress_bar)
+        MarshalProgressTrace::new(hashed, sent)
     }
 
     fn on_split(&mut self, bytes: u64) -> Self::SplitTrace {
@@ -198,7 +216,11 @@ impl Trace for ProgressTrace {
         BatchProgressTrace::new(Arc::downgrade(&self.multi))
     }
 
-    fn on_write(&mut self, batch: &Batch<Self::BatchTrace>, destination: WriteDestination) -> Self::WriteTrace {
+    fn on_write(
+        &mut self,
+        batch: &Batch<Self::BatchTrace>,
+        destination: WriteDestination,
+    ) -> Self::WriteTrace {
         let progress_bar = self.multi.add(ProgressBar::new(batch.len() as u64));
 
         WriteProgressTrace::new(progress_bar, destination)

@@ -2,6 +2,7 @@ use clap::{App, Arg, SubCommand, ArgMatches};
 use histogram::Histogram;
 use memmap::{Mmap, Protection};
 
+use attaca::arc_slice::Source;
 use attaca::split;
 use attaca::trace::SplitTrace;
 
@@ -48,7 +49,7 @@ impl SplitTrace for TraceSplit {
 pub fn go(matches: &ArgMatches) -> Result<()> {
     let mmap = Mmap::open_path(matches.value_of("INPUT").unwrap(), Protection::Read)?;
     let mut trace = TraceSplit::default();
-    split::chunk_with_trace(unsafe { mmap.as_slice() }, &mut trace);
+    split::chunk_with_trace(Source::Mapped(mmap).into_bytes(), &mut trace);
 
     let stats = trace.stats;
 

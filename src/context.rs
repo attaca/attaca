@@ -5,12 +5,13 @@
 //!
 //! * Creating/using `Context` and `RemoteContext`s.
 
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 use futures::prelude::*;
+use futures_cpupool::CpuPool;
 
-use batch::{Files, Batch};
+use ::WRITE_FUTURE_BUFFER_SIZE;
+use batch::Batch;
 use errors::*;
 use local::Local;
 use remote::Remote;
@@ -23,11 +24,19 @@ use trace::{Trace, WriteDestination, WriteTrace};
 ///
 /// `Context` may optionally be supplied with a type `T` implementing `Trace`. This "trace object"
 /// is useful for doing things like tracking the progress of long-running operations.
+#[derive(Debug)]
 pub struct Context<T: Trace = ()> {
-    trace: RefCell<T>,
+    marshal_pool: CpuPool,
+    write_pool: CpuPool,
 
-    repository: Rc<Repository>,
-    local: Local,
+    inner: Arc<ContextInner<T>>,
+}
+
+
+#[derive(Debug)]
+struct ContextInner<T: Trace = ()> {
+    trace: Mutex<T>,
+    repository: Repository,
 }
 
 
@@ -42,52 +51,52 @@ impl Context {
 impl<T: Trace> Context<T> {
     /// Create a context from a loaded repository, with a supplied trace object.
     pub fn with_trace(repository: Repository, trace: T) -> Self {
-        let trace = RefCell::new(trace);
-        let repository = Rc::new(repository);
-        let local = Local::new(repository.clone());
-
         Context {
-            trace,
-            repository,
-            local,
+            marshal_pool: CpuPool::new(1),
+            write_pool: CpuPool::new(1),
+
+            inner: Arc::new(ContextInner {
+                trace: Mutex::new(trace),
+                repository,
+            }),
         }
     }
 
 
-    pub fn batch<'data>(&self, files: &'data Files) -> Batch<'data, T::BatchTrace> {
-        Batch::with_trace(files, self.trace.borrow_mut().on_batch())
+    pub fn as_repository(&self) -> &Repository {
+        &self.inner.repository
     }
 
 
-    /// Write a fully marshalled batch to the local repository.
-    pub fn write_batch<'future, 'ctx, 'data>(
-        &'ctx self,
-        batch: Batch<'data, T::BatchTrace>,
-    ) -> Box<Future<Item = (), Error = Error> + 'future>
-    where
-        'ctx: 'future,
-        'data: 'future,
-    {
-        let trace = Rc::new(RefCell::new(self.trace.borrow_mut().on_write(
-            &batch,
-            WriteDestination::Local,
-        )));
+    pub fn marshal_pool(&self) -> &CpuPool {
+        &self.marshal_pool
+    }
 
-        let result = batch.into_stream().for_each(move |hashed| {
-            let hash = *hashed.as_hash();
-            let trace = trace.clone();
 
-            let written = self.local.write_object(hashed);
-            written.map(move |_| { trace.borrow_mut().on_write(&hash); })
-        });
+    pub fn write_pool(&self) -> &CpuPool {
+        &self.write_pool
+    }
 
-        Box::new(result)
+
+    pub fn with_batch(&self) -> Batch<T::BatchTrace> {
+        Batch::with_trace(
+            self.marshal_pool.clone(),
+            self.inner.trace.lock().unwrap().on_batch(),
+        )
+    }
+
+
+    pub fn with_local(&self) -> LocalContext<T> {
+        LocalContext {
+            ctx: self.clone(),
+            local: Local::new(self.clone()),
+        }
     }
 
 
     /// Load a remote configuration, producing a `RemoteContext`.
     pub fn with_remote<U: AsRef<str>>(&self, remote: U) -> Result<RemoteContext<T>> {
-        let remote_cfg = match self.repository.config.remotes.get(remote.as_ref()) {
+        let remote_cfg = match self.inner.repository.config.remotes.get(remote.as_ref()) {
             Some(remote_cfg) => remote_cfg.to_owned(),
             None => bail!("Unknown remote!"),
         };
@@ -101,10 +110,10 @@ impl<T: Trace> Context<T> {
         name: Option<String>,
         cfg: RemoteCfg,
     ) -> Result<RemoteContext<T>> {
-        let remote = Remote::connect(&cfg)?;
+        let remote = Remote::connect(self.clone(), &cfg)?;
 
         Ok(RemoteContext {
-            ctx: self,
+            ctx: self.clone(),
 
             name,
             cfg,
@@ -115,45 +124,89 @@ impl<T: Trace> Context<T> {
 }
 
 
+pub struct LocalContext<T: Trace = ()> {
+    ctx: Context<T>,
+    local: Local<T>,
+}
+
+
+impl<T: Trace> LocalContext<T> {
+    /// Write a fully marshalled batch to the local repository.
+    pub fn write_batch(
+        &self,
+        batch: Batch<T::BatchTrace>,
+    ) -> Box<Future<Item = (), Error = Error>> {
+        let trace = Arc::new(Mutex::new(self.ctx.inner.trace.lock().unwrap().on_write(
+            &batch,
+            WriteDestination::Local,
+        )));
+
+        let local = self.local.clone();
+        let write_pool = self.ctx.write_pool.clone();
+
+        let writes = batch
+            .into_stream()
+            .map(move |hashed| {
+                let hash = *hashed.as_hash();
+                let trace = trace.clone();
+
+                let write = local.write_object(hashed).map(move |_| { trace.lock().unwrap().on_write(&hash); });
+                write_pool.spawn(write)
+            })
+            .buffered(WRITE_FUTURE_BUFFER_SIZE)
+            .for_each(|_| Ok(()));
+
+        Box::new(self.ctx.write_pool.spawn(writes))
+    }
+}
+
+
 /// A `RemoteContext` is a context for dealing with a specific remote of this repository.
 // TODO: Abstract away the backend so that other K/V stores than Ceph/RADOS may be used.
-pub struct RemoteContext<'ctx, T: Trace + 'ctx = ()> {
-    ctx: &'ctx Context<T>,
+pub struct RemoteContext<T: Trace> {
+    ctx: Context<T>,
 
     name: Option<String>,
     cfg: RemoteCfg,
 
-    remote: Remote,
+    remote: Remote<T>,
 }
 
 
-impl<'ctx, T: Trace> RemoteContext<'ctx, T> {
+impl<T: Trace> RemoteContext<T> {
     /// Write a fully marshalled batch to the remote repository.
     // TODO: Recover from errors when sending objects.
-    pub fn write_batch<'data, 'future>(
-        &'ctx self,
-        batch: Batch<'data, T::BatchTrace>,
-    ) -> Box<Future<Item = (), Error = Error> + 'future>
-    where
-        'ctx: 'future,
-        'data: 'future,
-    {
-        let trace = Rc::new(RefCell::new(self.ctx.trace.borrow_mut().on_write(
+    pub fn write_batch(
+        &self,
+        batch: Batch<T::BatchTrace>,
+    ) -> Box<Future<Item = (), Error = Error>> {
+        let trace = Arc::new(Mutex::new(self.ctx.inner.trace.lock().unwrap().on_write(
             &batch,
-            WriteDestination::Remote(
-                &self.name,
-                &self.cfg,
-            ),
+            WriteDestination::Remote(&self.name, &self.cfg),
         )));
+
+        let remote = self.remote.clone();
 
         let result = batch.into_stream().for_each(move |hashed| {
             let hash = *hashed.as_hash();
             let trace = trace.clone();
 
-            let written = self.remote.write_object(hashed).into_future().flatten();
-            written.map(move |_| { trace.borrow_mut().on_write(&hash); })
+            let written = remote.write_object(hashed).into_future().flatten();
+            written.map(move |_| { trace.lock().unwrap().on_write(&hash); })
         });
 
         Box::new(result)
+    }
+}
+
+
+impl<T: Trace> Clone for Context<T> {
+    fn clone(&self) -> Self {
+        Context {
+            marshal_pool: self.marshal_pool.clone(),
+            write_pool: self.write_pool.clone(),
+
+            inner: self.inner.clone(),
+        }
     }
 }

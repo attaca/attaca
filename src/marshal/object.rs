@@ -2,41 +2,66 @@
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::PathBuf;
 
 use bincode;
 use chrono::{DateTime, Utc};
 
+use arc_slice::ArcSlice;
 use errors::Result;
 use marshal::ObjectHash;
 
 
 /// The marshaled, deserialized representation of a "small" object (composed of a single chunk.)
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct SmallObject<'a> {
-    #[serde(borrow)]
-    pub chunk: Cow<'a, [u8]>,
+pub struct RawSmallObject<'a> {
+    pub chunk: &'a [u8],
 }
 
 
-impl<'a> SmallObject<'a> {
+impl<'a> RawSmallObject<'a> {
+    unsafe fn into_object(self, slice: ArcSlice) -> SmallObject {
+        // Calculate the offset between the chunk slice's pointer and the source slice's pointer.
+        let offset = slice.as_ptr().offset_to(self.chunk.as_ptr()).expect(
+            "u8 is not a ZST",
+        );
+
+        assert!(offset >= 0);
+
+        let sliced_slice = slice.map(|slice| &slice[offset as usize..self.chunk.len()]);
+
+        SmallObject { chunk: sliced_slice }
+    }
+}
+
+
+#[derive(Debug, Clone)]
+pub struct SmallObject {
+    pub chunk: ArcSlice,
+}
+
+
+impl SmallObject {
     pub fn size(&self) -> u64 {
         self.chunk.len() as u64
+    }
+
+
+    fn as_raw(&self) -> RawSmallObject {
+        RawSmallObject { chunk: &self.chunk }
     }
 }
 
 
 /// The marshaled, deserialized representation of a "large" object (composed of smaller chunks.)
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct LargeObject<'a> {
+pub struct LargeObject {
     pub size: u64,
-
-    #[serde(borrow)]
-    pub children: Cow<'a, [(u64, ObjectHash)]>,
+    pub children: Vec<(u64, ObjectHash)>,
 }
 
 
-impl<'a> LargeObject<'a> {
+impl LargeObject {
     pub fn size(&self) -> u64 {
         self.size
     }
@@ -45,25 +70,22 @@ impl<'a> LargeObject<'a> {
 
 /// The marshaled, deserialized representation of a subtree.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct SubtreeObject<'a> {
-    #[serde(borrow)]
-    entries: BTreeMap<Cow<'a, Path>, ObjectHash>,
+pub struct SubtreeObject {
+    entries: BTreeMap<PathBuf, ObjectHash>,
 }
 
 
 /// The marshaled, deserialized representation of a commit object.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct CommitObject<'a> {
+pub struct CommitObject {
     /// The subtree the commit object references.
     subtree: ObjectHash,
 
     /// The parents of the commit.
-    #[serde(borrow)]
-    parents: Cow<'a, [ObjectHash]>,
+    parents: Vec<ObjectHash>,
 
     /// A commit message, provided by the user.
-    #[serde(borrow)]
-    message: Cow<'a, str>,
+    message: String,
 
     /// The commit timestamp, denoting when the commit was made locally.
     timestamp: DateTime<Utc>,
@@ -72,23 +94,37 @@ pub struct CommitObject<'a> {
 
 /// The marshaled, deserialized representation of a "data" object - either a small or large object.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum DataObject<'a> {
+pub enum RawDataObject<'a> {
     /// A "small" blob is a single chunk.
     Small(
         #[serde(borrow)]
-        SmallObject<'a>
+        RawSmallObject<'a>
     ),
 
     /// A "large" blob is a blob consisting of multiple smaller blobs, stored as a tuple of size
     /// and content hash.
-    Large(
-        #[serde(borrow)]
-        LargeObject<'a>
-    ),
+    Large(Cow<'a, LargeObject>),
 }
 
 
-impl<'a> DataObject<'a> {
+impl<'a> RawDataObject<'a> {
+    unsafe fn into_object(self, slice: ArcSlice) -> DataObject {
+        match self {
+            RawDataObject::Small(small) => DataObject::Small(small.into_object(slice)),
+            RawDataObject::Large(large) => DataObject::Large(large.into_owned()),
+        }
+    }
+}
+
+
+#[derive(Debug, Clone)]
+pub enum DataObject {
+    Small(SmallObject),
+    Large(LargeObject),
+}
+
+
+impl DataObject {
     pub fn size(&self) -> u64 {
         match *self {
             DataObject::Small(ref small) => small.size(),
@@ -98,12 +134,16 @@ impl<'a> DataObject<'a> {
 
 
     pub fn is_empty(&self) -> bool {
+        self.size() == 0
+    }
+}
+
+
+impl DataObject {
+    fn as_raw(&self) -> RawDataObject {
         match *self {
-            DataObject::Large(LargeObject {
-                                  size: 0,
-                                  ref children,
-                              }) => children.len() == 0,
-            _ => false,
+            DataObject::Small(ref small) => RawDataObject::Small(small.as_raw()),
+            DataObject::Large(ref large) => RawDataObject::Large(Cow::Borrowed(large)),
         }
     }
 }
@@ -111,38 +151,25 @@ impl<'a> DataObject<'a> {
 
 /// The marshaled, deserialized representation of an object in the distributed store.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum Object<'a> {
+pub enum RawObject<'a> {
     /// A "data object" or "blob" is a single file.
     Data(
         #[serde(borrow)]
-        DataObject<'a>
+        RawDataObject<'a>
     ),
 
     /// A subtree is a directory, consisting of a mapping of paths to blobs.
-    Subtree(
-        #[serde(borrow)]
-        SubtreeObject<'a>
-    ),
+    Subtree(Cow<'a, SubtreeObject>),
 
     /// A commit is a pointer to a subtree representing the current state of the repository, as
     /// well as a list of parent commits.
-    Commit(
-        #[serde(borrow)]
-        CommitObject<'a>
-    ),
+    Commit(Cow<'a, CommitObject>),
 }
 
 
-impl<'a> AsRef<Object<'a>> for Object<'a> {
-    fn as_ref(&self) -> &Self {
-        self
-    }
-}
-
-
-impl<'a> Object<'a> {
+impl<'a> RawObject<'a> {
     /// Deserialize and borrow an `Object` from a byte slice.
-    pub fn from_bytes(slice: &'a [u8]) -> Result<Object<'a>> {
+    pub fn from_bytes(slice: &'a [u8]) -> Result<Self> {
         bincode::deserialize(slice).map_err(Into::into)
     }
 
@@ -150,5 +177,45 @@ impl<'a> Object<'a> {
     /// Serialize an `Object` into a byte vector.
     pub fn to_bytes(&self) -> Result<Vec<u8>> {
         bincode::serialize(self, bincode::Infinite).map_err(Into::into)
+    }
+
+
+    unsafe fn into_object(self, slice: ArcSlice) -> Object {
+        match self {
+            RawObject::Data(data) => Object::Data(data.into_object(slice)),
+            RawObject::Subtree(subtree) => Object::Subtree(subtree.into_owned()),
+            RawObject::Commit(commit) => Object::Commit(commit.into_owned()),
+        }
+    }
+}
+
+
+#[derive(Debug, Clone)]
+pub enum Object {
+    /// A "data object" or "blob" is a single file.
+    Data(DataObject),
+
+    Subtree(SubtreeObject),
+
+    /// A commit is a pointer to a subtree representing the current state of the repository, as
+    /// well as a list of parent commits.
+    Commit(CommitObject),
+}
+
+
+impl Object {
+    pub fn from_bytes(slice: ArcSlice) -> Result<Object> {
+        let object = RawObject::from_bytes(&slice)?;
+        Ok(unsafe { object.into_object(slice.clone()) })
+    }
+
+
+    pub fn as_raw(&self) -> RawObject {
+        match *self {
+            Object::Data(ref data) => RawObject::Data(data.as_raw()),
+
+            Object::Subtree(ref subtree) => RawObject::Subtree(Cow::Borrowed(subtree)),
+            Object::Commit(ref commit) => RawObject::Commit(Cow::Borrowed(commit)),
+        }
     }
 }

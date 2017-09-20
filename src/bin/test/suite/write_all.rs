@@ -5,7 +5,6 @@ use std::path::Path;
 use clap::{App, SubCommand, Arg, ArgMatches};
 use futures::prelude::*;
 
-use attaca::batch::Files;
 use attaca::context::Context;
 use attaca::repository::{Repository, RemoteCfg, RadosCfg, EtcdCfg};
 use attaca::trace::Trace;
@@ -51,8 +50,7 @@ fn run<P: AsRef<Path>, T: Trace>(conf_dir: P, matches: &ArgMatches, trace: T) ->
         || "unable to find repository",
     )?;
     let context = Context::with_trace(repo, trace);
-    let files = Files::new();
-    let batch = context.batch(&files);
+    let mut batch = context.with_batch();
 
     let chunked = batch.chunk_file(path).chain_err(|| "unable to chunk file")?;
     let hash_future = batch.marshal_file(chunked);

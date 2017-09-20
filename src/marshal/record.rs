@@ -7,6 +7,7 @@
 //! `Record`s are intended to be suitable for manipulation of objects' structures before and during
 //! marshalling.
 
+use arc_slice::ArcSlice;
 use marshal::{ObjectHash, Object, SmallObject, LargeObject, DataObject, SubtreeObject,
               CommitObject};
 
@@ -14,50 +15,50 @@ use marshal::{ObjectHash, Object, SmallObject, LargeObject, DataObject, SubtreeO
 /// A `Record` may either hold data (records representing small or large objects) or metadata
 /// (records of subtrees or commits.) Data records contain additional information about the size of
 /// the data contained in the objects they represent, while metadata records do not.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum Record<'a> {
-    Data(DataRecord<'a>),
-    Meta(MetaRecord<'a>),
+#[derive(Debug, Clone)]
+pub enum Record {
+    Data(DataRecord),
+    Meta(MetaRecord),
 }
 
 
-impl<'a> From<SmallObject<'a>> for Record<'a> {
-    fn from(small_object: SmallObject<'a>) -> Self {
+impl From<SmallObject> for Record {
+    fn from(small_object: SmallObject) -> Self {
         Record::Data(small_object.into())
     }
 }
 
 
-impl<'a> From<LargeObject<'a>> for Record<'a> {
-    fn from(large_object: LargeObject<'a>) -> Self {
+impl From<LargeObject> for Record {
+    fn from(large_object: LargeObject) -> Self {
         Record::Data(large_object.into())
     }
 }
 
 
-impl<'a> From<SmallRecord<'a>> for Record<'a> {
-    fn from(small_record: SmallRecord<'a>) -> Self {
+impl From<SmallRecord> for Record {
+    fn from(small_record: SmallRecord) -> Self {
         Record::Data(small_record.into())
     }
 }
 
 
-impl<'a> From<DataRecord<'a>> for Record<'a> {
-    fn from(data_record: DataRecord<'a>) -> Self {
+impl From<DataRecord> for Record {
+    fn from(data_record: DataRecord) -> Self {
         Record::Data(data_record)
     }
 }
 
 
-impl<'a> From<MetaRecord<'a>> for Record<'a> {
-    fn from(meta_record: MetaRecord<'a>) -> Self {
+impl From<MetaRecord> for Record {
+    fn from(meta_record: MetaRecord) -> Self {
         Record::Meta(meta_record)
     }
 }
 
 
-impl<'a> Record<'a> {
-    pub fn to_deep(self) -> Result<Object<'a>, ObjectHash> {
+impl Record {
+    pub fn to_deep(self) -> Result<Object, ObjectHash> {
         match self {
             Record::Data(data) => data.to_deep().map(Object::Data),
             Record::Meta(meta) => meta.to_deep(),
@@ -69,14 +70,21 @@ impl<'a> Record<'a> {
 /// A `SmallRecord` is a specialized record which holds information about a small object. This is
 /// useful for representing things such as leaves of the tree formed by the large-object
 /// small-object hierarchy.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum SmallRecord<'a> {
+#[derive(Debug, Clone)]
+pub enum SmallRecord {
     Shallow(u64, ObjectHash),
-    Deep(SmallObject<'a>),
+    Deep(SmallObject),
 }
 
 
-impl<'a> SmallRecord<'a> {
+impl From<ArcSlice> for SmallRecord {
+    fn from(arc_slice: ArcSlice) -> Self {
+        SmallRecord::Deep(SmallObject { chunk: arc_slice })
+    }
+}
+
+
+impl SmallRecord {
     pub fn size(&self) -> u64 {
         match *self {
             SmallRecord::Shallow(sz, _) => sz,
@@ -87,15 +95,15 @@ impl<'a> SmallRecord<'a> {
 
 
 /// A `DataRecord` represents either a small or large object.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum DataRecord<'a> {
+#[derive(Debug, Clone)]
+pub enum DataRecord {
     Shallow(u64, ObjectHash),
-    Deep(DataObject<'a>),
+    Deep(DataObject),
 }
 
 
-impl<'a> From<SmallRecord<'a>> for DataRecord<'a> {
-    fn from(small: SmallRecord<'a>) -> Self {
+impl From<SmallRecord> for DataRecord {
+    fn from(small: SmallRecord) -> Self {
         match small {
             SmallRecord::Shallow(sz, hash) => DataRecord::Shallow(sz, hash),
             SmallRecord::Deep(small_object) => DataRecord::Deep(DataObject::Small(small_object)),
@@ -104,28 +112,28 @@ impl<'a> From<SmallRecord<'a>> for DataRecord<'a> {
 }
 
 
-impl<'a> From<SmallObject<'a>> for DataRecord<'a> {
-    fn from(small_object: SmallObject<'a>) -> Self {
+impl From<SmallObject> for DataRecord {
+    fn from(small_object: SmallObject) -> Self {
         DataRecord::Deep(DataObject::Small(small_object))
     }
 }
 
 
-impl<'a> From<LargeObject<'a>> for DataRecord<'a> {
-    fn from(large_object: LargeObject<'a>) -> Self {
+impl From<LargeObject> for DataRecord {
+    fn from(large_object: LargeObject) -> Self {
         DataRecord::Deep(DataObject::Large(large_object))
     }
 }
 
 
-impl<'a> From<DataObject<'a>> for DataRecord<'a> {
-    fn from(data_object: DataObject<'a>) -> Self {
+impl From<DataObject> for DataRecord {
+    fn from(data_object: DataObject) -> Self {
         DataRecord::Deep(data_object)
     }
 }
 
 
-impl<'a> DataRecord<'a> {
+impl DataRecord {
     pub fn size(&self) -> u64 {
         match *self {
             DataRecord::Shallow(sz, _) => sz,
@@ -134,7 +142,7 @@ impl<'a> DataRecord<'a> {
     }
 
 
-    pub fn to_deep(self) -> Result<DataObject<'a>, ObjectHash> {
+    pub fn to_deep(self) -> Result<DataObject, ObjectHash> {
         match self {
             DataRecord::Shallow(_, hash) => Err(hash),
             DataRecord::Deep(data) => Ok(data),
@@ -144,38 +152,38 @@ impl<'a> DataRecord<'a> {
 
 
 /// A `MetaRecord` represents either a subtree object or a commit object.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum MetaRecord<'a> {
+#[derive(Debug, Clone)]
+pub enum MetaRecord {
     Shallow(ObjectHash),
 
-    Subtree(SubtreeObject<'a>),
-    Commit(CommitObject<'a>),
+    Subtree(SubtreeObject),
+    Commit(CommitObject),
 }
 
 
-impl<'a> From<ObjectHash> for MetaRecord<'a> {
-    fn from(object_hash: ObjectHash) -> MetaRecord<'a> {
+impl From<ObjectHash> for MetaRecord {
+    fn from(object_hash: ObjectHash) -> MetaRecord {
         MetaRecord::Shallow(object_hash)
     }
 }
 
 
-impl<'a> From<SubtreeObject<'a>> for MetaRecord<'a> {
-    fn from(subtree_object: SubtreeObject<'a>) -> MetaRecord<'a> {
+impl From<SubtreeObject> for MetaRecord {
+    fn from(subtree_object: SubtreeObject) -> MetaRecord {
         MetaRecord::Subtree(subtree_object)
     }
 }
 
 
-impl<'a> From<CommitObject<'a>> for MetaRecord<'a> {
-    fn from(commit_object: CommitObject<'a>) -> MetaRecord<'a> {
+impl From<CommitObject> for MetaRecord {
+    fn from(commit_object: CommitObject) -> MetaRecord {
         MetaRecord::Commit(commit_object)
     }
 }
 
 
-impl<'a> MetaRecord<'a> {
-    pub fn to_deep(self) -> Result<Object<'a>, ObjectHash> {
+impl MetaRecord {
+    pub fn to_deep(self) -> Result<Object, ObjectHash> {
         match self {
             MetaRecord::Shallow(hash) => Err(hash),
             MetaRecord::Subtree(subtree) => Ok(Object::Subtree(subtree)),
