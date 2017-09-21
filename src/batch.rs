@@ -23,7 +23,7 @@ pub struct Batch<T: BatchTrace = ()> {
 
     marshal_pool: CpuPool,
 
-    size_chunks: usize,
+    len: usize,
 }
 
 
@@ -39,7 +39,7 @@ impl<T: BatchTrace> Batch<T> {
 
             marshal_pool,
 
-            size_chunks: 0,
+            len: 0,
         }
     }
 
@@ -79,7 +79,7 @@ impl<T: BatchTrace> Batch<T> {
         let tree = Tree::load(chunked.to_vec().into_iter().map(SmallRecord::from));
         let tree_len = tree.len();
 
-        self.size_chunks += tree_len;
+        self.len += tree_len;
 
         let marshal = tree.marshal(Hasher::with_trace(
             self.marshal_tx.clone(),
@@ -90,8 +90,9 @@ impl<T: BatchTrace> Batch<T> {
     }
 
 
+    /// The total size of the batch, in chunks.
     pub fn len(&self) -> usize {
-        self.size_chunks
+        self.len
     }
 
 
