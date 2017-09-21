@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use futures::prelude::*;
 use futures_cpupool::CpuPool;
 
-use ::WRITE_FUTURE_BUFFER_SIZE;
+use WRITE_FUTURE_BUFFER_SIZE;
 use batch::Batch;
 use errors::*;
 use local::Local;
@@ -150,7 +150,10 @@ impl<T: Trace> LocalContext<T> {
                 let hash = *hashed.as_hash();
                 let trace = trace.clone();
 
-                let write = local.write_object(hashed).map(move |_| { trace.lock().unwrap().on_write(&hash); });
+                trace.lock().unwrap().on_begin(&hash);
+                let write = local.write_object(hashed).map(move |_| {
+                    trace.lock().unwrap().on_complete(&hash);
+                });
                 write_pool.spawn(write)
             })
             .buffered(WRITE_FUTURE_BUFFER_SIZE)
@@ -187,13 +190,18 @@ impl<T: Trace> RemoteContext<T> {
 
         let remote = self.remote.clone();
 
-        let result = batch.into_stream().for_each(move |hashed| {
-            let hash = *hashed.as_hash();
-            let trace = trace.clone();
+        let result = batch
+            .into_stream()
+            .map(move |hashed| {
+                let hash = *hashed.as_hash();
+                let trace = trace.clone();
 
-            let written = remote.write_object(hashed).into_future().flatten();
-            written.map(move |_| { trace.lock().unwrap().on_write(&hash); })
-        });
+                trace.lock().unwrap().on_begin(&hash);
+                let written = remote.write_object(hashed).into_future().flatten();
+                written.map(move |_| { trace.lock().unwrap().on_complete(&hash); })
+            })
+            .buffered(WRITE_FUTURE_BUFFER_SIZE)
+            .for_each(|_| Ok(()));
 
         Box::new(result)
     }

@@ -26,7 +26,6 @@ impl SplitTrace for () {}
 pub trait MarshalTrace: Send + Sized + 'static {
     fn on_reserve(&mut self, _n: usize) {}
     fn on_hashed(&mut self, _object_hash: &ObjectHash) {}
-    fn on_sent(&mut self, _object_hash: &ObjectHash) {}
 }
 
 
@@ -43,7 +42,8 @@ pub enum WriteDestination<'a> {
 /// `WriteTrace` tracks the process of writing marshalled objects to a local or remote
 /// object store.
 pub trait WriteTrace: Send + Sized + 'static {
-    fn on_write(&mut self, _object_hash: &ObjectHash) {}
+    fn on_begin(&mut self, _object_hash: &ObjectHash) {}
+    fn on_complete(&mut self, _object_hash: &ObjectHash) {}
 }
 
 

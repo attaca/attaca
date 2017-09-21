@@ -5,7 +5,6 @@ use std::sync::{Arc, Mutex};
 
 use bincode;
 use digest_writer::{FixedOutput, Writer};
-use futures::future;
 use futures::prelude::*;
 use futures::sync::mpsc::Sender;
 use generic_array::GenericArray;
@@ -181,64 +180,11 @@ impl<T: MarshalTrace> Hasher<T> {
 
         let result = self.output.clone().send(Hashed { hash, bytes }).then(
             move |result| match result {
-                Ok(_) => {
-                    trace.lock().unwrap().on_sent(&hash);
-                    future::ok(hash)
-                }
-                Err(_) => future::err("Channel closed!".into()),
+                Ok(_) => Ok(hash),
+                Err(_) => Err("Channel closed!".into()),
             },
         );
 
         Box::new(result)
     }
-
-
-    //     pub fn compute<R: Into<Record>>(
-    //         &mut self,
-    //         object: R,
-    //     ) -> Box<Future<Item = ObjectHash, Error = Error> + Send> {
-    //         let trace = self.trace.clone();
-    //         let output = self.output.clone();
-    //         let record = object.into();
-    //
-    //         let lazy_hash = future::lazy(move || {
-    //             let (hash, bytes) = match record.to_deep() {
-    //                 Ok(object) => {
-    //                     let raw_object = object.as_raw();
-    //                     let size = bincode::serialized_size(&raw_object);
-    //
-    //                     let mut buf = Vec::with_capacity(size as usize);
-    //                     let mut digest_writer = Writer::new(Sha3_256::new());
-    //
-    //                     bincode::serialize_into(
-    //                         &mut Fork::new(&mut buf, BufWriter::new(&mut digest_writer)),
-    //                         &raw_object,
-    //                         bincode::Infinite,
-    //                     ).expect("No actual I/O, impossible to have an I/O error.");
-    //
-    //                     let digest = digest_writer.fixed_result();
-    //
-    //                     (ObjectHash(digest), Some(buf))
-    //                 }
-    //
-    //                 Err(hash) => (hash, None),
-    //             };
-    //
-    //             Ok((hash, bytes))
-    //         });
-    //
-    //         let result = lazy_hash.and_then(move |(hash, bytes)| {
-    //             output.send(Hashed { hash, bytes }).then(move |result| {
-    //                 match result {
-    //                     Ok(_) => {
-    //                         trace.lock().unwrap().on_register(&hash);
-    //                         future::ok(hash)
-    //                     }
-    //                     Err(_) => future::err("Channel closed!".into()),
-    //                 }
-    //             })
-    //         });
-    //
-    //         Box::new(result)
-    //     }
 }

@@ -1,6 +1,6 @@
 use std::env;
 use std::ffi::CString;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use clap::{App, SubCommand, Arg, ArgMatches};
 use futures::prelude::*;
@@ -32,6 +32,14 @@ pub fn command() -> App<'static, 'static> {
                 .index(1),
         )
         .arg(
+            Arg::with_name("repository")
+                .help(
+                    "Overrides the current directory as a target repository for this test.",
+                )
+                .long("repository")
+                .takes_value(true),
+        )
+        .arg(
             Arg::with_name("quiet")
                 .help("Don't display progress.")
                 .short("q")
@@ -45,7 +53,10 @@ fn run<P: AsRef<Path>, T: Trace>(conf_dir: P, matches: &ArgMatches, trace: T) ->
     let conf = conf_dir.as_ref().join("ceph.conf");
     let keyring = conf_dir.as_ref().join("ceph.client.admin.keyring");
 
-    let wd = env::current_dir()?;
+    let wd = matches
+        .value_of("repository")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| env::current_dir().unwrap());
     let repo = Repository::find(wd).chain_err(
         || "unable to find repository",
     )?;
