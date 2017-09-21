@@ -1,4 +1,4 @@
-//! `errors` - error-chain generated `Error` types.
+//! # `errors` - error-chain generated `Error` types.
 
 use void::Void;
 
@@ -17,10 +17,5 @@ error_chain! {
         TomlDe(::toml::de::Error);
     }
 
-    errors {
-        Impossible(never: Void) {
-            description("This error can never occur.")
-            display("This error can literally never happen.")
-        }
-    }
+    errors {}
 }
