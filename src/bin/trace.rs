@@ -23,10 +23,7 @@ impl MarshalProgressTrace {
 
         pb.enable_steady_tick(500);
 
-        Self {
-            total_known: 0,
-            pb,
-        }
+        Self { total_known: 0, pb }
     }
 }
 
@@ -85,6 +82,7 @@ impl Drop for SplitProgressTrace {
 
 pub struct WriteProgressTrace {
     in_progress: usize,
+    last_written: Option<ObjectHash>,
     pb: ProgressBar,
 }
 
@@ -105,31 +103,44 @@ impl WriteProgressTrace {
             WriteDestination::Remote(&None, _) => pb.set_prefix("remote"),
         }
 
-        Self { in_progress: 0, pb }
+        let mut new = Self { in_progress: 0, last_written: None, pb };
+        new.update_msg();
+
+        new
     }
 
 
-    fn update_msg(&mut self, object_hash: &ObjectHash) {
-        self.pb.set_message(&format!(
-            "{} in progress, last written: {}",
-            self.in_progress,
-            object_hash
-        ));
+    fn update_msg(&mut self) {
+        match self.last_written.as_ref() {
+            Some(last_written) => {
+                self.pb.set_message(&format!(
+                    "{} in progress, last written: {}",
+                    self.in_progress,
+                    last_written,
+                ))
+            }
+            None => {
+                self.pb.set_message(
+                    &format!("{} in progress", self.in_progress),
+                )
+            }
+        }
     }
 }
 
 
 impl WriteTrace for WriteProgressTrace {
-    fn on_begin(&mut self, object_hash: &ObjectHash) {
+    fn on_begin(&mut self, _object_hash: &ObjectHash) {
         self.in_progress += 1;
-        self.update_msg(object_hash);
+        self.update_msg();
     }
 
 
     fn on_complete(&mut self, object_hash: &ObjectHash) {
         self.in_progress -= 1;
         self.pb.inc(1);
-        self.update_msg(object_hash);
+        self.last_written = Some(*object_hash);
+        self.update_msg();
     }
 }
 
