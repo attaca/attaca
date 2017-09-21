@@ -32,7 +32,6 @@ sha3 = "0.6.0"
 slog = "2.0.6"
 toml = "0.4.4"
 typenum = "1.9.0"
-void = "1.0.2"
 
 [dependencies.chrono]
 features = ["serde"]

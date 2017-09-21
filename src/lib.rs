@@ -26,7 +26,6 @@ extern crate seahash;
 extern crate sha3;
 extern crate toml;
 extern crate typenum;
-extern crate void;
 
 pub mod arc_slice;
 pub mod batch;

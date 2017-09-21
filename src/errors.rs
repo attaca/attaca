@@ -1,7 +1,5 @@
 //! # `errors` - error-chain generated `Error` types.
 
-use void::Void;
-
 error_chain! {
     types { Error, ErrorKind, ResultExt, Result; }
 
