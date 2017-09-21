@@ -10,7 +10,7 @@ use futures_bufio::BufWriter;
 use memmap::{Mmap, Protection};
 
 use context::Context;
-use arc_slice::Source;
+use arc_slice;
 use errors::*;
 use marshal::{Hashed, ObjectHash, Object};
 use trace::Trace;
@@ -103,7 +103,7 @@ impl<T: Trace> Local<T> {
         }
 
         let path = self.ctx.as_repository().blob_path.join(object_hash.to_path());
-        let bytes = Source::Mapped(Mmap::open_path(path, Protection::Read)?).into_bytes();
+        let bytes = arc_slice::mapped(Mmap::open_path(path, Protection::Read)?);
         let object = Object::from_bytes(bytes)?;
 
         self.objects.lock().unwrap().insert(

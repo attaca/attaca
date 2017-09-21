@@ -11,7 +11,7 @@ use std::mem;
 
 use seahash::SeaHasher;
 
-use arc_slice::{ArcSlice, Source};
+use arc_slice::{self, ArcSlice};
 use trace::SplitTrace;
 
 
@@ -80,7 +80,7 @@ impl Iterator for SliceSplitter {
 
         return Some(mem::replace(
             &mut self.slice,
-            Source::Empty.into_bytes(),
+            arc_slice::empty(),
         ));
     }
 }
@@ -185,7 +185,7 @@ impl Iterator for SliceChunker {
             }
         }
 
-        return Some(mem::replace(&mut self.rest, Source::Empty.into_bytes()));
+        return Some(mem::replace(&mut self.rest, arc_slice::empty()));
     }
 }
 

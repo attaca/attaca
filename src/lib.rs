@@ -1,3 +1,5 @@
+//! # `attaca` - distributed, resilient version control with a git-like interface
+
 #![feature(offset_to)]
 
 #[cfg(test)]
@@ -13,6 +15,8 @@ extern crate futures;
 extern crate futures_bufio;
 extern crate futures_cpupool;
 extern crate generic_array;
+#[macro_use]
+extern crate lazy_static;
 extern crate memmap;
 extern crate owning_ref;
 extern crate rad;
