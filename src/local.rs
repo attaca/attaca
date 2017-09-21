@@ -1,4 +1,7 @@
-//! `local` - operate on the locally stored files and blobs of a given repository.
+//! # `local` - operate on the locally stored files and blobs of a given repository.
+//!
+//! The `Local` type represents a properly configured local (file system) object store.
+//! Writing/reading objects in a `Local` store is asynchronous.
 
 use std::collections::HashMap;
 use std::fs::{self, File};
@@ -97,6 +100,7 @@ impl<T: Trace> Local<T> {
 
     /// Load an object from the file system. This will open a file if the object has not already
     /// been loaded.
+    /// TODO: Make async.
     pub fn read_object<'local>(&'local self, object_hash: &ObjectHash) -> Result<Object> {
         if let Some(local) = self.objects.lock().unwrap().get(object_hash) {
             return Ok(local.clone());

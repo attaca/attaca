@@ -1,4 +1,4 @@
-/// `repository` - configuration data and other persistent data w.r.t. a single repository.
+/// # `repository` - configuration data and other persistent data w.r.t. a single repository.
 ///
 /// An Attaca repository's metadata is stored in the `.attaca` folder of a repository. The internal
 /// structure of the metadata folder looks like this:

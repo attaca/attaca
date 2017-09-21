@@ -1,9 +1,11 @@
-//! `split` - split extremely large files into consistently-sized deterministic chunks.
+//! # `split` - split extremely large files into consistently-sized deterministic chunks.
 //!
 //! Key functionality of this module includes:
 //!
 //! * Splitting large files into chunks, via memory-mapped files.
-//! * Splitting streams of bytes into chunks, for use with lazily-downloaded files.
+//! * Splitting slices of bytes into chunks, for use with lazily-downloaded files.
+//!
+//! The main functions of this module are `arc_slice::chunk` and `arc_slice::chunk_with_trace`.
 
 
 use std::hash::{Hash, Hasher};
@@ -190,21 +192,25 @@ impl Iterator for SliceChunker {
 }
 
 
+/// A chunked file, consisting of a `Vec` of `ArcSlice`s. We wrap this in a newtype for safety.
 pub struct Chunked(Vec<ArcSlice>);
 
 
 impl Chunked {
+    /// Extract the inner `Vec`, destroying the `Chunked` object.
     pub fn to_vec(self) -> Vec<ArcSlice> {
         self.0
     }
 }
 
 
+/// As `chunk_with_trace`, but with the default no-op trace.
 pub fn chunk(bytes: ArcSlice) -> Chunked {
     chunk_with_trace(bytes, &mut ())
 }
 
 
+/// Chunk a slice into roughly 3MB chunks.
 pub fn chunk_with_trace<'batch, T: SplitTrace>(bytes: ArcSlice, trace: &mut T) -> Chunked {
     let mut offset = 0u64;
 

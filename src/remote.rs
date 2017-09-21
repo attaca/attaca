@@ -1,4 +1,6 @@
-//! `remote` - operations on remote repositories.
+//! # `remote` - operations on remote repositories.
+//!
+//! `Remote` contains a `RadosConnection` object, along with a reference to the parent context.
 //!
 //! At current the only supported remote is a Ceph/RADOS cluster.
 
@@ -66,7 +68,6 @@ impl<T: Trace> Remote<T> {
 
 
     /// Write a single object to the remote repository.
-    // TODO: Make asynchronous.
     // TODO: Don't send the object if we know the remote already contains it.
     // TODO: Query the remote to see if it contains the object already. If so, don't send.
     pub fn write_object(
