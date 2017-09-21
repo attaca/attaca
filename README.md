@@ -3,9 +3,19 @@
 This tool is under development and not in working condition!
 
 A working installation of Rust and Cargo are required to build/install. These
-can be acquired through [rustup](https://www.rustup.rs/). Other dependencies
-are an installation of the librados-2 library, specifically the development files.
-These can be installed with:
+can be acquired through [rustup](https://www.rustup.rs/). Rust nightly is
+needed to build this tool for the `offset_to` feature. Rustup can be configured
+to override the local Rust version for building this crate; installation and
+override will look something like this:
+
+```
+curl https://sh.rustup.rs -sSf | sh
+rustup install nightly
+rustup override set nightly
+```
+
+Other dependencies are an installation of the librados-2 library, specifically
+the development files.  These can be installed with:
 
 ```
 sudo apt-get librados-dev    # Ubuntu (tested on 14.04 LTS)
