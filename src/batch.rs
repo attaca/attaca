@@ -1,3 +1,12 @@
+//! # `batch` - batches of files to marshal.
+//!
+//! A `Batch` represents a collection of files which are being marshalled and a stream of hashed
+//! output objects. For a single `Batch`, there should correspond a set of valid marshalled files
+//! and a stream of valid hashed objects produced from marshalling/hashing the batched files.
+//!
+//! Marshalling files in a `Batch` will spawn files to a specified threadpool provided by the
+//! `Context`.
+
 use std::fs::File;
 use std::path::Path;
 
