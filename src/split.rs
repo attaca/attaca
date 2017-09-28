@@ -80,10 +80,7 @@ impl Iterator for SliceSplitter {
             }
         }
 
-        return Some(mem::replace(
-            &mut self.slice,
-            arc_slice::empty(),
-        ));
+        return Some(mem::replace(&mut self.slice, arc_slice::empty()));
     }
 }
 

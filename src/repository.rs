@@ -6,46 +6,49 @@
 /// ```ignore
 /// _ .attaca
 /// +-- config.toml
-/// +-_ ceph
-/// | +-- ceph.conf
-/// | +-- ceph.client.admin.keyring
-/// | +-- ceph.*.keyring
+/// +-_ catalogs
+///    +-- <remote-name>.catalog
+/// +-- local.catalog
 /// +-_ blobs
 ///    +-- ... locally stored blobs named by hash
 /// ```
 
 
+use std::borrow::Cow;
 use std::collections::HashMap;
-use std::ffi::CString;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
+use itertools::Itertools;
 use toml;
 
-use errors::{Result, ResultExt};
+use {METADATA_PATH, BLOBS_PATH, CONFIG_PATH, REMOTE_CATALOGS_PATH, LOCAL_CATALOG_PATH};
+use catalog::{Catalog, CatalogTrie};
+use errors::*;
 
 
 /// The persistent configuration data for a single pool of a RADOS cluster.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RadosCfg {
-    /// The directory in which `ceph.conf` is stored.
-    pub conf: PathBuf,
+pub struct CephCfg {
+    /// Path to a ceph.conf file.
+    pub conf_file: Option<PathBuf>,
 
     /// The working RADOS object pool.
-    pub pool: CString,
+    pub pool: String,
 
     /// The working RADOS user.
-    pub user: CString,
+    pub user: String,
 
-    /// The path to the keyring file for the working RADOS user, if it exists and is not stored in
-    /// `/etc/ceph/ceph.*****.keyring`.
-    pub keyring: Option<PathBuf>,
+    /// Ceph configuration options, stored directly.
+    #[serde(serialize_with = "toml::ser::tables_last")]
+    pub conf_options: HashMap<String, String>,
 }
 
 
 /// The persistent configuration data for an etcd cluster.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EtcdCfg {
     /// A list of cluster members to attempt connections to.
     pub cluster: Vec<String>,
@@ -58,7 +61,7 @@ pub struct RemoteCfg {
     /// The remote object store.
     ///
     /// TODO: Support object stores other than Ceph/RADOS.
-    pub object_store: RadosCfg,
+    pub object_store: CephCfg,
 
     /// The remote ref store.
     ///
@@ -71,6 +74,7 @@ pub struct RemoteCfg {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     /// Named remotes for this repository.
+    #[serde(serialize_with = "toml::ser::tables_last")]
     pub remotes: HashMap<String, RemoteCfg>,
 }
 
@@ -83,46 +87,64 @@ impl Default for Config {
 
 
 /// The type of a valid repository.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Repository {
     /// Loaded configuration from `.attaca/config.toml`.
     pub config: Config,
 
+    /// Catalogs for local and remote object stores.
+    catalogs: Mutex<HashMap<Option<String>, Option<Catalog>>>,
+
     /// The absolute path to the root of the repository.
-    pub path: PathBuf,
+    path: PathBuf,
+
+    /// The absolute path to the repository's config file.
+    config_path: PathBuf,
 
     /// The absolute path to the blob store of the repository.
-    // TODO: Better manage this. It should probably be configurable.
-    pub blob_path: PathBuf,
+    blob_path: PathBuf,
+
+    /// The absolute path to the local catalog.
+    local_catalog_path: PathBuf,
+
+    /// The absolute path to the remote catalog directory of the repository.
+    remote_catalogs_path: PathBuf,
 }
 
 
 impl Repository {
     /// Initialize a repository.
     pub fn init<P: AsRef<Path>>(path: P) -> Result<()> {
-        let mut attaca_path = path.as_ref().to_owned();
+        let path_ref = path.as_ref();
 
-        attaca_path.push(".attaca/");
-        if attaca_path.is_dir() {
+        let metadata_path = path_ref.join(*METADATA_PATH);
+        if metadata_path.is_dir() {
             bail!(
                 "a repository already exists at {}!",
-                attaca_path.to_string_lossy()
+                metadata_path.to_string_lossy()
             );
         }
 
-        fs::create_dir_all(&attaca_path).chain_err(
-            || "error creating .attaca",
-        )?;
+        fs::create_dir_all(&metadata_path).chain_err(|| {
+            format!("error creating {}", metadata_path.display())
+        })?;
 
-        fs::create_dir_all(&attaca_path.join("blobs")).chain_err(
-            || "error creating .attaca/blobs",
-        )?;
+        let blobs_path = path_ref.join(&*BLOBS_PATH);
+        fs::create_dir_all(&blobs_path).chain_err(|| {
+            format!("error creating {}", blobs_path.display())
+        })?;
 
-        File::create(&attaca_path.join("config.toml"))
+        let remote_catalogs_path = path_ref.join(&*REMOTE_CATALOGS_PATH);
+        fs::create_dir_all(&remote_catalogs_path).chain_err(|| {
+            format!("error creating {}", remote_catalogs_path.display())
+        })?;
+
+        let config_path = path_ref.join(&*CONFIG_PATH);
+        File::create(&config_path)
             .and_then(|mut cfg_file| {
                 cfg_file.write_all(&toml::to_vec(&Config::default()).unwrap())
             })
-            .chain_err(|| "error writing default .attaca/config.toml")?;
+            .chain_err(|| format!("error creating {}", config_path.display()))?;
 
         Ok(())
     }
@@ -130,28 +152,51 @@ impl Repository {
 
     /// Load repository data.
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Repository> {
-        let attaca_path = path.as_ref().join(".attaca");
+        let path_ref = path.as_ref();
 
-        if !attaca_path.is_dir() {
-            bail!("no repository found at {}!", attaca_path.to_string_lossy());
+        let metadata_path = path_ref.join(&*METADATA_PATH);
+
+        if !metadata_path.is_dir() {
+            bail!(
+                "no repository found at {}!",
+                metadata_path.to_string_lossy()
+            );
         }
 
-        let config = {
-            let cfg_path = path.as_ref().join(".attaca/config.toml");
+        let config_path = path_ref.join(&*CONFIG_PATH);
 
-            let mut config_file = File::open(&cfg_path).chain_err(|| {
-                format!("malformed repository at {}", attaca_path.to_string_lossy())
+        let config = {
+            let mut config_file = File::open(&config_path).chain_err(|| {
+                format!(
+                    "malformed repository at {}",
+                    metadata_path.to_string_lossy()
+                )
             })?;
             let mut config_string = String::new();
             config_file.read_to_string(&mut config_string)?;
 
-            toml::from_str(&config_string)?
+            toml::from_str::<Config>(&config_string)?
+        };
+
+        let catalogs = {
+            let mut catalog_map: HashMap<_, _> = config
+                .remotes
+                .keys()
+                .map(|key| (Some(key.to_owned()), None))
+                .collect();
+            catalog_map.insert(None, None);
+
+            Mutex::new(catalog_map)
         };
 
         Ok(Repository {
             config,
-            path: path.as_ref().to_owned(),
-            blob_path: path.as_ref().join(".attaca/blobs"),
+            catalogs,
+            path: path_ref.to_owned(),
+            config_path,
+            blob_path: path_ref.join(&*BLOBS_PATH),
+            local_catalog_path: path_ref.join(&*LOCAL_CATALOG_PATH),
+            remote_catalogs_path: path_ref.join(&*REMOTE_CATALOGS_PATH),
         })
     }
 
@@ -161,8 +206,6 @@ impl Repository {
         let mut attaca_path = path.as_ref().to_owned();
 
         while !attaca_path.join(".attaca").is_dir() {
-            println!("Searching: {:?}", attaca_path);
-
             if !attaca_path.pop() {
                 bail!(
                     "the directory {} is not a subdirectory of a repository!",
@@ -172,5 +215,86 @@ impl Repository {
         }
 
         Self::load(attaca_path)
+    }
+
+
+    pub fn make_local_catalog(&self) -> Result<Catalog> {
+        let mut objects = CatalogTrie::new();
+
+        for byte0_res in self.blob_path.read_dir()? {
+            let byte0 = byte0_res?;
+
+            for byte1_res in byte0.path().read_dir()? {
+                let byte1 = byte1_res?;
+
+                for object_res in byte1.path().read_dir()? {
+                    let object = object_res?;
+
+                    // Turn the path back into a hash.
+                    let path = object.path();
+                    let hash_ending = path.file_name().unwrap().to_string_lossy();
+                    let ending_parent = path.parent().unwrap();
+                    let hash_second = ending_parent.file_name().unwrap().to_string_lossy();
+                    let hash_first = ending_parent
+                        .parent()
+                        .unwrap()
+                        .file_name()
+                        .unwrap()
+                        .to_string_lossy();
+
+                    let hash_string = [hash_first, hash_second, hash_ending].into_iter().join("");
+                    let hash = hash_string.parse()?;
+
+                    objects.insert(hash);
+                }
+            }
+        }
+
+        Catalog::new(objects, self.local_catalog_path.clone())
+    }
+
+
+    pub fn get_catalog(&self, name_opt: Option<String>) -> Result<Catalog> {
+        let mut catalogs_lock = self.catalogs.lock().unwrap();
+
+        match catalogs_lock.get(&name_opt) {
+            Some(&Some(ref catalog)) => return Ok(catalog.clone()),
+            Some(&None) => {}
+            None => bail!(ErrorKind::CatalogNotFound(name_opt)),
+        }
+
+        let catalog_path = match name_opt {
+            Some(ref name) => {
+                Cow::Owned(self.remote_catalogs_path.join(format!("{}.catalog", name)))
+            }
+            None => Cow::Borrowed(&self.local_catalog_path),
+        };
+        let catalog = Catalog::load(catalog_path.clone().into_owned()).chain_err(|| {
+            ErrorKind::CatalogLoad(catalog_path.into_owned())
+        })?;
+        catalogs_lock.insert(name_opt, Some(catalog.clone()));
+
+        Ok(catalog)
+    }
+
+
+    pub fn get_blob_path(&self) -> &Path {
+        &self.blob_path
+    }
+
+
+    /// Update the `config.toml` file.
+    fn write_config(&mut self) -> Result<()> {
+        let config = toml::to_vec(&self.config)?;
+        let mut file = File::create(&self.config_path)?;
+        file.write_all(&config)?;
+        Ok(())
+    }
+}
+
+
+impl Drop for Repository {
+    fn drop(&mut self) {
+        self.write_config().unwrap();
     }
 }

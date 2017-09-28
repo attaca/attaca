@@ -4,16 +4,19 @@
 //!
 //! At current the only supported remote is a Ceph/RADOS cluster.
 
-use std::ffi::CString;
 use std::sync::{Arc, Mutex};
 
 use futures::prelude::*;
-use rad::{RadosConnectionBuilder, RadosConnection};
-use rad::async::RadosCaution;
+use memmap::Mmap;
+use owning_ref::BoxRefMut;
+use rad::{ConnectionBuilder, Connection};
 
+use arc_slice;
+use catalog::{Catalog, CatalogLock};
 use context::Context;
 use errors::*;
-use marshal::Hashed;
+use local::Local;
+use marshal::{Hashed, ObjectHash, Object};
 use repository::RemoteCfg;
 use trace::Trace;
 
@@ -23,45 +26,56 @@ use trace::Trace;
 // TODO: Locally store what objects we know the remote to contain so that we can avoid writing them
 //       when the remote already contains them.
 // TODO: Make the act of writing an object asynchronous - return a future instead of a `Result.
-pub struct Remote<T: Trace> {
-    ctx: Context<T>,
+#[derive(Clone)]
+pub struct Remote {
+    local: Local,
 
+    catalog: Option<Catalog>,
     inner: Arc<RemoteInner>,
 }
 
 
 struct RemoteInner {
-    conn: Mutex<RadosConnection>,
-    pool: CString,
+    conn: Mutex<Connection>,
+    pool: String,
 }
 
 
-impl<T: Trace> Remote<T> {
+impl Remote {
     /// Connect to a remote repository, given appropriate configuration data.
-    pub fn connect(ctx: Context<T>, cfg: &RemoteCfg) -> Result<Self> {
-        let conf_dir = CString::new(cfg.object_store.conf.to_str().unwrap()).unwrap();
-        let keyring_dir = cfg.object_store.keyring.as_ref().map(|keyring| {
-            CString::new(keyring.to_str().unwrap()).unwrap()
-        });
+    pub fn connect<T: Trace>(
+        ctx: &Context<T>,
+        cfg: &RemoteCfg,
+        catalog: Option<Catalog>,
+    ) -> Result<Self> {
+        let local = Local::new(ctx).chain_err(|| ErrorKind::LocalLoad)?;
 
         let conn = {
-            let mut builder = RadosConnectionBuilder::with_user(cfg.object_store.user.as_c_str())?
-                .read_conf_file(conf_dir.as_c_str())?;
+            let mut builder = ConnectionBuilder::with_user(&cfg.object_store.user)
+                .chain_err(|| ErrorKind::RemoteConnectInit)?;
 
-            if let Some(ref keyring) = keyring_dir {
-                builder = builder.conf_set(
-                    CString::new("keyring")?,
-                    keyring.as_c_str(),
-                )?;
+            if let Some(ref conf_path) = cfg.object_store.conf_file {
+                builder = builder.read_conf_file(conf_path).chain_err(|| {
+                    ErrorKind::RemoteConnectReadConf
+                })?;
             }
 
-            Mutex::new(builder.connect()?)
+            builder = cfg.object_store
+                .conf_options
+                .iter()
+                .fold(Ok(builder), |acc, (key, value)| {
+                    acc.and_then(|conn| conn.conf_set(key, value))
+                })
+                .chain_err(|| ErrorKind::RemoteConnectConfig)?;
+
+            Mutex::new(builder.connect().chain_err(|| ErrorKind::RemoteConnect)?)
         };
 
         let pool = cfg.object_store.pool.clone();
 
         Ok(Remote {
-            ctx,
+            local,
+            catalog,
             inner: Arc::new(RemoteInner { conn, pool }),
         })
     }
@@ -70,23 +84,31 @@ impl<T: Trace> Remote<T> {
     /// Write a single object to the remote repository.
     // TODO: Don't send the object if we know the remote already contains it.
     // TODO: Query the remote to see if it contains the object already. If so, don't send.
-    pub fn write_object(
-        &self,
-        hashed: Hashed,
-    ) -> Result<Box<Future<Item = (), Error = Error> + Send>> {
-        match hashed.as_bytes() {
-            Some(bytes) => {
-                let mut ctx = self.inner.conn.lock().unwrap().get_pool_context(&*self.inner.pool)?;
-                let object_id = CString::new(hashed.as_hash().to_string()).unwrap();
+    pub fn write_object(&self, hashed: Hashed) -> Box<Future<Item = (), Error = Error> + Send> {
+        let lock_opt_res = self.catalog.as_ref().map(|catalog| {
+            catalog.try_lock(*hashed.as_hash())
+        });
+        let lock_opt = match lock_opt_res {
+            Some(Ok(lock)) => Some(lock),
+            None => None,
+            Some(Err(future)) => return Box::new(future),
+        };
+        let (hash, bytes_opt) = hashed.into_components();
 
-                Ok(Box::new(
-                    ctx.write_full_async(
-                        RadosCaution::Complete,
-                        &*object_id,
-                        bytes,
-                    )?
-                        .from_err(),
-                ))
+        match bytes_opt {
+            Some(bytes) => {
+                let ctx_res = self.inner.conn.lock().unwrap().get_pool_context(
+                    &self.inner.pool,
+                );
+                let result =
+                    async_block! {
+                    let mut ctx = ctx_res?;
+                    await!(ctx.write_full_async(&hash.to_string(), &bytes))?;
+                    lock_opt.map(CatalogLock::release);
+                    Ok(())
+                };
+
+                Box::new(result)
             }
 
             None => {
@@ -94,14 +116,64 @@ impl<T: Trace> Remote<T> {
             }
         }
     }
-}
 
 
-impl<T: Trace> Clone for Remote<T> {
-    fn clone(&self) -> Self {
-        Self {
-            ctx: self.ctx.clone(),
-            inner: self.inner.clone(),
-        }
+    /// Read a single object from the remote repository.
+    pub fn read_object<F>(
+        &self,
+        object_hash: ObjectHash,
+        factory: F,
+    ) -> Box<Future<Item = Object, Error = Error> + Send>
+    where
+        F: FnOnce(usize) -> Mmap + Send + 'static,
+    {
+        let ctx_res = self.inner.conn.lock().unwrap().get_pool_context(
+            &self.inner.pool,
+        );
+
+        let result =
+            async_block! {
+            let mut ctx = ctx_res?;
+
+            let object_id = object_hash.to_string();
+            let stat = await!(ctx.stat_async(&object_id))?;
+
+            let mut buf = BoxRefMut::new(Box::new(factory(stat.size as usize)))
+                .map_mut(|mmap| unsafe { mmap.as_mut_slice() });
+
+            let mut total_read = 0;
+            let mmap = loop {
+                let (bytes_read_u64, new_buf) = await!(ctx.read_async(
+                    &object_id,
+                    buf.map_mut(
+                        |slice| &mut slice[total_read..],
+                    ),
+                    total_read as u64,
+                ))?;
+
+                let bytes_read = bytes_read_u64 as usize;
+                total_read += bytes_read;
+
+                if bytes_read == new_buf.len() {
+                    break *new_buf.into_inner();
+                }
+
+                buf = new_buf;
+            };
+
+            let slice = arc_slice::mapped(mmap);
+            let object = Object::from_bytes(slice)?;
+
+            Ok(object)
+        };
+
+        //             .and_then(|ctx| {
+        //                 ctx.read_async(&object_hash.to_string());
+        //             })
+        //             .into_future()
+        //             .from_err()
+        //             .flatten();
+
+        Box::new(result)
     }
 }

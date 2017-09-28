@@ -44,13 +44,13 @@ pub fn command() -> App<'static, 'static> {
 fn marshal<T: Trace, P: AsRef<Path>>(trace: T, path: P) -> Result<ObjectHash> {
     let wd = env::current_dir()?;
     let repo = Repository::find(wd)?;
-    let context = Context::with_trace(repo, trace);
+    let mut context = Context::with_trace(repo, trace);
     let mut batch = context.with_batch();
 
     let chunked = batch.chunk_file(path)?;
     let hash_future = batch.marshal_file(chunked);
 
-    let batch_future = context.with_local().write_batch(batch);
+    let batch_future = context.with_local()?.write_batch(batch);
 
     let ((), hash) = batch_future.join(hash_future).wait()?;
 

@@ -6,6 +6,7 @@ error_chain! {
     }
 
     foreign_links {
+        Clap(::clap::Error);
         Nul(::std::ffi::NulError);
         Io(::std::io::Error);
     }

@@ -1,6 +1,9 @@
+use std::borrow::Borrow;
 use std::fmt;
 use std::io::{self, BufWriter, Write};
 use std::path::PathBuf;
+use std::result::Result as StdResult;
+use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
 use bincode;
@@ -45,6 +48,13 @@ impl ObjectHash {
 }
 
 
+impl Borrow<[u8]> for ObjectHash {
+    fn borrow(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+
 impl fmt::Debug for ObjectHash {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -61,6 +71,31 @@ impl fmt::Display for ObjectHash {
         }
 
         Ok(())
+    }
+}
+
+
+impl FromStr for ObjectHash {
+    type Err = Error;
+
+    fn from_str(s: &str) -> StdResult<Self, Self::Err> {
+        if s.len() != 64 {
+            bail!(
+                Error::from_kind(ErrorKind::InvalidHashLength(s.len()))
+                    .chain_err(|| ErrorKind::InvalidHashString(s.to_owned()))
+            );
+        }
+
+        let mut generic_array = GenericArray::map_slice(&[0; 32], |&x| x);
+        for (i, byte) in generic_array.iter_mut().enumerate() {
+            *byte = u8::from_str_radix(&s[i * 2..(i + 1) * 2], 16).chain_err(
+                || {
+                    ErrorKind::InvalidHashString(s.to_owned())
+                },
+            )?;
+        }
+
+        Ok(ObjectHash(generic_array))
     }
 }
 
