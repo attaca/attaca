@@ -1,3 +1,4 @@
+use std::borrow::Borrow;
 use std::fs::{File, OpenOptions};
 use std::path::PathBuf;
 use std::result::Result as StdResult;
@@ -167,6 +168,8 @@ struct CatalogInner {
 
 #[derive(Debug, Clone)]
 pub struct Catalog {
+    // We must *never* attempt to wait for a catalog entry future while inner is locked - this will
+    // cause a deadlock!
     inner: Arc<Mutex<CatalogInner>>,
 }
 
@@ -222,6 +225,17 @@ impl Catalog {
         self.inner.lock().unwrap().objects.get(&hash).map(|entry| {
             entry.clone()
         })
+    }
+
+
+    pub fn search<K: Borrow<[u8]>>(&self, bytes: K) -> Vec<ObjectHash> {
+        self.inner
+            .lock()
+            .unwrap()
+            .objects
+            .iter_prefix(bytes.borrow())
+            .map(|(&hash, _)| hash)
+            .collect()
     }
 }
 
