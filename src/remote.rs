@@ -100,12 +100,13 @@ impl Remote {
                 let ctx_res = self.inner.conn.lock().unwrap().get_pool_context(
                     &self.inner.pool,
                 );
-                let result =
+                let result = {
                     async_block! {
-                    let mut ctx = ctx_res?;
-                    await!(ctx.write_full_async(&hash.to_string(), &bytes))?;
-                    lock_opt.map(CatalogLock::release);
-                    Ok(())
+                        let mut ctx = ctx_res?;
+                        await!(ctx.write_full_async(&hash.to_string(), &bytes))?;
+                        lock_opt.map(CatalogLock::release);
+                        Ok(())
+                    }
                 };
 
                 Box::new(result)
@@ -131,48 +132,42 @@ impl Remote {
             &self.inner.pool,
         );
 
-        let result =
+        let result = {
             async_block! {
-            let mut ctx = ctx_res?;
+                let mut ctx = ctx_res?;
 
-            let object_id = object_hash.to_string();
-            let stat = await!(ctx.stat_async(&object_id))?;
+                let object_id = object_hash.to_string();
+                let stat = await!(ctx.stat_async(&object_id))?;
 
-            let mut buf = BoxRefMut::new(Box::new(factory(stat.size as usize)))
-                .map_mut(|mmap| unsafe { mmap.as_mut_slice() });
+                let mut buf = BoxRefMut::new(Box::new(factory(stat.size as usize)))
+                    .map_mut(|mmap| unsafe { mmap.as_mut_slice() });
 
-            let mut total_read = 0;
-            let mmap = loop {
-                let (bytes_read_u64, new_buf) = await!(ctx.read_async(
-                    &object_id,
-                    buf.map_mut(
-                        |slice| &mut slice[total_read..],
-                    ),
-                    total_read as u64,
-                ))?;
+                let mut total_read = 0;
+                let mmap = loop {
+                    let (bytes_read_u64, new_buf) = await!(ctx.read_async(
+                        &object_id,
+                        buf.map_mut(
+                            |slice| &mut slice[total_read..],
+                        ),
+                        total_read as u64,
+                    ))?;
 
-                let bytes_read = bytes_read_u64 as usize;
-                total_read += bytes_read;
+                    let bytes_read = bytes_read_u64 as usize;
+                    total_read += bytes_read;
 
-                if bytes_read == new_buf.len() {
-                    break *new_buf.into_inner();
-                }
+                    if bytes_read == new_buf.len() {
+                        break *new_buf.into_inner();
+                    }
 
-                buf = new_buf;
-            };
+                    buf = new_buf;
+                };
 
-            let slice = arc_slice::mapped(mmap);
-            let object = Object::from_bytes(slice)?;
+                let slice = arc_slice::mapped(mmap);
+                let object = Object::from_bytes(slice)?;
 
-            Ok(object)
+                Ok(object)
+            }
         };
-
-        //             .and_then(|ctx| {
-        //                 ctx.read_async(&object_hash.to_string());
-        //             })
-        //             .into_future()
-        //             .from_err()
-        //             .flatten();
 
         Box::new(result)
     }

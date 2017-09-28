@@ -54,25 +54,26 @@ impl Local {
                         let path = self.blob_path.join(hash.to_path());
                         let io_pool = self.io_pool.clone();
 
-                        let result = fs::create_dir_all(path.parent().unwrap())
-                    .and_then(move |_| File::create(path))
-                    .into_future()
-                    .from_err()
-                    .and_then(move |file| {
-                        BufWriter::with_pool_and_capacity(io_pool, 4096, file)
-                            .write_all(bytes)
-                            .then(|res| -> Box<Future<Item = _, Error = _> + Send> {
-                                match res {
-                                    Ok((writer, _)) => Box::new(writer.flush_buf()),
-                                    Err((writer, _, err)) => Box::new(future::err((writer, err))),
-                                }
-                            })
-                            .and_then(|writer| writer.flush_inner())
-                            .then(|res| match res {
-                                Ok(_) => Ok(()),
-                                Err((_, err)) => Err(err.into()),
-                            })
-                    }).map(move |()| lock.release());
+                        let result = {
+                            async_block! {
+                                fs::create_dir_all(path.parent().unwrap())?;
+                                let file = File::create(path)?;
+                                let bufwriter =
+                                    BufWriter::with_pool_and_capacity(io_pool, 4096, file);
+
+                                let bufwriter = match await!(bufwriter.write_all(bytes)) {
+                                    Ok((writer, _)) => Ok(writer),
+                                    Err((_, _, err)) => Err(err),
+                                }?;
+
+                                let bufwriter = await!(bufwriter.flush_buf()).map_err(|(_, err)| err)?;
+                                await!(bufwriter.flush_inner()).map_err(|(_, err)| err)?;
+
+                                lock.release();
+
+                                Ok(())
+                            }
+                        };
 
                         return Box::new(result);
                     }
