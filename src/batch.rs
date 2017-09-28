@@ -84,7 +84,7 @@ impl<T: BatchTrace> Batch<T> {
         chunked: Chunked,
     ) -> Box<Future<Item = ObjectHash, Error = Error> + Send> {
         let tree = Tree::load(chunked.to_vec().into_iter().map(SmallRecord::from));
-        let tree_len = tree.len();
+        let tree_len = tree.total();
 
         self.len += tree_len;
 

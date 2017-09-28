@@ -48,6 +48,12 @@ impl Leaf {
         self.records.len()
     }
 
+    
+    /// The total number of objects in this leaf (1 + the number of records.)
+    fn total(&self) -> usize {
+        self.records.len() + 1
+    }
+
 
     /// Append a record to a leaf; if the leaf cannot hold the record and must split, this function
     /// will return `Err` with the left-hand side of the split.
@@ -101,6 +107,7 @@ impl Leaf {
 struct Internal {
     size: u64,
     count: usize,
+    total: usize,
     children: Vec<Node>,
 }
 
@@ -109,10 +116,12 @@ impl From<Vec<Node>> for Internal {
     fn from(children: Vec<Node>) -> Self {
         let size = children.iter().map(Node::size).sum();
         let count = children.iter().map(Node::count).sum();
+        let total = children.iter().map(Node::total).sum();
 
         Internal {
             size,
             count,
+            total,
             children,
         }
     }
@@ -125,6 +134,7 @@ impl Internal {
         Internal {
             size: elem.size(),
             count: elem.count(),
+            total: elem.total(),
             children: vec![elem],
         }
     }
@@ -142,6 +152,12 @@ impl Internal {
     }
 
 
+    /// The total number of objects held in the tree, including branch nodes.
+    fn total(&self) -> usize {
+        self.total + 1
+    }
+
+
     /// Append a node; if we must split to accomodate the new node, the left-hand side of the split
     /// is returned as `Err`.
     fn append(&mut self, node: Node) -> ::std::result::Result<(), Self> {
@@ -156,6 +172,7 @@ impl Internal {
 
             self.size -= right.size;
             self.count -= right.count;
+            self.total -= right.total;
 
             right.append(node).expect(ERR_BRANCH_FACTOR_TOO_SMALL);
 
@@ -214,6 +231,15 @@ impl Node {
         match *self {
             Node::Internal(ref internal) => internal.size(),
             Node::Leaf(ref leaf) => leaf.size(),
+        }
+    }
+
+
+    /// Get the number of objects this node holds, including itself.
+    fn total(&self) -> usize {
+        match *self {
+            Node::Internal(ref internal) => internal.total(),
+            Node::Leaf(ref leaf) => leaf.total(),
         }
     }
 
@@ -415,6 +441,12 @@ impl Tree {
     /// The number of records in the tree.
     pub fn len(&self) -> usize {
         self.root.count()
+    }
+
+
+    /// The number of nodes in the tree, including branch nodes.
+    pub fn total(&self) -> usize {
+        self.root.total()
     }
 
 
