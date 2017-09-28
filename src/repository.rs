@@ -6,7 +6,7 @@
 /// ```ignore
 /// _ .attaca
 /// +-- config.toml
-/// +-_ catalogs
+/// +-_ remote-catalogs
 ///    +-- <remote-name>.catalog
 /// +-- local.catalog
 /// +-_ blobs
