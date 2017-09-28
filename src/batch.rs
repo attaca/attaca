@@ -84,12 +84,13 @@ impl<T: BatchTrace> Batch<T> {
         chunked: Chunked,
     ) -> Box<Future<Item = ObjectHash, Error = Error> + Send> {
         let tree = Tree::load(chunked.to_vec().into_iter().map(SmallRecord::from));
+        let tree_total = tree.total();
 
-        self.len += tree.total();
+        self.len += tree_total;
 
         let marshal = tree.marshal(Hasher::with_trace(
             self.marshal_tx.clone(),
-            self.trace.on_marshal(tree_len),
+            self.trace.on_marshal(tree_total),
         ));
 
         Box::new(self.marshal_pool.spawn(marshal))
