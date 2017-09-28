@@ -18,7 +18,7 @@ pub struct MarshalProgressTrace {
 impl MarshalProgressTrace {
     pub fn new(pb: ProgressBar) -> Self {
         pb.set_style(ProgressStyle::default_bar().template(
-            "[{elapsed_precise}] {bar:40.green/blue} hashed {pos}/{len} chunks, last hashed {msg}",
+            "[{elapsed_precise}] {bar:40.green/blue} {pos}/{len} {msg}",
         ));
 
         pb.enable_steady_tick(500);
@@ -38,7 +38,7 @@ impl MarshalTrace for MarshalProgressTrace {
 
     fn on_hashed(&mut self, object_hash: &ObjectHash) {
         self.pb.inc(1);
-        self.pb.set_message(&object_hash.to_string());
+        self.pb.set_message(&format!("{}...", &object_hash.to_string()[0..8]));
     }
 }
 
@@ -58,7 +58,7 @@ pub struct SplitProgressTrace {
 impl SplitProgressTrace {
     pub fn new(pb: ProgressBar) -> Self {
         pb.set_style(ProgressStyle::default_bar().template(
-            "[{elapsed_precise}] {bar:40.cyan/blue} split {bytes}/{total_bytes}",
+            "[{elapsed_precise}] {bar:40.cyan/blue} {bytes}/{total_bytes}",
         ));
 
         Self { pb }
@@ -90,7 +90,7 @@ pub struct WriteProgressTrace {
 impl WriteProgressTrace {
     pub fn new(pb: ProgressBar, destination: WriteDestination) -> Self {
         pb.set_style(ProgressStyle::default_bar().template(
-            "[{elapsed_precise}] {bar:40.yellow/blue} {pos}/{len} objects written to {prefix}, {msg}",
+            "[{elapsed_precise}] {bar:40.yellow/blue} {pos}/{len} {msg} {prefix}",
         ));
 
         pb.enable_steady_tick(500);
@@ -103,7 +103,11 @@ impl WriteProgressTrace {
             WriteDestination::Remote(&None, _) => pb.set_prefix("remote"),
         }
 
-        let mut new = Self { in_progress: 0, last_written: None, pb };
+        let mut new = Self {
+            in_progress: 0,
+            last_written: None,
+            pb,
+        };
         new.update_msg();
 
         new
@@ -114,14 +118,14 @@ impl WriteProgressTrace {
         match self.last_written.as_ref() {
             Some(last_written) => {
                 self.pb.set_message(&format!(
-                    "{} in progress, last written: {}",
+                    "({}) {}...",
                     self.in_progress,
-                    last_written,
+                    &last_written.to_string()[0..8],
                 ))
             }
             None => {
                 self.pb.set_message(
-                    &format!("{} in progress", self.in_progress),
+                    &format!("({})", self.in_progress),
                 )
             }
         }

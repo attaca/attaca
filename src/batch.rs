@@ -15,7 +15,7 @@ use futures::sync::mpsc::{self, Sender, Receiver};
 use futures_cpupool::CpuPool;
 use memmap::{Mmap, Protection};
 
-use ::BATCH_FUTURE_BUFFER_SIZE;
+use BATCH_FUTURE_BUFFER_SIZE;
 use arc_slice::{self, ArcSlice};
 use errors::*;
 use marshal::{Hashed, Hasher, ObjectHash, SmallRecord, Tree};
@@ -57,9 +57,7 @@ impl<T: BatchTrace> Batch<T> {
     ///
     /// * `file` - the file to read. *Must be opened with read permissions!*
     fn read(&mut self, file: &File) -> Result<ArcSlice> {
-        Ok(
-            arc_slice::mapped(Mmap::open(file, Protection::Read)?),
-        )
+        Ok(arc_slice::mapped(Mmap::open(file, Protection::Read)?))
     }
 
 

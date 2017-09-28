@@ -3,7 +3,6 @@ use std::mem;
 use futures::prelude::*;
 use futures::stream;
 
-use MARSHAL_FUTURE_BUFFER_SIZE;
 use errors::*;
 use marshal::{Hasher, ObjectHash, LargeObject, SmallRecord};
 use trace::MarshalTrace;
@@ -85,7 +84,7 @@ impl Leaf {
             });
 
             stream::iter_ok(futures)
-                .buffered(MARSHAL_FUTURE_BUFFER_SIZE)
+                .and_then(|x| x)// .buffered(MARSHAL_FUTURE_BUFFER_SIZE)
                 .collect()
                 .and_then(move |children| {
                     hasher.compute(LargeObject { size, children })
@@ -178,7 +177,7 @@ impl Internal {
                     (child_size, child_hash)
                 },
             )
-        })).buffered(MARSHAL_FUTURE_BUFFER_SIZE)
+        })).and_then(|x| x)//.buffered(MARSHAL_FUTURE_BUFFER_SIZE)
             .collect();
 
         let self_size = self.size;

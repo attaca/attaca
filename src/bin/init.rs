@@ -23,7 +23,9 @@ pub fn command() -> App<'static, 'static> {
 
 pub fn go(matches: &ArgMatches) -> Result<()> {
     let wd = env::current_dir()?;
-    let path = matches.value_of("directory").map(PathBuf::from).unwrap_or(wd);
+    let path = matches.value_of("directory").map(PathBuf::from).unwrap_or(
+        wd,
+    );
 
     let repository = Repository::init(path);
 

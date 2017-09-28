@@ -71,7 +71,7 @@ impl LargeObject {
 /// The marshaled, deserialized representation of a subtree.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SubtreeObject {
-    entries: BTreeMap<PathBuf, ObjectHash>,
+    pub entries: BTreeMap<PathBuf, ObjectHash>,
 }
 
 
@@ -79,16 +79,16 @@ pub struct SubtreeObject {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct CommitObject {
     /// The subtree the commit object references.
-    subtree: ObjectHash,
+    pub subtree: ObjectHash,
 
     /// The parents of the commit.
-    parents: Vec<ObjectHash>,
+    pub parents: Vec<ObjectHash>,
 
     /// A commit message, provided by the user.
-    message: String,
+    pub message: String,
 
     /// The commit timestamp, denoting when the commit was made locally.
-    timestamp: DateTime<Utc>,
+    pub timestamp: DateTime<Utc>,
 }
 
 
@@ -217,5 +217,11 @@ impl Object {
             Object::Subtree(ref subtree) => RawObject::Subtree(Cow::Borrowed(subtree)),
             Object::Commit(ref commit) => RawObject::Commit(Cow::Borrowed(commit)),
         }
+    }
+
+
+    pub fn encoded_size(&self) -> u64 {
+        let raw_object = self.as_raw();
+        bincode::serialized_size(&raw_object)
     }
 }

@@ -1,12 +1,12 @@
+use std::collections::HashMap;
 use std::env;
-use std::ffi::CString;
 use std::path::{Path, PathBuf};
 
 use clap::{App, SubCommand, Arg, ArgMatches};
 use futures::prelude::*;
 
 use attaca::context::Context;
-use attaca::repository::{Repository, RemoteCfg, RadosCfg, EtcdCfg};
+use attaca::repository::Repository;
 use attaca::trace::Trace;
 
 use errors::*;
@@ -53,6 +53,18 @@ fn run<P: AsRef<Path>, T: Trace>(conf_dir: P, matches: &ArgMatches, trace: T) ->
     let conf = conf_dir.as_ref().join("ceph.conf");
     let keyring = conf_dir.as_ref().join("ceph.client.admin.keyring");
 
+    let _ = ::execute(vec![
+        "attaca",
+        "remote",
+        "add",
+        "_debug",
+        "--ceph",
+        "--ceph-conf",
+        &conf.display().to_string(),
+        "--ceph-keyring",
+        &keyring.display().to_string(),
+    ]);
+
     let wd = matches
         .value_of("repository")
         .map(PathBuf::from)
@@ -60,27 +72,18 @@ fn run<P: AsRef<Path>, T: Trace>(conf_dir: P, matches: &ArgMatches, trace: T) ->
     let repo = Repository::find(wd).chain_err(
         || "unable to find repository",
     )?;
-    let context = Context::with_trace(repo, trace);
+    let mut context = Context::with_trace(repo, trace);
     let mut batch = context.with_batch();
 
     let chunked = batch.chunk_file(path).chain_err(|| "unable to chunk file")?;
     let hash_future = batch.marshal_file(chunked);
 
-    let remote_ctx = context
-        .with_remote_from_cfg(
-            None,
-            RemoteCfg {
-                object_store: RadosCfg {
-                    conf,
-                    pool: CString::new("rbd").unwrap(),
-                    user: CString::new("admin").unwrap(),
-                    keyring: Some(keyring),
-                },
+    let mut options = HashMap::new();
+    options.insert("keyring".to_owned(), keyring.to_string_lossy().into_owned());
 
-                ref_store: EtcdCfg { cluster: Vec::new() },
-            },
-        )
-        .chain_err(|| "unable to open remote context")?;
+    let remote_ctx = context.with_remote("_debug").chain_err(
+        || "unable to open remote context",
+    )?;
 
     let batch_future = remote_ctx.write_batch(batch);
 
