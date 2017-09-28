@@ -216,6 +216,13 @@ impl Catalog {
             Entry::Occupied(occupied) => Err(occupied.get().clone()),
         }
     }
+
+
+    pub fn get(&self, hash: ObjectHash) -> Option<CatalogEntry> {
+        self.inner.lock().unwrap().objects.get(&hash).map(|entry| {
+            entry.clone()
+        })
+    }
 }
 
 

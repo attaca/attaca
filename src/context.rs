@@ -191,6 +191,14 @@ pub struct RemoteContext<'a, T: Trace> {
 
 
 impl<'a, T: Trace> RemoteContext<'a, T> {
+    pub fn read_object(
+        &self,
+        object_hash: ObjectHash,
+    ) -> Box<Future<Item = Object, Error = Error>> {
+        self.remote.read_object(object_hash)
+    }
+
+
     /// Write a fully marshalled batch to the remote repository.
     // TODO: Recover from errors when sending objects.
     pub fn write_batch(

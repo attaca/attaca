@@ -42,7 +42,7 @@ pub fn go(matches: &ArgMatches) -> Result<()> {
     let object_hash = value_t!(matches.value_of("OBJECT"), ObjectHash)?;
 
     let object = match matches.value_of("remote") {
-        Some(_remote) => unimplemented!(),
+        Some(remote) => context.with_remote(remote)?.read_object(object_hash).wait()?,
         None => context.with_local()?.read_object(object_hash).wait()?,
     };
 

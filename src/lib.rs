@@ -23,6 +23,7 @@ extern crate memmap;
 extern crate owning_ref;
 extern crate qp_trie;
 extern crate rad;
+extern crate stable_deref_trait;
 #[macro_use]
 extern crate serde_derive;
 extern crate seahash;

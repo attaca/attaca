@@ -38,7 +38,9 @@ impl MarshalTrace for MarshalProgressTrace {
 
     fn on_hashed(&mut self, object_hash: &ObjectHash) {
         self.pb.inc(1);
-        self.pb.set_message(&format!("{}...", &object_hash.to_string()[0..8]));
+        self.pb.set_message(
+            &format!("{}...", &object_hash.to_string()[0..8]),
+        );
     }
 }
 
@@ -123,11 +125,7 @@ impl WriteProgressTrace {
                     &last_written.to_string()[0..8],
                 ))
             }
-            None => {
-                self.pb.set_message(
-                    &format!("({})", self.in_progress),
-                )
-            }
+            None => self.pb.set_message(&format!("({})", self.in_progress)),
         }
     }
 }
