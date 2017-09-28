@@ -102,18 +102,18 @@ impl<T: Trace> Context<T> {
             .chain_err(|| ErrorKind::RemoteGetCatalog(remote_ref.to_owned()))?;
 
         self.with_remote_from_cfg(
-            Some(remote_ref.to_owned()),
+            remote_ref.to_owned(),
             remote_cfg,
-            Some(remote_catalog),
+            remote_catalog,
         )
     }
 
 
     fn with_remote_from_cfg(
         &mut self,
-        name: Option<String>,
+        name: String,
         cfg: RemoteCfg,
-        catalog: Option<Catalog>,
+        catalog: Catalog,
     ) -> Result<RemoteContext<T>> {
         let remote = Remote::connect(&self, &cfg, catalog)?;
 
@@ -183,7 +183,7 @@ impl<'a, T: Trace> LocalContext<'a, T> {
 pub struct RemoteContext<'a, T: Trace> {
     ctx: &'a mut Context<T>,
 
-    name: Option<String>,
+    name: String,
     cfg: RemoteCfg,
 
     remote: Remote,

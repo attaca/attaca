@@ -10,7 +10,7 @@ use futures::prelude::*;
 use owning_ref::OwningRefMut;
 use rad::{ConnectionBuilder, Connection};
 
-use catalog::{Catalog, CatalogLock};
+use catalog::Catalog;
 use context::Context;
 use errors::*;
 use local::Local;
@@ -28,7 +28,7 @@ use trace::Trace;
 pub struct Remote {
     local: Local,
 
-    catalog: Option<Catalog>,
+    catalog: Catalog,
     inner: Arc<RemoteInner>,
 }
 
@@ -41,11 +41,7 @@ struct RemoteInner {
 
 impl Remote {
     /// Connect to a remote repository, given appropriate configuration data.
-    pub fn connect<T: Trace>(
-        ctx: &Context<T>,
-        cfg: &RemoteCfg,
-        catalog: Option<Catalog>,
-    ) -> Result<Self> {
+    pub fn connect<T: Trace>(ctx: &Context<T>, cfg: &RemoteCfg, catalog: Catalog) -> Result<Self> {
         let local = Local::new(ctx).chain_err(|| ErrorKind::LocalLoad)?;
 
         let conn = {
@@ -83,13 +79,9 @@ impl Remote {
     // TODO: Don't send the object if we know the remote already contains it.
     // TODO: Query the remote to see if it contains the object already. If so, don't send.
     pub fn write_object(&self, hashed: Hashed) -> Box<Future<Item = (), Error = Error> + Send> {
-        let lock_opt_res = self.catalog.as_ref().map(|catalog| {
-            catalog.try_lock(*hashed.as_hash())
-        });
-        let lock_opt = match lock_opt_res {
-            Some(Ok(lock)) => Some(lock),
-            None => None,
-            Some(Err(future)) => return Box::new(future),
+        let lock = match self.catalog.try_lock(*hashed.as_hash()) {
+            Ok(lock) => lock,
+            Err(future) => return Box::new(future),
         };
         let (hash, bytes_opt) = hashed.into_components();
 
@@ -102,7 +94,7 @@ impl Remote {
                     async_block! {
                         let mut ctx = ctx_res?;
                         await!(ctx.write_full_async(&hash.to_string(), &bytes))?;
-                        lock_opt.map(CatalogLock::release);
+                        lock.release();
                         Ok(())
                     }
                 };

@@ -43,7 +43,7 @@ pub enum WriteDestination<'a> {
 
     /// The destination is a remote, either named or unnamed. If named, the name is the same as
     /// given in the repository remote configuration.
-    Remote(&'a Option<String>, &'a RemoteCfg),
+    Remote(&'a str, &'a RemoteCfg),
 }
 
 

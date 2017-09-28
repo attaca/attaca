@@ -99,10 +99,9 @@ impl WriteProgressTrace {
 
         match destination {
             WriteDestination::Local => pb.set_prefix("local"),
-            WriteDestination::Remote(&Some(ref name), _) => {
+            WriteDestination::Remote(name, _) => {
                 pb.set_prefix(&format!("remote {}", name))
             }
-            WriteDestination::Remote(&None, _) => pb.set_prefix("remote"),
         }
 
         let mut new = Self {
