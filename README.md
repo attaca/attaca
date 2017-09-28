@@ -17,11 +17,16 @@ rustup override set nightly
 ```
 
 Other dependencies are an installation of the librados-2 library, specifically
-the development files.  These can be installed with:
+the development files. *Make sure to install Ceph Kraken or later!* These can
+be installed with:
 
 ```
-sudo apt-get librados-dev    # Ubuntu (tested on 14.04 LTS)
-dnf install librados2-devel  # Fedora (tested on Fedora 24)
+# Ubuntu (tested on 14.04 LTS)
+sudo apt-add-repository "deb https://download.ceph.com/debian-luminous/ `lsb_release -sc` main"
+sudo apt-get librados-dev
+
+# Fedora (tested on Fedora 24)
+dnf install librados2-devel
 ```
 
 Testing requires an installation of Docker. Once Rust, Cargo, and other
