@@ -24,7 +24,7 @@ pub fn command() -> App<'static, 'static> {
 
 pub fn go(matches: &ArgMatches) -> Result<()> {
     let wd = env::current_dir()?;
-    let repository = Repository::find(&wd)?;
+    let mut repository = Repository::find(&wd)?;
 
     if matches.is_present("all") {
         repository.clear_catalogs()?;

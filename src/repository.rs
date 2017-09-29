@@ -19,14 +19,14 @@ use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 
 use itertools::Itertools;
 use toml;
 
-use {METADATA_PATH, BLOBS_PATH, CONFIG_PATH, REMOTE_CATALOGS_PATH, LOCAL_CATALOG_PATH};
+use {METADATA_PATH, BLOBS_PATH, CONFIG_PATH, REMOTE_CATALOGS_PATH, LOCAL_CATALOG_PATH, INDEX_PATH};
 use catalog::{Catalog, CatalogTrie};
 use errors::*;
+use index::Index;
 
 
 /// The persistent configuration data for a single pool of a RADOS cluster.
@@ -93,7 +93,10 @@ pub struct Repository {
     pub config: Config,
 
     /// Catalogs for local and remote object stores.
-    catalogs: Mutex<HashMap<Option<String>, Option<Catalog>>>,
+    catalogs: HashMap<Option<String>, Option<Catalog>>,
+
+    /// The local index.
+    index: Index,
 
     /// The absolute path to the root of the repository.
     path: PathBuf,
@@ -186,12 +189,15 @@ impl Repository {
                 .collect();
             catalog_map.insert(None, None);
 
-            Mutex::new(catalog_map)
+            catalog_map
         };
+
+        let index = Index::open(path_ref.join(&*INDEX_PATH))?;
 
         Ok(Repository {
             config,
             catalogs,
+            index,
             path: path_ref.to_owned(),
             config_path,
             blob_path: path_ref.join(&*BLOBS_PATH),
@@ -251,10 +257,8 @@ impl Repository {
     }
 
 
-    pub fn get_catalog(&self, name_opt: Option<String>) -> Result<Catalog> {
-        let mut catalogs_lock = self.catalogs.lock().unwrap();
-
-        match catalogs_lock.get(&name_opt) {
+    pub fn get_catalog(&mut self, name_opt: Option<String>) -> Result<Catalog> {
+        match self.catalogs.get(&name_opt) {
             Some(&Some(ref catalog)) => return Ok(catalog.clone()),
             Some(&None) => {}
             None => bail!(ErrorKind::CatalogNotFound(name_opt)),
@@ -271,19 +275,14 @@ impl Repository {
                 ErrorKind::CatalogLoad(catalog_path.into_owned())
             },
         )?;
-        catalogs_lock.insert(name_opt, Some(catalog.clone()));
+        self.catalogs.insert(name_opt, Some(catalog.clone()));
 
         Ok(catalog)
     }
 
 
-    pub fn clear_catalogs(&self) -> Result<()> {
-        let catalog_names = self.catalogs
-            .lock()
-            .unwrap()
-            .keys()
-            .cloned()
-            .collect::<Vec<_>>();
+    pub fn clear_catalogs(&mut self) -> Result<()> {
+        let catalog_names = self.catalogs.keys().cloned().collect::<Vec<_>>();
 
         for name in catalog_names {
             self.get_catalog(name)?.clear()?;

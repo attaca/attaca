@@ -108,11 +108,11 @@ pub struct Local {
 
 
 impl Local {
-    pub fn new<T: Trace>(ctx: &Context<T>) -> Result<Self> {
+    pub fn new<T: Trace>(ctx: &mut Context<T>) -> Result<Self> {
         Ok(Local {
             blob_path: Arc::new(ctx.get_repository().get_blob_path().to_owned()),
             io_pool: ctx.get_io_pool().clone(),
-            catalog: ctx.get_repository().get_catalog(None)?,
+            catalog: ctx.get_local_catalog()?,
             objects: Arc::new(Mutex::new(HashMap::new())),
         })
     }

@@ -74,6 +74,27 @@ impl<T: Trace> Context<T> {
     }
 
 
+    pub fn get_local_catalog(&mut self) -> Result<Catalog> {
+        self.repository.get_catalog(None)
+    }
+
+
+    pub fn get_remote_catalog<U: Into<String>>(&mut self, remote_name: U) -> Result<Catalog> {
+        self.repository.get_catalog(Some(remote_name.into()))
+    }
+
+
+    pub fn get_remote_cfg<U: AsRef<str> + Into<String>>(
+        &self,
+        remote_name: U,
+    ) -> Result<RemoteCfg> {
+        match self.repository.config.remotes.get(remote_name.as_ref()) {
+            Some(remote_cfg) => Ok(remote_cfg.to_owned()),
+            None => bail!(ErrorKind::RemoteNotFound(remote_name.into())),
+        }
+    }
+
+
     pub fn with_batch(&self) -> Batch<T::BatchTrace> {
         Batch::with_trace(
             self.marshal_pool.clone(),
@@ -90,35 +111,16 @@ impl<T: Trace> Context<T> {
 
 
     /// Load a remote configuration, producing a `RemoteContext`.
-    pub fn with_remote<U: AsRef<str>>(&mut self, remote: U) -> Result<RemoteContext<T>> {
-        let remote_ref = remote.as_ref();
-        let remote_cfg = match self.repository.config.remotes.get(remote_ref) {
-            Some(remote_cfg) => remote_cfg.to_owned(),
-            None => bail!(ErrorKind::RemoteNotFound(remote_ref.to_owned())),
-        };
-
-        let remote_catalog = self.repository
-            .get_catalog(Some(remote_ref.to_owned()))
-            .chain_err(|| ErrorKind::RemoteGetCatalog(remote_ref.to_owned()))?;
-
-        self.with_remote_from_cfg(remote_ref.to_owned(), remote_cfg, remote_catalog)
-    }
-
-
-    fn with_remote_from_cfg(
+    pub fn with_remote<U: AsRef<str> + Into<String>>(
         &mut self,
-        name: String,
-        cfg: RemoteCfg,
-        catalog: Catalog,
+        remote_name: U,
     ) -> Result<RemoteContext<T>> {
-        let remote = Remote::connect(&self, &cfg, catalog)?;
+        let name = remote_name.as_ref().to_owned();
+        let remote = Remote::connect(self, remote_name)?;
 
         Ok(RemoteContext {
             ctx: self,
-
             name,
-            cfg,
-
             remote,
         })
     }
@@ -178,10 +180,7 @@ impl<'a, T: Trace> LocalContext<'a, T> {
 // TODO: Abstract away the backend so that other K/V stores than Ceph/RADOS may be used.
 pub struct RemoteContext<'a, T: Trace> {
     ctx: &'a mut Context<T>,
-
     name: String,
-    cfg: RemoteCfg,
-
     remote: Remote,
 }
 
@@ -205,7 +204,6 @@ impl<'a, T: Trace> RemoteContext<'a, T> {
             &batch,
             WriteDestination::Remote(
                 &self.name,
-                &self.cfg,
             ),
         )));
 

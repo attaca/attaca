@@ -19,7 +19,7 @@ pub fn command() -> App<'static, 'static> {
 
 pub fn go(_matches: &ArgMatches) -> Result<()> {
     let wd = env::current_dir()?;
-    let repository = Repository::find(wd)?;
+    let mut repository = Repository::find(wd)?;
     let catalog = repository.get_catalog(None)?;
 
     let stats = Stats { object_count: catalog.len() };

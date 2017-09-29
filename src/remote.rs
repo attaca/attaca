@@ -15,7 +15,6 @@ use context::Context;
 use errors::*;
 use local::Local;
 use marshal::{Hashed, ObjectHash, Object};
-use repository::RemoteCfg;
 use trace::Trace;
 
 
@@ -41,8 +40,8 @@ struct RemoteInner {
 
 impl Remote {
     /// Connect to a remote repository, given appropriate configuration data.
-    pub fn connect<T: Trace>(ctx: &Context<T>, cfg: &RemoteCfg, catalog: Catalog) -> Result<Self> {
-        let local = Local::new(ctx).chain_err(|| ErrorKind::LocalLoad)?;
+    pub fn connect<T: Trace, U: AsRef<str> + Into<String>>(ctx: &mut Context<T>, remote_name: U) -> Result<Self> {
+        let cfg = ctx.get_remote_cfg(remote_name.as_ref())?;
 
         let conn = {
             let mut builder = ConnectionBuilder::with_user(&cfg.object_store.user)
@@ -68,8 +67,8 @@ impl Remote {
         let pool = cfg.object_store.pool.clone();
 
         Ok(Remote {
-            local,
-            catalog,
+            local: Local::new(ctx).chain_err(|| ErrorKind::LocalLoad)?,
+            catalog: ctx.get_remote_catalog(remote_name)?,
             inner: Arc::new(RemoteInner { conn, pool }),
         })
     }
