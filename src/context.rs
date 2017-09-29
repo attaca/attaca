@@ -101,11 +101,7 @@ impl<T: Trace> Context<T> {
             .get_catalog(Some(remote_ref.to_owned()))
             .chain_err(|| ErrorKind::RemoteGetCatalog(remote_ref.to_owned()))?;
 
-        self.with_remote_from_cfg(
-            remote_ref.to_owned(),
-            remote_cfg,
-            remote_catalog,
-        )
+        self.with_remote_from_cfg(remote_ref.to_owned(), remote_cfg, remote_catalog)
     }
 
 
@@ -165,8 +161,8 @@ impl<'a, T: Trace> LocalContext<'a, T> {
                 let trace = trace.clone();
 
                 trace.lock().unwrap().on_begin(&hash);
-                let write = local.write_object(hashed).map(move |_| {
-                    trace.lock().unwrap().on_complete(&hash);
+                let write = local.write_object(hashed).map(move |fresh| {
+                    trace.lock().unwrap().on_complete(&hash, fresh);
                 });
                 io_pool.spawn(write)
             })
@@ -222,8 +218,9 @@ impl<'a, T: Trace> RemoteContext<'a, T> {
                 let trace = trace.clone();
 
                 trace.lock().unwrap().on_begin(&hash);
-                let written = remote.write_object(hashed);
-                written.map(move |_| { trace.lock().unwrap().on_complete(&hash); })
+                remote.write_object(hashed).map(move |fresh| {
+                    trace.lock().unwrap().on_complete(&hash, fresh);
+                })
             })
             .buffer_unordered(WRITE_FUTURE_BUFFER_SIZE)
             .for_each(|_| Ok(()));

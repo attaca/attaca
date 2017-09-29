@@ -84,13 +84,14 @@ impl Drop for SplitProgressTrace {
 
 pub struct WriteProgressTrace {
     in_progress: usize,
+    total_unique: u64,
     last_written: Option<ObjectHash>,
     pb: ProgressBar,
 }
 
 
 impl WriteProgressTrace {
-    pub fn new(pb: ProgressBar, destination: WriteDestination) -> Self {
+    pub fn new(total_unique: u64, pb: ProgressBar, destination: WriteDestination) -> Self {
         pb.set_style(ProgressStyle::default_bar().template(
             "[{elapsed_precise}] {bar:40.yellow/blue} {pos}/{len} {msg} {prefix}",
         ));
@@ -106,6 +107,7 @@ impl WriteProgressTrace {
 
         let mut new = Self {
             in_progress: 0,
+            total_unique,
             last_written: None,
             pb,
         };
@@ -137,10 +139,15 @@ impl WriteTrace for WriteProgressTrace {
     }
 
 
-    fn on_complete(&mut self, object_hash: &ObjectHash) {
+    fn on_complete(&mut self, object_hash: &ObjectHash, fresh: bool) {
         self.in_progress -= 1;
-        self.pb.inc(1);
-        self.last_written = Some(*object_hash);
+        if fresh {
+            self.pb.inc(1);
+            self.last_written = Some(*object_hash);
+        } else {
+            self.total_unique -= 1;
+            self.pb.set_length(self.total_unique);
+        }
         self.update_msg();
     }
 }
@@ -234,8 +241,9 @@ impl Trace for ProgressTrace {
         batch: &Batch<Self::BatchTrace>,
         destination: WriteDestination,
     ) -> Self::WriteTrace {
-        let progress_bar = self.multi.add(ProgressBar::new(batch.len() as u64));
+        let batch_len = batch.len() as u64;
+        let progress_bar = self.multi.add(ProgressBar::new(batch_len));
 
-        WriteProgressTrace::new(progress_bar, destination)
+        WriteProgressTrace::new(batch_len, progress_bar, destination)
     }
 }

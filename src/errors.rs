@@ -91,5 +91,10 @@ error_chain! {
             description("no such remote")
             display("no such remote `{}`", name)
         }
+
+        RepositoryNotFound(path: PathBuf) {
+            description("repository not found")
+            display("no repository found in {} or in any parent directory", path.display())
+        }
     }
 }

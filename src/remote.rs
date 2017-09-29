@@ -75,13 +75,13 @@ impl Remote {
     }
 
 
-    /// Write a single object to the remote repository.
-    // TODO: Don't send the object if we know the remote already contains it.
+    /// Write a single object to the remote repository. Returns `false` and performs no I/O if the
+    /// catalog shows that the remote already contains the object; `true` otherwise.
     // TODO: Query the remote to see if it contains the object already. If so, don't send.
-    pub fn write_object(&self, hashed: Hashed) -> Box<Future<Item = (), Error = Error> + Send> {
+    pub fn write_object(&self, hashed: Hashed) -> Box<Future<Item = bool, Error = Error> + Send> {
         let lock = match self.catalog.try_lock(*hashed.as_hash()) {
             Ok(lock) => lock,
-            Err(future) => return Box::new(future),
+            Err(future) => return Box::new(future.map(|_| false)),
         };
         let (hash, bytes_opt) = hashed.into_components();
 
@@ -95,7 +95,7 @@ impl Remote {
                         let mut ctx = ctx_res?;
                         await!(ctx.write_full_async(&hash.to_string(), &bytes))?;
                         lock.release();
-                        Ok(())
+                        Ok(true)
                     }
                 };
 
@@ -103,7 +103,7 @@ impl Remote {
             }
 
             None => {
-                unimplemented!("Must load local blob!");
+                unimplemented!("TODO: Must load local blob!");
             }
         }
     }

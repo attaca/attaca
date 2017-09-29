@@ -207,10 +207,7 @@ impl Repository {
 
         while !attaca_path.join(".attaca").is_dir() {
             if !attaca_path.pop() {
-                bail!(
-                    "the directory {} is not a subdirectory of a repository!",
-                    path.as_ref().to_string_lossy()
-                );
+                bail!(ErrorKind::RepositoryNotFound(path.as_ref().to_owned()));
             }
         }
 
@@ -269,12 +266,30 @@ impl Repository {
             }
             None => Cow::Borrowed(&self.local_catalog_path),
         };
-        let catalog = Catalog::load(catalog_path.clone().into_owned()).chain_err(|| {
-            ErrorKind::CatalogLoad(catalog_path.into_owned())
-        })?;
+        let catalog = Catalog::load(catalog_path.clone().into_owned()).chain_err(
+            || {
+                ErrorKind::CatalogLoad(catalog_path.into_owned())
+            },
+        )?;
         catalogs_lock.insert(name_opt, Some(catalog.clone()));
 
         Ok(catalog)
+    }
+
+
+    pub fn clear_catalogs(&self) -> Result<()> {
+        let catalog_names = self.catalogs
+            .lock()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+
+        for name in catalog_names {
+            self.get_catalog(name)?.clear()?;
+        }
+
+        Ok(())
     }
 
 

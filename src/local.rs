@@ -118,8 +118,11 @@ impl Local {
     }
 
 
-    /// Write an object to the file system. This will open and then close a file.
-    pub fn write_object(&self, hashed: Hashed) -> Box<Future<Item = (), Error = Error> + Send> {
+    /// Write an object to the file system. Assuming the file has not yet been written, this will
+    /// open and then close a file, and the resulting future will return `true` if the object has
+    /// not been written and `false` if the object already exists in the catalog and no I/O was
+    /// performed.
+    pub fn write_object(&self, hashed: Hashed) -> Box<Future<Item = bool, Error = Error> + Send> {
         match self.catalog.try_lock(*hashed.as_hash()) {
             Ok(lock) => {
                 match hashed.into_components() {
@@ -144,7 +147,7 @@ impl Local {
 
                                 lock.release();
 
-                                Ok(())
+                                Ok(true)
                             }
                         };
 
@@ -156,7 +159,7 @@ impl Local {
                     }
                 }
             }
-            Err(entry) => Box::new(entry),
+            Err(entry) => Box::new(entry.map(|_| false)),
         }
     }
 

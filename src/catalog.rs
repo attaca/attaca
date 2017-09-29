@@ -1,5 +1,6 @@
 use std::borrow::Borrow;
 use std::fs::{File, OpenOptions};
+use std::mem;
 use std::path::PathBuf;
 use std::result::Result as StdResult;
 use std::sync::{Arc, Weak, Mutex};
@@ -70,7 +71,7 @@ impl Drop for CatalogLock {
                 OK_READY,
                 Ordering::SeqCst,
             );
-            assert_eq!(previous_state, OK_NOT_READY);
+            assert_eq!(previous_state, OK_NOT_READY, "Lock forcibly canceled!");
             self.catalog.inner.lock().unwrap().objects.insert(
                 self.hash,
                 CatalogEntry::Finished,
@@ -101,6 +102,20 @@ impl Future for CatalogFuture {
             ERR => bail!(ErrorKind::CatalogPoisoned),
             _ => unreachable!("Invalid CatalogLock state!"),
         }
+    }
+}
+
+
+impl CatalogFuture {
+    fn cancel_lock(&self) -> Result<()> {
+        let prev_state = self.inner.locked.compare_and_swap(
+            OK_NOT_READY,
+            ERR,
+            Ordering::SeqCst,
+        );
+        ensure!(prev_state != ERR, ErrorKind::CatalogPoisoned);
+
+        Ok(())
     }
 }
 
@@ -241,6 +256,29 @@ impl Catalog {
 
     pub fn len(&self) -> usize {
         self.inner.lock().unwrap().objects.count()
+    }
+
+
+    /// Clear all registered hashes from the catalog. Clearing a `Catalog` will cancel any
+    /// in-progress locks, causing any outstanding locks to panic when dropped and `CatalogFuture`s
+    /// to return `Err`s.
+    ///
+    /// Needless to say it is not a good idea to call this while writing any objects.
+    pub fn clear(&self) -> Result<()> {
+        let mut inner_lock = self.inner.lock().unwrap();
+        let objects = mem::replace(&mut inner_lock.objects, Trie::new());
+
+        for (_, value) in objects {
+            if let CatalogEntry::Locked(future) = value {
+                // Using `clear` on a `Catalog` which is locked is Very Bad and will probably cause
+                // everything to crash.
+                future.cancel_lock()?;
+            }
+        }
+
+        let _ = inner_lock;
+
+        Ok(())
     }
 }
 

@@ -54,7 +54,7 @@ pub trait WriteTrace: Send + Sized + 'static {
     fn on_begin(&mut self, _object_hash: &ObjectHash) {}
 
     /// Called when a write operation completes.
-    fn on_complete(&mut self, _object_hash: &ObjectHash) {}
+    fn on_complete(&mut self, _object_hash: &ObjectHash, _fresh: bool) {}
 }
 
 
