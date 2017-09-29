@@ -237,6 +237,11 @@ impl Catalog {
             .map(|(&hash, _)| hash)
             .collect()
     }
+
+
+    pub fn len(&self) -> usize {
+        self.inner.lock().unwrap().objects.count()
+    }
 }
 
 

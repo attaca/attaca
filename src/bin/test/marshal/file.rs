@@ -21,7 +21,7 @@ Written objects can be found in .attaca/blobs. For some object with a given hash
 
 
 pub fn command() -> App<'static, 'static> {
-    SubCommand::with_name("marshal")
+    SubCommand::with_name("file")
         .about(
             "Chunk and marshal a single file, writing all resulting objects to disk.",
         )

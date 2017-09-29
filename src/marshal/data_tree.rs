@@ -426,15 +426,15 @@ impl Node {
 /// A B+ tree used to marshal small objects into a B+ tree structure with large objects as nodes
 /// and small objects as records.
 #[derive(Clone, Debug)]
-pub struct Tree {
+pub struct DataTree {
     root: Node,
 }
 
 
-impl Tree {
+impl DataTree {
     /// Bulk-load the tree.
     pub fn load<I: IntoIterator<Item = SmallRecord>>(iterable: I) -> Self {
-        Tree { root: Node::load(iterable) }
+        DataTree { root: Node::load(iterable) }
     }
 
 
@@ -513,7 +513,7 @@ mod tests {
             let mut pos = 0;
             let mut index = Vec::new();
 
-            let tree = Tree::load(chunks.iter().map(|chunk| {
+            let tree = DataTree::load(chunks.iter().map(|chunk| {
                 let slice = chunk.as_ref();
 
                 index.push((pos, slice));
@@ -545,7 +545,7 @@ mod tests {
     fn load() {
         let chunk = SmallRecord::Deep(Cow::Borrowed(&[0][..]));
 
-        let tree = Tree::load(vec![chunk; BRANCH_FACTOR + 1]);
+        let tree = DataTree::load(vec![chunk; BRANCH_FACTOR + 1]);
 
         assert_eq!(tree.len(), BRANCH_FACTOR + 1, "{:?}", tree);
     }

@@ -18,7 +18,7 @@ use memmap::{Mmap, Protection};
 use BATCH_FUTURE_BUFFER_SIZE;
 use arc_slice::{self, ArcSlice};
 use errors::*;
-use marshal::{Hashed, Hasher, ObjectHash, SmallRecord, Tree};
+use marshal::{Hashed, Hasher, ObjectHash, SmallRecord, DataTree, DirTree};
 use split::{self, Chunked};
 use trace::BatchTrace;
 
@@ -77,13 +77,41 @@ impl<T: BatchTrace> Batch<T> {
     }
 
 
+    pub fn load_file<P: AsRef<Path>>(&mut self, path: P) -> Result<DataTree> {
+        let chunked = self.chunk_file(path)?;
+        let data_tree = DataTree::load(chunked.to_vec().into_iter().map(SmallRecord::from));
+
+        Ok(data_tree)
+    }
+
+
+    pub fn load_subtree<P: AsRef<Path>>(&mut self, path: P) -> Result<DirTree> {
+        let path_ref = path.as_ref();
+        let mut dir_tree = DirTree::new();
+
+        for entry_res in path_ref.read_dir()? {
+            let entry = entry_res?;
+            let path = entry.path();
+            let entry_path = path.strip_prefix(path_ref).unwrap();
+
+            if path.is_dir() {
+                dir_tree.insert(entry_path, self.load_subtree(&path)?);
+            } else {
+                dir_tree.insert(entry_path, self.load_file(&path)?);
+            }
+        }
+
+        Ok(dir_tree)
+    }
+
+
     /// Marshal a chunked file into a tree of objects, returning the marshalled objects along with
     /// the hash of the root object.
     pub fn marshal_file(
         &mut self,
         chunked: Chunked,
     ) -> Box<Future<Item = ObjectHash, Error = Error> + Send> {
-        let tree = Tree::load(chunked.to_vec().into_iter().map(SmallRecord::from));
+        let tree = DataTree::load(chunked.to_vec().into_iter().map(SmallRecord::from));
         let tree_total = tree.total();
 
         self.len += tree_total;
@@ -94,6 +122,30 @@ impl<T: BatchTrace> Batch<T> {
         ));
 
         Box::new(self.marshal_pool.spawn(marshal))
+    }
+
+
+    pub fn marshal_subtree<P: AsRef<Path>>(
+        &mut self,
+        path: P,
+    ) -> Box<Future<Item = ObjectHash, Error = Error> + Send> {
+        let result = self.load_subtree(path)
+            .map(|tree| {
+                let tree_total = tree.total();
+
+                self.len += tree_total;
+
+                let marshal = tree.marshal(Hasher::with_trace(
+                    self.marshal_tx.clone(),
+                    self.trace.on_marshal(tree_total),
+                ));
+
+                self.marshal_pool.spawn(marshal)
+            })
+            .into_future()
+            .flatten();
+
+        Box::new(result)
     }
 
 

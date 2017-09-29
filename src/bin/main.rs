@@ -12,6 +12,7 @@ extern crate memmap;
 mod errors;
 mod init;
 mod remote;
+mod stats;
 mod test;
 mod trace;
 mod utils;
@@ -33,8 +34,9 @@ fn command() -> App<'static, 'static> {
         .version(crate_version!())
         .subcommand(init::command())
         .subcommand(remote::command())
-        .subcommand(test::command())
+        .subcommand(stats::command())
         .subcommand(utils::command())
+        .subcommand(test::command())
 }
 
 
@@ -42,8 +44,9 @@ fn go(matches: &ArgMatches) -> Result<()> {
     match matches.subcommand() {
         ("init", Some(sub_m)) => init::go(sub_m),
         ("remote", Some(sub_m)) => remote::go(sub_m),
-        ("utils", Some(sub_m)) => utils::go(sub_m),
+        ("stats", Some(sub_m)) => stats::go(sub_m),
         ("test", Some(sub_m)) => test::go(sub_m),
+        ("utils", Some(sub_m)) => utils::go(sub_m),
         _ => {
             eprintln!("{}", matches.usage());
             bail!(ErrorKind::InvalidUsage(format!("{:?}", matches)));

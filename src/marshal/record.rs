@@ -36,6 +36,13 @@ impl From<LargeObject> for Record {
 }
 
 
+impl From<SubtreeObject> for Record {
+    fn from(subtree_object: SubtreeObject) -> Self {
+        Record::Meta(subtree_object.into())
+    }
+}
+
+
 impl From<SmallRecord> for Record {
     fn from(small_record: SmallRecord) -> Self {
         Record::Data(small_record.into())

@@ -9,10 +9,12 @@
 pub mod hasher;
 pub mod object;
 pub mod record;
-pub mod tree;
+pub mod data_tree;
+pub mod dir_tree;
 
 
 pub use self::hasher::{ObjectHash, Hasher, Hashed};
 pub use self::object::{Object, SmallObject, LargeObject, DataObject, SubtreeObject, CommitObject};
 pub use self::record::{Record, DataRecord, MetaRecord, SmallRecord};
-pub use self::tree::Tree;
+pub use self::data_tree::DataTree;
+pub use self::dir_tree::DirTree;
