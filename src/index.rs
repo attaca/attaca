@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fs::File;
 use std::io::Error as IoError;
 use std::mem;
 use std::path::{Path, PathBuf};
@@ -6,6 +7,7 @@ use std::path::{Path, PathBuf};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::os::unix::ffi::OsStrExt;
 
+use bincode;
 use chrono::prelude::*;
 use libc;
 
@@ -98,25 +100,70 @@ impl IndexEntry {
 
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct Index {
+pub struct IndexData {
     timestamp: DateTime<Utc>,
     entries: HashMap<PathBuf, IndexEntry>,
 }
 
 
+impl IndexData {
+    pub fn new() -> Self {
+        IndexData {
+            timestamp: Utc::now(),
+            entries: HashMap::new(),
+        }
+    }
+}
+
+
+#[derive(Debug)]
+pub struct Index {
+    path: PathBuf,
+    data: IndexData,
+}
+
+
 impl Index {
-    pub fn update(&mut self, base: &Path) -> Result<()> {
+    pub fn open<P: AsRef<Path>>(path: P) -> Result<Index> {
+        let path_ref = path.as_ref();
+
+        let data = if path_ref.is_file() {
+            let mut index_file = File::open(path_ref)?;
+            bincode::deserialize_from(&mut index_file, bincode::Infinite)?
+        } else {
+            IndexData::new()
+        };
+
+        Ok(Index {
+            path: path_ref.to_owned(),
+            data,
+        })
+    }
+
+
+    pub fn update<P: AsRef<Path>>(&mut self, base: P) -> Result<()> {
         // Create a new timestamp for when we *begin* indexing.
         let fresh_timestamp = Utc::now();
 
-        for (path, entry) in &mut self.entries {
-            entry.update(&IndexMetadata::load(base.join(path))?, &self.timestamp);
+        for (path, entry) in &mut self.data.entries {
+            entry.update(
+                &IndexMetadata::load(base.as_ref().join(path))?,
+                &self.data.timestamp,
+            );
         }
 
         // Timestamps refer to the instant at which indexing starts, rather than the instant at
         // which it ends (the mtime of the index itself.)
-        self.timestamp = fresh_timestamp;
+        self.data.timestamp = fresh_timestamp;
 
         Ok(())
+    }
+}
+
+
+impl Drop for Index {
+    fn drop(&mut self) {
+        let mut file = File::create(&self.path).unwrap();
+        bincode::serialize_into(&mut file, &self.data, bincode::Infinite).unwrap();
     }
 }
