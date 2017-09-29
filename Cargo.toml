@@ -19,9 +19,9 @@ futures = "0.1.16"
 futures-bufio = "0.2.0"
 futures-cpupool = "0.1.6"
 histogram = "0.6.7"
-indicatif = "0.7.0"
 itertools = "0.6.3"
 lazy_static = "0.2.8"
+libc = "0.2.29"
 memmap = "0.5.2"
 quickcheck = "0.4.1"
 rad = "0.5.0"
@@ -48,6 +48,10 @@ git = "https://github.com/alexcrichton/futures-await"
 [dependencies.generic-array]
 features = ["serde"]
 version = "0.8.2"
+
+[dependencies.indicatif]
+git = "https://github.com/sdleffler/indicatif"
+optional = false
 
 [dependencies.owning_ref]
 git = "https://github.com/sdleffler/owning-ref-rs"

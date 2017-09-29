@@ -13,8 +13,7 @@ struct Stats {
 
 
 pub fn command() -> App<'static, 'static> {
-    SubCommand::with_name("stats")
-        .about("Print basic repository statistics.")
+    SubCommand::with_name("stats").about("Print basic repository statistics.")
 }
 
 
@@ -22,10 +21,8 @@ pub fn go(_matches: &ArgMatches) -> Result<()> {
     let wd = env::current_dir()?;
     let repository = Repository::find(wd)?;
     let catalog = repository.get_catalog(None)?;
-    
-    let stats = Stats {
-        object_count: catalog.len(),
-    };
+
+    let stats = Stats { object_count: catalog.len() };
 
     println!("{:#?}", stats);
 

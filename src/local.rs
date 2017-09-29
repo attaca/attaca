@@ -212,7 +212,7 @@ impl Local {
             Ok(lock) => {
                 let path = self.blob_path.join(object_hash.to_path());
                 let objects = self.objects.clone();
-                
+
                 let result = {
                     async_block! {
                         let local_buffer_factory = LocalBufferFactory {
@@ -227,8 +227,8 @@ impl Local {
                 };
 
                 Box::new(result)
-            },
-            
+            }
+
             // The object is in the catalog or is currently being written. Defer to `read_object`
             // in order to wait for any potential lock to finish and then do an asynchronous read
             // of the object file.

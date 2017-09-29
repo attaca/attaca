@@ -19,6 +19,7 @@ extern crate generic_array;
 extern crate itertools;
 #[macro_use]
 extern crate lazy_static;
+extern crate libc;
 extern crate memmap;
 extern crate owning_ref;
 extern crate qp_trie;
@@ -36,6 +37,7 @@ pub mod batch;
 pub mod catalog;
 pub mod context;
 pub mod errors;
+pub mod index;
 pub mod local;
 pub mod marshal;
 pub mod remote;
@@ -75,4 +77,8 @@ lazy_static! {
 
     /// The location of the local catalog file.
     static ref LOCAL_CATALOG_PATH: PathBuf = METADATA_PATH.join("local.catalog");
+
+
+    /// The location of the index file.
+    static ref INDEX_PATH: PathBuf = METADATA_PATH.join("index.bin");
 }

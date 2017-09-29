@@ -48,7 +48,7 @@ impl Leaf {
         self.records.len()
     }
 
-    
+
     /// The total number of objects in this leaf (1 + the number of records.)
     fn total(&self) -> usize {
         self.records.len() + 1

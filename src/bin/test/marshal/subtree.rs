@@ -69,4 +69,3 @@ pub fn go(matches: &ArgMatches) -> Result<()> {
 
     Ok(())
 }
-
