@@ -40,7 +40,10 @@ struct RemoteInner {
 
 impl Remote {
     /// Connect to a remote repository, given appropriate configuration data.
-    pub fn connect<T: Trace, U: AsRef<str> + Into<String>>(ctx: &mut Context<T>, remote_name: U) -> Result<Self> {
+    pub fn connect<T: Trace, U: AsRef<str> + Into<String>>(
+        ctx: &mut Context<T>,
+        remote_name: U,
+    ) -> Result<Self> {
         let cfg = ctx.get_remote_cfg(remote_name.as_ref())?;
 
         let conn = {
