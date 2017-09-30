@@ -3,6 +3,11 @@
 #![feature(proc_macro, conservative_impl_trait, generators, offset_to)]
 #![recursion_limit="128"]
 
+#[cfg(not(target_pointer_width = "64"))]
+compile_error!(
+    "Must be compiled on a 64-bit architecture due to the use of memory-mapping for potentially extremely large files!"
+);
+
 #[cfg(test)]
 #[macro_use]
 extern crate quickcheck;
