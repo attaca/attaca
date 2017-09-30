@@ -28,7 +28,7 @@ use trace::{Trace, WriteDestination, WriteTrace};
 /// is useful for doing things like tracking the progress of long-running operations.
 #[derive(Debug)]
 pub struct Context<T: Trace = ()> {
-    trace: Mutex<T>,
+    trace: T,
 
     marshal_pool: CpuPool,
     io_pool: CpuPool,
@@ -49,7 +49,7 @@ impl<T: Trace> Context<T> {
     /// Create a context from a loaded repository, with a supplied trace object.
     pub fn with_trace(repository: Repository, trace: T) -> Self {
         Context {
-            trace: Mutex::new(trace),
+            trace,
 
             marshal_pool: CpuPool::new(1),
             io_pool: CpuPool::new(1),
@@ -95,11 +95,8 @@ impl<T: Trace> Context<T> {
     }
 
 
-    pub fn with_batch(&self) -> Batch<T::BatchTrace> {
-        Batch::with_trace(
-            self.marshal_pool.clone(),
-            self.trace.lock().unwrap().on_batch(),
-        )
+    pub fn with_batch(&mut self) -> Batch<T::BatchTrace> {
+        Batch::with_trace(self.marshal_pool.clone(), self.trace.on_batch())
     }
 
 
@@ -136,7 +133,7 @@ pub struct LocalContext<'a, T: Trace = ()> {
 impl<'a, T: Trace> LocalContext<'a, T> {
     /// Read a single object from the local repository.
     pub fn read_object(
-        &self,
+        &mut self,
         object_hash: ObjectHash,
     ) -> Box<Future<Item = Object, Error = Error>> {
         self.local.read_object(object_hash)
@@ -145,13 +142,12 @@ impl<'a, T: Trace> LocalContext<'a, T> {
 
     /// Write a fully marshalled batch to the local repository.
     pub fn write_batch(
-        &self,
+        &mut self,
         batch: Batch<T::BatchTrace>,
     ) -> Box<Future<Item = (), Error = Error>> {
-        let trace = Arc::new(Mutex::new(self.ctx.trace.lock().unwrap().on_write(
-            &batch,
-            WriteDestination::Local,
-        )));
+        let trace = Arc::new(Mutex::new(
+            self.ctx.trace.on_write(&batch, WriteDestination::Local),
+        ));
 
         let local = self.local.clone();
         let io_pool = self.ctx.io_pool.clone();
@@ -187,7 +183,7 @@ pub struct RemoteContext<'a, T: Trace> {
 
 impl<'a, T: Trace> RemoteContext<'a, T> {
     pub fn read_object(
-        &self,
+        &mut self,
         object_hash: ObjectHash,
     ) -> Box<Future<Item = Object, Error = Error>> {
         self.remote.read_object(object_hash)
@@ -197,14 +193,12 @@ impl<'a, T: Trace> RemoteContext<'a, T> {
     /// Write a fully marshalled batch to the remote repository.
     // TODO: Recover from errors when sending objects.
     pub fn write_batch(
-        &self,
+        &mut self,
         batch: Batch<T::BatchTrace>,
     ) -> Box<Future<Item = (), Error = Error>> {
-        let trace = Arc::new(Mutex::new(self.ctx.trace.lock().unwrap().on_write(
+        let trace = Arc::new(Mutex::new(self.ctx.trace.on_write(
             &batch,
-            WriteDestination::Remote(
-                &self.name,
-            ),
+            WriteDestination::Remote(&self.name),
         )));
 
         let remote = self.remote.clone();

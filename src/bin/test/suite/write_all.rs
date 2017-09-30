@@ -81,7 +81,7 @@ fn run<P: AsRef<Path>, T: Trace>(conf_dir: P, matches: &ArgMatches, trace: T) ->
     let mut options = HashMap::new();
     options.insert("keyring".to_owned(), keyring.to_string_lossy().into_owned());
 
-    let remote_ctx = context.with_remote("_debug").chain_err(
+    let mut remote_ctx = context.with_remote("_debug").chain_err(
         || "unable to open remote context",
     )?;
 
