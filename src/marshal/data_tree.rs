@@ -82,15 +82,14 @@ impl Leaf {
         let result = {
             let mut hasher_captured = hasher.clone();
             let size = self.size();
-            let futures = self.records.into_iter().map(move |child| {
-                let child_size = child.size();
 
-                let computed = hasher_captured.compute(child);
-                computed.map(move |child_hash| (child_size, child_hash))
-            });
+            stream::iter_ok(self.records.into_iter())
+                .and_then(move |child| {
+                    let child_size = child.size();
 
-            stream::iter_ok(futures)
-                .and_then(|x| x)// .buffered(MARSHAL_FUTURE_BUFFER_SIZE)
+                    let computed = hasher_captured.compute(child);
+                    computed.map(move |child_hash| (child_size, child_hash))
+                })
                 .collect()
                 .and_then(move |children| {
                     hasher.compute(LargeObject { size, children })
@@ -186,15 +185,16 @@ impl Internal {
         mut hasher: Hasher<T>,
     ) -> Box<Future<Item = ObjectHash, Error = Error> + Send> {
         let hasher_captured = hasher.clone();
-        let children_future = stream::iter_ok(self.children.into_iter().map(move |child| {
-            let child_size = child.size();
+        let children_future = stream::iter_ok(self.children.into_iter())
+            .and_then(move |child| {
+                let child_size = child.size();
 
-            child.marshal(hasher_captured.clone()).map(
-                move |child_hash| {
-                    (child_size, child_hash)
-                },
-            )
-        })).and_then(|x| x)//.buffered(MARSHAL_FUTURE_BUFFER_SIZE)
+                child.marshal(hasher_captured.clone()).map(
+                    move |child_hash| {
+                        (child_size, child_hash)
+                    },
+                )
+            })
             .collect();
 
         let self_size = self.size;
