@@ -8,6 +8,7 @@
 //! The main functions of this module are `arc_slice::chunk` and `arc_slice::chunk_with_trace`.
 
 
+use std::cmp;
 use std::hash::{Hash, Hasher};
 use std::mem;
 
@@ -35,7 +36,7 @@ impl SliceSplitter {
 /// reducing the likelihood of finding chunks which instantly satisfy the chunking criteria (within
 /// only a few bytes - e.g. a `0x01` byte followed by a whole bunch of zeroes, or a whole bunch of
 /// zeroes with a `0x01` byte embedded inside.)
-const SPLIT_MINIMUM: usize = 32;
+const SPLIT_MINIMUM: usize = SPLIT_WINDOW;
 
 // 1 << 12 = 4096
 // 1 << 13 = 8192
@@ -137,7 +138,7 @@ impl SliceChunker {
 const CHUNK_MINIMUM: usize = 32;
 const CHUNK_MODULUS_MASK: u16 = (1 << 7) - 1;
 const CHUNK_CONSTANT: u16 = 1;
-const CHUNK_WINDOW: usize = 256;
+const CHUNK_WINDOW: usize = 4;
 
 
 fn seahash(slice: &[u8]) -> u8 {
@@ -161,7 +162,7 @@ impl Iterator for SliceChunker {
         let mut acc = 0;
 
         for (i, slice) in self.splitter.by_ref().enumerate() {
-            let sig = seahash(&slice);
+            let sig = seahash(&slice[slice.len() - cmp::min(SPLIT_WINDOW, slice.len())..]);
 
             if i >= CHUNK_WINDOW {
                 acc -= ring.push_pop(sig) as u16;
