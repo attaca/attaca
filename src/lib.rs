@@ -52,6 +52,7 @@ pub mod trace;
 
 pub use errors::{Error, ErrorKind, Result};
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 
@@ -86,4 +87,16 @@ lazy_static! {
 
     /// The location of the index file.
     static ref INDEX_PATH: PathBuf = METADATA_PATH.join("index.bin");
+
+
+    /// Default paths to ignore.
+    static ref DEFAULT_IGNORES: HashSet<PathBuf> = {
+        let mut set = HashSet::new();
+
+        set.insert(METADATA_PATH.to_owned());
+        set.insert(PathBuf::from(".git"));
+        set.insert(PathBuf::from("insta-rados")); // HACK HACK HACK!
+
+        set
+    };
 }

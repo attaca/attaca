@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use itertools::Itertools;
 use toml;
 
-use {METADATA_PATH, BLOBS_PATH, CONFIG_PATH, REMOTE_CATALOGS_PATH, LOCAL_CATALOG_PATH, INDEX_PATH};
+use {METADATA_PATH, BLOBS_PATH, CONFIG_PATH, REMOTE_CATALOGS_PATH, LOCAL_CATALOG_PATH};
 use catalog::{Catalog, CatalogTrie};
 use errors::*;
 use index::Index;
@@ -92,11 +92,11 @@ pub struct Repository {
     /// Loaded configuration from `.attaca/config.toml`.
     pub config: Config,
 
+    /// The local index.
+    pub index: Index,
+
     /// Catalogs for local and remote object stores.
     catalogs: HashMap<Option<String>, Option<Catalog>>,
-
-    /// The local index.
-    index: Index,
 
     /// The absolute path to the root of the repository.
     path: PathBuf,
@@ -192,7 +192,7 @@ impl Repository {
             catalog_map
         };
 
-        let index = Index::open(path_ref.join(&*INDEX_PATH))?;
+        let index = Index::open(path_ref)?;
 
         Ok(Repository {
             config,

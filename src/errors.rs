@@ -48,6 +48,31 @@ error_chain! {
             display("an error occurred while filling a catalog entry")
         }
 
+        IndexConcurrentModification(path: PathBuf) {
+            description("file modified while hashing/updating the index, or racily modified before hashing/updating")
+            display("file {} modified while hashing/updating the index, or racily modified before hashing/updating", path.display())
+        }
+
+        IndexOpen {
+            description("an error occurred while opening the index file")
+            display("an error occurred while opening the index file")
+        }
+
+        IndexParse {
+            description("an error occurred while deserializing the index file")
+            display("an error occurred while deserializing the index file")
+        }
+
+        IndexStat(path: PathBuf) {
+            description("an error occurred while statting a repository file")
+            display("an error occurred while statting file {}", path.display())
+        }
+
+        IndexUpdate {
+            description("an error occurred while updating the index")
+            display("an error occurred while updating the index")
+        }
+
         InvalidHashLength(len: usize) {
             description("expected a string of 64 hex digits")
             display("expected a string of 64 hex digits, found a string of length {}", len)

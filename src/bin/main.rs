@@ -11,6 +11,7 @@ extern crate memmap;
 
 mod catalog;
 mod errors;
+mod index;
 mod init;
 mod remote;
 mod stats;
@@ -34,6 +35,7 @@ fn command() -> App<'static, 'static> {
         .about(crate_description!())
         .version(crate_version!())
         .subcommand(catalog::command())
+        .subcommand(index::command())
         .subcommand(init::command())
         .subcommand(remote::command())
         .subcommand(stats::command())
@@ -45,6 +47,7 @@ fn command() -> App<'static, 'static> {
 fn go(matches: &ArgMatches) -> Result<()> {
     match matches.subcommand() {
         ("catalog", Some(sub_m)) => catalog::go(sub_m),
+        ("index", Some(sub_m)) => index::go(sub_m),
         ("init", Some(sub_m)) => init::go(sub_m),
         ("remote", Some(sub_m)) => remote::go(sub_m),
         ("stats", Some(sub_m)) => stats::go(sub_m),

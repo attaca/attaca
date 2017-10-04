@@ -1,16 +1,20 @@
 use std::collections::HashMap;
+use std::ffi::CString;
 use std::fs::File;
 use std::io::Error as IoError;
 use std::mem;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::os::unix::ffi::OsStrExt;
 
 use bincode;
 use chrono::prelude::*;
+use futures::prelude::*;
 use libc;
 
+use {INDEX_PATH, DEFAULT_IGNORES};
 use errors::*;
 use marshal::ObjectHash;
 
@@ -33,11 +37,19 @@ pub struct IndexMetadata {
 impl IndexMetadata {
     pub fn load<P: AsRef<Path>>(path: P) -> Result<IndexMetadata> {
         let stat = unsafe {
-            let path_ptr = path.as_ref().as_os_str().as_bytes().as_ptr() as *const i8;
+            let path_c_string = CString::new(path.as_ref().as_os_str().as_bytes())?;
+            let path_ptr = path_c_string.as_ptr() as *const i8;
+
             let mut stat = mem::zeroed();
-            if libc::lstat(path_ptr, &mut stat) != 0 {
-                bail!(IoError::last_os_error());
+            if libc::lstat64(path_ptr, &mut stat) != 0 {
+                bail!(Error::with_chain(
+                    IoError::last_os_error(),
+                    ErrorKind::IndexStat(path.as_ref().to_owned()),
+                ));
             }
+
+            let _ = path_c_string;
+
             stat
         };
 
@@ -76,7 +88,7 @@ pub struct IndexEntry {
     hygiene: Hygiene,
     cached: IndexMetadata,
 
-    object_hash: ObjectHash,
+    object_hash: Option<ObjectHash>,
 }
 
 
@@ -85,7 +97,9 @@ impl IndexEntry {
         if self.hygiene == Hygiene::Clean {
             self.hygiene = {
                 if &self.cached == fresh {
-                    if timestamp > &self.cached.mtime {
+                    // If the timestamp of the index is older or the same as the cached mtime...
+                    // then this entry is dodgy.
+                    if timestamp <= &self.cached.mtime {
                         Hygiene::Dodgy
                     } else {
                         Hygiene::Clean
@@ -102,15 +116,15 @@ impl IndexEntry {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct IndexData {
     timestamp: DateTime<Utc>,
-    entries: HashMap<PathBuf, IndexEntry>,
+    entries: Mutex<HashMap<PathBuf, IndexEntry>>,
 }
 
 
 impl IndexData {
     pub fn new() -> Self {
         IndexData {
-            timestamp: Utc::now(),
-            entries: HashMap::new(),
+            timestamp: Utc::now().with_nanosecond(0).unwrap(),
+            entries: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -118,39 +132,78 @@ impl IndexData {
 
 #[derive(Debug)]
 pub struct Index {
-    path: PathBuf,
+    base: PathBuf,
     data: IndexData,
 }
 
 
 impl Index {
-    pub fn open<P: AsRef<Path>>(path: P) -> Result<Index> {
-        let path_ref = path.as_ref();
+    pub fn open<P: AsRef<Path>>(base: P) -> Result<Index> {
+        let base_ref = base.as_ref();
+        let index_base = base_ref.join(&*INDEX_PATH);
 
-        let data = if path_ref.is_file() {
-            let mut index_file = File::open(path_ref)?;
-            bincode::deserialize_from(&mut index_file, bincode::Infinite)?
+        let data = if index_base.is_file() {
+            let mut index_file = File::open(index_base).chain_err(|| ErrorKind::IndexOpen)?;
+            bincode::deserialize_from(&mut index_file, bincode::Infinite)
+                .chain_err(|| ErrorKind::IndexParse)?
         } else {
             IndexData::new()
         };
 
-        Ok(Index {
-            path: path_ref.to_owned(),
+        let mut index = Index {
+            base: base_ref.to_owned(),
             data,
-        })
+        };
+
+        index.update().chain_err(|| ErrorKind::IndexUpdate)?;
+
+        Ok(index)
     }
 
 
-    pub fn update<P: AsRef<Path>>(&mut self, base: P) -> Result<()> {
+    pub fn update(&mut self) -> Result<()> {
         // Create a new timestamp for when we *begin* indexing.
-        let fresh_timestamp = Utc::now();
+        let fresh_timestamp = Utc::now().with_nanosecond(0).unwrap();
+        let entries_mut = self.data.entries.get_mut().unwrap();
 
-        for (path, entry) in &mut self.data.entries {
-            entry.update(
-                &IndexMetadata::load(base.as_ref().join(path))?,
-                &self.data.timestamp,
-            );
-        }
+        *entries_mut = {
+            let mut new_entries = HashMap::new();
+            let mut stack = Vec::new();
+            stack.push(self.base.read_dir()?);
+
+            while let Some(iter) = stack.pop() {
+                for dir_entry_res in iter {
+                    let dir_entry = dir_entry_res?;
+                    let absolute_path = dir_entry.path();
+                    let relative_path = absolute_path.strip_prefix(&self.base).unwrap();
+
+                    if DEFAULT_IGNORES.contains(relative_path) {
+                        continue;
+                    }
+
+                    if absolute_path.is_dir() {
+                        stack.push(absolute_path.read_dir()?);
+                    } else {
+                        let fresh = IndexMetadata::load(&absolute_path)?;
+                        let mut entry = entries_mut.remove(relative_path).unwrap_or_else(|| {
+                            IndexEntry {
+                                hygiene: Hygiene::Clean,
+                                cached: fresh,
+                                object_hash: None,
+                            }
+                        });
+
+                        entry.update(&fresh, &self.data.timestamp);
+                        new_entries.insert(relative_path.to_owned(), entry);
+                    }
+                }
+            }
+
+            // All dirty entries can be cleared.
+            new_entries.retain(|_, entry| entry.hygiene != Hygiene::Dirty);
+
+            new_entries
+        };
 
         // Timestamps refer to the instant at which indexing starts, rather than the instant at
         // which it ends (the mtime of the index itself.)
@@ -158,12 +211,85 @@ impl Index {
 
         Ok(())
     }
+
+
+    pub fn clear(&mut self) {
+        self.data.entries.get_mut().unwrap().clear();
+    }
+
+
+    pub fn entries(&mut self) -> &HashMap<PathBuf, IndexEntry> {
+        self.data.entries.get_mut().unwrap()
+    }
+
+
+    pub fn share(self) -> SharedIndex {
+        SharedIndex { inner: Arc::new(self) }
+    }
 }
 
 
 impl Drop for Index {
     fn drop(&mut self) {
-        let mut file = File::create(&self.path).unwrap();
+        let mut file = File::create(self.base.join(&*INDEX_PATH)).unwrap();
         bincode::serialize_into(&mut file, &self.data, bincode::Infinite).unwrap();
+    }
+}
+
+
+#[derive(Debug, Clone)]
+pub struct SharedIndex {
+    inner: Arc<Index>,
+}
+
+
+impl SharedIndex {
+    pub fn get_or_insert<F, G>(
+        &mut self,
+        path: PathBuf,
+        thunk: G,
+    ) -> Box<Future<Item = ObjectHash, Error = Error>>
+    where
+        F: IntoFuture<Item = ObjectHash, Error = Error> + 'static,
+        G: FnOnce() -> F + 'static,
+    {
+        let this = self.inner.clone();
+
+        let result = {
+            async_block! {
+                if let Some(&IndexEntry {
+                                hygiene: Hygiene::Clean,
+                                object_hash: Some(object_hash),
+                                ..
+                            }) = this.data.entries.lock().unwrap().get(&path)
+                {
+                    return Ok(object_hash);
+                }
+
+                let full_path = this.base.join(&path);
+
+                let meta_before = IndexMetadata::load(&full_path)?;
+                let object_hash = await!(thunk().into_future())?;
+                let meta_after = IndexMetadata::load(&full_path)?;
+
+                let mut entry = IndexEntry {
+                    hygiene: Hygiene::Clean,
+                    cached: meta_before,
+                    object_hash: Some(object_hash),
+                };
+
+                entry.update(&meta_after, &this.data.timestamp);
+                ensure!(
+                    entry.hygiene == Hygiene::Clean,
+                    ErrorKind::IndexConcurrentModification(full_path)
+                );
+
+                this.data.entries.lock().unwrap().insert(path, entry);
+
+                Ok(object_hash)
+            }
+        };
+
+        Box::new(result)
     }
 }
