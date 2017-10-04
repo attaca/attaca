@@ -14,7 +14,7 @@ pub fn command() -> App<'static, 'static> {
 
 pub fn go(_matches: &ArgMatches) -> Result<()> {
     let mut repository = Repository::find(env::current_dir()?)?;
-    
+
     repository.index.clear();
 
     Ok(())

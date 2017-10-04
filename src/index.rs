@@ -150,12 +150,10 @@ impl Index {
             IndexData::new()
         };
 
-        let mut index = Index {
+        let index = Index {
             base: base_ref.to_owned(),
             data,
         };
-
-        index.update().chain_err(|| ErrorKind::IndexUpdate)?;
 
         Ok(index)
     }

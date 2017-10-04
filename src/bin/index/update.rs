@@ -8,14 +8,13 @@ use errors::*;
 
 
 pub fn command() -> App<'static, 'static> {
-    SubCommand::with_name("list").about("List all entries in the index.")
+    SubCommand::with_name("update").about("Update the index.")
 }
 
 
 pub fn go(_matches: &ArgMatches) -> Result<()> {
     let mut repository = Repository::find(env::current_dir()?)?;
-
-    println!("{:#?}", repository.index.entries());
+    repository.index.update()?;
 
     Ok(())
 }
