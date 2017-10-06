@@ -7,15 +7,18 @@
 use std::sync::{Arc, Mutex};
 
 use futures::prelude::*;
+use futures_cpupool::CpuPool;
 use owning_ref::OwningRefMut;
 use rad::{ConnectionBuilder, Connection};
 
+use WRITE_FUTURE_BUFFER_SIZE;
+use batch::Batch;
 use catalog::Catalog;
 use context::Context;
 use context::local::Local;
 use errors::*;
 use marshal::{Hashed, ObjectHash, Object};
-use trace::Trace;
+use trace::{Trace, WriteDestination, WriteTrace};
 
 
 /// The type of a remote repository.
@@ -26,6 +29,8 @@ use trace::Trace;
 #[derive(Clone)]
 pub struct Remote {
     local: Local,
+
+    io_pool: CpuPool,
 
     catalog: Catalog,
     inner: Arc<RemoteInner>,
@@ -39,43 +44,45 @@ struct RemoteInner {
 
 
 impl Remote {
-    /// Connect to a remote repository, given appropriate configuration data.
-    pub fn connect<T: Trace, U: AsRef<str> + Into<String>>(
-        ctx: &mut Context<T>,
-        remote_name: U,
-    ) -> Result<Self> {
-        let cfg = ctx.get_remote_cfg(remote_name.as_ref())?;
-
-        let conn = {
-            let mut builder = ConnectionBuilder::with_user(&cfg.object_store.user)
-                .chain_err(|| ErrorKind::RemoteConnectInit)?;
-
-            if let Some(ref conf_path) = cfg.object_store.conf_file {
-                builder = builder.read_conf_file(conf_path).chain_err(|| {
-                    ErrorKind::RemoteConnectReadConf
-                })?;
-            }
-
-            builder = cfg.object_store
-                .conf_options
-                .iter()
-                .fold(Ok(builder), |acc, (key, value)| {
-                    acc.and_then(|conn| conn.conf_set(key, value))
-                })
-                .chain_err(|| ErrorKind::RemoteConnectConfig)?;
-
-            Mutex::new(builder.connect().chain_err(|| ErrorKind::RemoteConnect)?)
-        };
-
-        let pool = cfg.object_store.pool.clone();
-
-        Ok(Remote {
-            local: Local::new(ctx).chain_err(|| ErrorKind::LocalLoad)?,
-            catalog: ctx.catalogs().get(Some(remote_name.into()))?,
-            inner: Arc::new(RemoteInner { conn, pool }),
-        })
-    }
-
+    //     /// Connect to a remote repository, given appropriate configuration data.
+    //     pub fn connect<T: Trace, U: AsRef<str> + Into<String>>(
+    //         ctx: &mut Context<T>,
+    //         remote_name: U,
+    //     ) -> Result<Self> {
+    //         let cfg = ctx.get_remote_cfg(remote_name.as_ref())?;
+    //
+    //         let conn = {
+    //             let mut builder = ConnectionBuilder::with_user(&cfg.object_store.user)
+    //                 .chain_err(|| ErrorKind::RemoteConnectInit)?;
+    //
+    //             if let Some(ref conf_path) = cfg.object_store.conf_file {
+    //                 builder = builder.read_conf_file(conf_path).chain_err(|| {
+    //                     ErrorKind::RemoteConnectReadConf
+    //                 })?;
+    //             }
+    //
+    //             builder = cfg.object_store
+    //                 .conf_options
+    //                 .iter()
+    //                 .fold(Ok(builder), |acc, (key, value)| {
+    //                     acc.and_then(|conn| conn.conf_set(key, value))
+    //                 })
+    //                 .chain_err(|| ErrorKind::RemoteConnectConfig)?;
+    //
+    //             Mutex::new(builder.connect().chain_err(|| ErrorKind::RemoteConnect)?)
+    //         };
+    //
+    //         let pool = cfg.object_store.pool.clone();
+    //
+    //         Ok(Remote {
+    //             local: Local::new(ctx).chain_err(|| ErrorKind::LocalLoad)?,
+    //
+    //             io_pool: CpuPool::new(1),
+    //
+    //             catalog: ctx.catalogs().get(Some(remote_name.into()))?,
+    //             inner: Arc::new(RemoteInner { conn, pool }),
+    //         })
+    //     }
 
     /// Write a single object to the remote repository. Returns `false` and performs no I/O if the
     /// catalog shows that the remote already contains the object; `true` otherwise.
@@ -109,7 +116,6 @@ impl Remote {
             }
         }
     }
-
 
     /// Read a single object from the remote repository.
     ///

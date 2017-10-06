@@ -16,12 +16,15 @@ use futures_cpupool::CpuPool;
 use memmap::{Mmap, Protection};
 use stable_deref_trait::StableDeref;
 
+use WRITE_FUTURE_BUFFER_SIZE;
 use arc_slice;
+use batch::Batch;
 use catalog::{Catalog, CatalogLock};
-use context::Context;
+use context::{Context, Store};
 use errors::*;
 use marshal::{Hashed, ObjectHash, Object};
-use trace::Trace;
+use repository::Repository;
+use trace::{Trace, WriteDestination, WriteTrace};
 
 
 pub struct LocalBufferFactory {
@@ -100,23 +103,28 @@ impl DerefMut for LocalBuffer {
 // descriptors that our process owns.
 #[derive(Debug, Clone)]
 pub struct Local {
-    blob_path: Arc<PathBuf>,
+    repository: Arc<Repository>,
+
     io_pool: CpuPool,
+
     catalog: Catalog,
     objects: Arc<Mutex<HashMap<ObjectHash, Object>>>,
 }
 
 
 impl Local {
-    pub fn new<T: Trace>(ctx: &mut Context<T>) -> Result<Self> {
-        Ok(Local {
-            blob_path: Arc::new(ctx.repository().paths.blobs().to_owned()),
-            io_pool: ctx.io_pool().clone(),
-            catalog: ctx.catalogs().get(None)?,
+    pub fn open(mut repository: Repository, io_pool: CpuPool) -> Result<Self> {
+        let catalog = repository.catalogs.get(None)?;
+
+        Ok(Self {
+            repository: Arc::new(repository),
+
+            io_pool,
+
+            catalog,
             objects: Arc::new(Mutex::new(HashMap::new())),
         })
     }
-
 
     /// Write an object to the file system. Assuming the file has not yet been written, this will
     /// open and then close a file, and the resulting future will return `true` if the object has
@@ -127,7 +135,7 @@ impl Local {
             Ok(lock) => {
                 match hashed.into_components() {
                     (hash, Some(bytes)) => {
-                        let path = self.blob_path.join(hash.to_path());
+                        let path = self.repository.paths.blobs().join(hash.to_path());
                         let io_pool = self.io_pool.clone();
 
                         let result = {
@@ -163,7 +171,6 @@ impl Local {
         }
     }
 
-
     /// Load an object from the file system. This will open a file if the object has not already
     /// been loaded.
     /// TODO: Make async.
@@ -171,7 +178,7 @@ impl Local {
         &self,
         object_hash: ObjectHash,
     ) -> Box<Future<Item = Object, Error = Error> + Send> {
-        let path = self.blob_path.join(object_hash.to_path());
+        let path = self.repository.paths.blobs().join(object_hash.to_path());
         let objects = self.objects.clone();
         let entry_opt = self.catalog.get(object_hash);
 
@@ -197,7 +204,6 @@ impl Local {
         return Box::new(self.io_pool.spawn(result));
     }
 
-
     /// Load an object from the file system, *or*, create a new buffer for writing an object. This
     /// is used for remotes: either load an object from the file system instead of fetching it from
     /// a remote, or create a memory-mapped file buffer, write the serialized object to the buffer,
@@ -210,7 +216,7 @@ impl Local {
 
         match lock_res {
             Ok(lock) => {
-                let path = self.blob_path.join(object_hash.to_path());
+                let path = self.repository.paths.blobs().join(object_hash.to_path());
                 let objects = self.objects.clone();
 
                 let result = {
@@ -234,5 +240,50 @@ impl Local {
             // of the object file.
             Err(_) => Box::new(self.read_object(object_hash).map(Ok)),
         }
+    }
+
+    /// Write a fully marshalled batch to the local repository.
+    pub fn write_batch<T: Trace>(
+        &mut self,
+        batch: Batch<T::BatchTrace>,
+    ) -> Box<Future<Item = (), Error = Error>> {
+        unimplemented!()
+        //         let trace = Arc::new(Mutex::new(self.trace.lock().unwrap().on_write(
+        //             &batch,
+        //             WriteDestination::Local,
+        //         )));
+        //
+        //         let local = self.clone();
+        //
+        //         let writes = batch
+        //             .into_stream()
+        //             .map(move |hashed| {
+        //                 let hash = *hashed.as_hash();
+        //                 let trace = trace.clone();
+        //
+        //                 trace.lock().unwrap().on_begin(&hash);
+        //                 let write = local.write_object(hashed).map(move |fresh| {
+        //                     trace.lock().unwrap().on_complete(&hash, fresh);
+        //                 });
+        //                 local.io_pool.spawn(write)
+        //             })
+        //             .buffer_unordered(WRITE_FUTURE_BUFFER_SIZE)
+        //             .for_each(|_| Ok(()));
+        //
+        //         Box::new(self.io_pool.spawn(writes))
+    }
+}
+
+
+impl Store for Local {
+    type Read = Box<Future<Item = Object, Error = Error> + Send>;
+    type Write = Box<Future<Item = bool, Error = Error> + Send>;
+
+    fn read_object(&mut self, object_hash: ObjectHash) -> Self::Read {
+        self.read_object(object_hash)
+    }
+
+    fn write_object(&mut self, hashed: Hashed) -> Self::Write {
+        self.write_object(hashed)
     }
 }
