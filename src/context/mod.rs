@@ -5,6 +5,9 @@
 //!
 //! * Creating/using `Context` and `RemoteContext`s.
 
+pub mod local;
+pub mod remote;
+
 use std::sync::{Arc, Mutex};
 
 use futures::prelude::*;
@@ -14,11 +17,12 @@ use WRITE_FUTURE_BUFFER_SIZE;
 use batch::Batch;
 use catalog::Registry;
 use errors::*;
-use local::Local;
 use marshal::{ObjectHash, Object};
-use remote::Remote;
 use repository::{Repository, RemoteCfg};
 use trace::{Trace, WriteDestination, WriteTrace};
+
+pub use context::local::Local as Local;
+pub use context::remote::Remote as Remote;
 
 
 /// A context for marshalling and local operations on a repository. `RemoteContext`s must be built

@@ -188,8 +188,12 @@ impl Index {
             mem::replace(entries_mut, HashMap::new())
                 .into_iter()
                 .map(|(relative_path, mut entry)| {
-                    let absolute_path = base_ref.join(&relative_path);
+                    // If the entry is nonlocal, we shouldn't update its metadata.
+                    if !entry.local {
+                        return Ok(Some((relative_path, entry)));
+                    }
 
+                    let absolute_path = base_ref.join(&relative_path);
                     if !absolute_path.is_file() {
                         let fresh = IndexMetadata::load(absolute_path)?;
                         entry.update(&fresh, timestamp_ref);

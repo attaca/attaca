@@ -12,8 +12,8 @@ use rad::{ConnectionBuilder, Connection};
 
 use catalog::Catalog;
 use context::Context;
+use context::local::Local;
 use errors::*;
-use local::Local;
 use marshal::{Hashed, ObjectHash, Object};
 use trace::Trace;
 
