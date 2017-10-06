@@ -1,5 +1,7 @@
-use std::borrow::Borrow;
+use std::borrow::{Borrow, Cow};
+use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
+use std::iter;
 use std::mem;
 use std::path::PathBuf;
 use std::result::Result as StdResult;
@@ -14,6 +16,7 @@ use qp_trie::{Entry, Trie};
 
 use errors::*;
 use marshal::ObjectHash;
+use repository::{Config, Paths};
 
 
 const OK_NOT_READY: usize = 0;
@@ -287,5 +290,63 @@ impl Drop for CatalogInner {
     fn drop(&mut self) {
         let mut file = File::create(&self.catalog_path).unwrap();
         bincode::serialize_into(&mut file, &self.objects, bincode::Infinite).unwrap();
+    }
+}
+
+
+#[derive(Debug)]
+pub struct Registry {
+    catalogs: HashMap<Option<String>, Option<Catalog>>,
+    paths: Paths,
+}
+
+
+impl Registry {
+    pub fn new(config: &Config, paths: &Paths) -> Self {
+        Self {
+            catalogs: config
+                .remotes
+                .keys()
+                .map(|key| (Some(key.to_owned()), None))
+                .chain(iter::once((None, None)))
+                .collect(),
+            paths: paths.clone(),
+        }
+    }
+
+    pub fn get(&mut self, name_opt: Option<String>) -> Result<Catalog> {
+        match self.catalogs.get(&name_opt) {
+            Some(&Some(ref catalog)) => return Ok(catalog.clone()),
+            Some(&None) => {}
+            None => bail!(ErrorKind::CatalogNotFound(name_opt)),
+        }
+
+        let catalog_path = match name_opt {
+            Some(ref name) => {
+                Cow::Owned(self.paths.remote_catalogs().join(
+                    format!("{}.catalog", name),
+                ))
+            }
+            None => Cow::Borrowed(self.paths.local_catalog()),
+        };
+        let catalog = Catalog::load(catalog_path.clone().into_owned()).chain_err(
+            || {
+                ErrorKind::CatalogLoad(catalog_path.into_owned())
+            },
+        )?;
+        self.catalogs.insert(name_opt, Some(catalog.clone()));
+
+        Ok(catalog)
+    }
+
+
+    pub fn clear(&mut self) -> Result<()> {
+        let catalog_names = self.catalogs.keys().cloned().collect::<Vec<_>>();
+
+        for name in catalog_names {
+            self.get(name)?.clear()?;
+        }
+
+        Ok(())
     }
 }

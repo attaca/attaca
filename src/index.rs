@@ -5,6 +5,7 @@ use std::io::Error as IoError;
 use std::mem;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::thread;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::os::unix::ffi::OsStrExt;
@@ -17,6 +18,7 @@ use libc;
 use {INDEX_PATH, DEFAULT_IGNORES};
 use errors::*;
 use marshal::ObjectHash;
+use repository::Paths;
 
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -83,16 +85,34 @@ pub enum Hygiene {
 }
 
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct IndexEntry {
     hygiene: Hygiene,
     cached: IndexMetadata,
+
+    // Whether or not this file is actually present locally - true generally, false when the file
+    // exists on a remote.
+    local: bool,
+
+    // Whether or not this file has been "added" to a current commit.
+    added: bool,
 
     object_hash: Option<ObjectHash>,
 }
 
 
 impl IndexEntry {
+    fn fresh(metadata: IndexMetadata, object_hash: Option<ObjectHash>) -> IndexEntry {
+        IndexEntry {
+            hygiene: Hygiene::Clean,
+            cached: metadata,
+            local: true,
+            added: false,
+            object_hash,
+        }
+    }
+
+
     fn update(&mut self, fresh: &IndexMetadata, timestamp: &DateTime<Utc>) {
         if self.hygiene == Hygiene::Clean {
             self.hygiene = {
@@ -132,18 +152,15 @@ impl IndexData {
 
 #[derive(Debug)]
 pub struct Index {
-    base: PathBuf,
     data: IndexData,
+    paths: Paths,
 }
 
 
 impl Index {
-    pub fn open<P: AsRef<Path>>(base: P) -> Result<Index> {
-        let base_ref = base.as_ref();
-        let index_base = base_ref.join(&*INDEX_PATH);
-
-        let data = if index_base.is_file() {
-            let mut index_file = File::open(index_base).chain_err(|| ErrorKind::IndexOpen)?;
+    pub fn open(paths: &Paths) -> Result<Index> {
+        let data = if paths.index().is_file() {
+            let mut index_file = File::open(paths.index()).chain_err(|| ErrorKind::IndexOpen)?;
             bincode::deserialize_from(&mut index_file, bincode::Infinite)
                 .chain_err(|| ErrorKind::IndexParse)?
         } else {
@@ -151,8 +168,8 @@ impl Index {
         };
 
         let index = Index {
-            base: base_ref.to_owned(),
             data,
+            paths: paths.clone(),
         };
 
         Ok(index)
@@ -165,15 +182,71 @@ impl Index {
         let entries_mut = self.data.entries.get_mut().unwrap();
 
         *entries_mut = {
-            let mut new_entries = HashMap::new();
+            let base_ref = self.paths.base();
+            let timestamp_ref = &self.data.timestamp;
+
+            mem::replace(entries_mut, HashMap::new())
+                .into_iter()
+                .map(|(relative_path, mut entry)| {
+                    let absolute_path = base_ref.join(&relative_path);
+
+                    if !absolute_path.is_file() {
+                        let fresh = IndexMetadata::load(absolute_path)?;
+                        entry.update(&fresh, timestamp_ref);
+                        if entry.hygiene != Hygiene::Dirty {
+                            return Ok(Some((relative_path, entry)));
+                        }
+                    }
+
+                    return Ok(None);
+                })
+                .filter_map(|kv_opt_res| match kv_opt_res {
+                    Ok(Some(kv)) => Some(Ok(kv)),
+                    Ok(None) => None,
+                    Err(err) => Some(Err(err)),
+                })
+                .collect::<Result<HashMap<PathBuf, IndexEntry>>>()?
+        };
+
+        // Timestamps refer to the instant at which indexing starts, rather than the instant at
+        // which it ends (the mtime of the index itself.)
+        self.data.timestamp = fresh_timestamp;
+
+        Ok(())
+    }
+
+
+    fn insert_file(
+        entries_mut: &mut HashMap<PathBuf, IndexEntry>,
+        timestamp: &DateTime<Utc>,
+        absolute_path: &Path,
+        relative_path: PathBuf,
+    ) -> Result<()> {
+        let fresh = IndexMetadata::load(absolute_path)?;
+
+        entries_mut
+            .entry(relative_path)
+            .or_insert_with(|| IndexEntry::fresh(fresh, None))
+            .update(&fresh, timestamp);
+
+        Ok(())
+    }
+
+
+    pub fn insert<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
+        let entries_mut = self.data.entries.get_mut().unwrap();
+        let relative_path = path.as_ref();
+        let absolute_path = self.paths.base().join(relative_path);
+
+        if absolute_path.is_dir() {
             let mut stack = Vec::new();
-            stack.push(self.base.read_dir()?);
+            stack.push(absolute_path.read_dir()?);
 
             while let Some(iter) = stack.pop() {
                 for dir_entry_res in iter {
                     let dir_entry = dir_entry_res?;
                     let absolute_path = dir_entry.path();
-                    let relative_path = absolute_path.strip_prefix(&self.base).unwrap();
+                    let relative_path = absolute_path.strip_prefix(self.paths.base()).unwrap();
 
                     if DEFAULT_IGNORES.contains(relative_path) {
                         continue;
@@ -182,32 +255,59 @@ impl Index {
                     if absolute_path.is_dir() {
                         stack.push(absolute_path.read_dir()?);
                     } else {
-                        let fresh = IndexMetadata::load(&absolute_path)?;
-                        let mut entry = entries_mut.remove(relative_path).unwrap_or_else(|| {
-                            IndexEntry {
-                                hygiene: Hygiene::Clean,
-                                cached: fresh,
-                                object_hash: None,
-                            }
-                        });
-
-                        entry.update(&fresh, &self.data.timestamp);
-                        new_entries.insert(relative_path.to_owned(), entry);
+                        Self::insert_file(
+                            entries_mut,
+                            &self.data.timestamp,
+                            &absolute_path,
+                            relative_path.to_owned(),
+                        )?;
                     }
                 }
             }
-
-            // All dirty entries can be cleared.
-            new_entries.retain(|_, entry| entry.hygiene != Hygiene::Dirty);
-
-            new_entries
-        };
-
-        // Timestamps refer to the instant at which indexing starts, rather than the instant at
-        // which it ends (the mtime of the index itself.)
-        self.data.timestamp = fresh_timestamp;
+        } else {
+            Self::insert_file(
+                entries_mut,
+                &self.data.timestamp,
+                &absolute_path,
+                relative_path.to_owned(),
+            )?;
+        }
 
         Ok(())
+    }
+
+
+    pub fn add<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
+        let path_ref = path.as_ref();
+
+        if !self.data.entries.get_mut().unwrap().contains_key(path_ref) {
+            self.insert(path_ref.to_owned())?;
+        }
+
+        self.data
+            .entries
+            .get_mut()
+            .unwrap()
+            .get_mut(path_ref)
+            .unwrap()
+            .added = true;
+
+        Ok(())
+    }
+
+
+    pub fn added(&mut self) -> HashMap<PathBuf, IndexEntry> {
+        self.data
+            .entries
+            .get_mut()
+            .unwrap()
+            .iter()
+            .filter_map(|(path, entry)| if entry.added {
+                Some((path.clone(), entry.clone()))
+            } else {
+                None
+            })
+            .collect()
     }
 
 
@@ -229,8 +329,11 @@ impl Index {
 
 impl Drop for Index {
     fn drop(&mut self) {
-        let mut file = File::create(self.base.join(&*INDEX_PATH)).unwrap();
-        bincode::serialize_into(&mut file, &self.data, bincode::Infinite).unwrap();
+        // Don't save the index if we're panicking - keep the old one.
+        if !thread::panicking() {
+            let mut file = File::create(self.paths.index()).unwrap();
+            bincode::serialize_into(&mut file, &self.data, bincode::Infinite).unwrap();
+        }
     }
 }
 
@@ -264,17 +367,13 @@ impl SharedIndex {
                     return Ok(object_hash);
                 }
 
-                let full_path = this.base.join(&path);
+                let full_path = this.paths.base().join(&path);
 
                 let meta_before = IndexMetadata::load(&full_path)?;
                 let object_hash = await!(thunk().into_future())?;
                 let meta_after = IndexMetadata::load(&full_path)?;
 
-                let mut entry = IndexEntry {
-                    hygiene: Hygiene::Clean,
-                    cached: meta_before,
-                    object_hash: Some(object_hash),
-                };
+                let mut entry = IndexEntry::fresh(meta_before, Some(object_hash));
 
                 entry.update(&meta_after, &this.data.timestamp);
                 ensure!(

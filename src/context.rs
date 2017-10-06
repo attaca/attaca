@@ -12,7 +12,7 @@ use futures_cpupool::CpuPool;
 
 use WRITE_FUTURE_BUFFER_SIZE;
 use batch::Batch;
-use catalog::Catalog;
+use catalog::Registry;
 use errors::*;
 use local::Local;
 use marshal::{ObjectHash, Object};
@@ -58,31 +58,21 @@ impl<T: Trace> Context<T> {
         }
     }
 
-
-    pub fn get_repository(&self) -> &Repository {
+    pub fn repository(&self) -> &Repository {
         &self.repository
     }
 
+    pub fn catalogs(&mut self) -> &mut Registry {
+        &mut self.repository.catalogs
+    }
 
-    pub fn get_marshal_pool(&self) -> &CpuPool {
+    pub fn marshal_pool(&self) -> &CpuPool {
         &self.marshal_pool
     }
 
-
-    pub fn get_io_pool(&self) -> &CpuPool {
+    pub fn io_pool(&self) -> &CpuPool {
         &self.io_pool
     }
-
-
-    pub fn get_local_catalog(&mut self) -> Result<Catalog> {
-        self.repository.get_catalog(None)
-    }
-
-
-    pub fn get_remote_catalog<U: Into<String>>(&mut self, remote_name: U) -> Result<Catalog> {
-        self.repository.get_catalog(Some(remote_name.into()))
-    }
-
 
     pub fn get_remote_cfg<U: AsRef<str> + Into<String>>(
         &self,
@@ -94,18 +84,15 @@ impl<T: Trace> Context<T> {
         }
     }
 
-
     pub fn with_batch(&mut self) -> Batch<T::BatchTrace> {
         Batch::with_trace(self.marshal_pool.clone(), self.trace.on_batch())
     }
-
 
     pub fn with_local(&mut self) -> Result<LocalContext<T>> {
         let local = Local::new(self)?;
 
         Ok(LocalContext { ctx: self, local })
     }
-
 
     /// Load a remote configuration, producing a `RemoteContext`.
     pub fn with_remote<U: AsRef<str> + Into<String>>(
@@ -138,7 +125,6 @@ impl<'a, T: Trace> LocalContext<'a, T> {
     ) -> Box<Future<Item = Object, Error = Error>> {
         self.local.read_object(object_hash)
     }
-
 
     /// Write a fully marshalled batch to the local repository.
     pub fn write_batch(
@@ -188,7 +174,6 @@ impl<'a, T: Trace> RemoteContext<'a, T> {
     ) -> Box<Future<Item = Object, Error = Error>> {
         self.remote.read_object(object_hash)
     }
-
 
     /// Write a fully marshalled batch to the remote repository.
     // TODO: Recover from errors when sending objects.

@@ -27,11 +27,11 @@ pub fn go(matches: &ArgMatches) -> Result<()> {
     let mut repository = Repository::find(&wd)?;
 
     if matches.is_present("all") {
-        repository.clear_catalogs()?;
+        repository.catalogs.clear()?;
     } else if matches.is_present("local") {
-        repository.get_catalog(None)?.clear()?;
+        repository.catalogs.get(None)?.clear()?;
     } else if let Some(remote) = matches.value_of("REMOTE") {
-        repository.get_catalog(Some(remote.to_owned()))?.clear()?;
+        repository.catalogs.get(Some(remote.to_owned()))?.clear()?;
     } else {
         eprintln!("{}", matches.usage());
         bail!(ErrorKind::InvalidUsage(format!("{:?}", matches)));

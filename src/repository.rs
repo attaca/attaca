@@ -19,14 +19,18 @@ use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use itertools::Itertools;
 use toml;
 
-use {METADATA_PATH, BLOBS_PATH, CONFIG_PATH, REMOTE_CATALOGS_PATH, LOCAL_CATALOG_PATH};
-use catalog::{Catalog, CatalogTrie};
+use {METADATA_PATH, BLOBS_PATH, CONFIG_PATH, REMOTE_CATALOGS_PATH, LOCAL_CATALOG_PATH, INDEX_PATH};
+use catalog::{Registry, Catalog, CatalogTrie};
 use errors::*;
 use index::Index;
+
+
+pub type ArcPath = Arc<PathBuf>;
 
 
 /// The persistent configuration data for a single pool of a RADOS cluster.
@@ -86,6 +90,91 @@ impl Default for Config {
 }
 
 
+impl Config {
+    pub fn open(paths: &Paths) -> Result<Self> {
+        let mut config_file = File::open(paths.config()).chain_err(|| {
+            format!("malformed repository at {}", paths.metadata().display())
+        })?;
+        let mut config_string = String::new();
+        config_file.read_to_string(&mut config_string)?;
+
+        Ok(toml::from_str::<Config>(&config_string)?)
+    }
+}
+
+
+#[derive(Debug)]
+struct PathsInner {
+    base: PathBuf,
+    metadata: PathBuf,
+    config: PathBuf,
+    blobs: PathBuf,
+    local_catalog: PathBuf,
+    remote_catalogs: PathBuf,
+    index: PathBuf,
+}
+
+
+/// Paths for accessing persistent repository data.
+#[derive(Debug, Clone)]
+pub struct Paths {
+    inner: Arc<PathsInner>,
+}
+
+
+impl Paths {
+    pub fn new<P: AsRef<Path>>(base_ref: P) -> Self {
+        let base = base_ref.as_ref().to_owned();
+        let metadata = base.join(&*METADATA_PATH);
+        let config = base.join(&*CONFIG_PATH);
+        let blobs = base.join(&*BLOBS_PATH);
+        let local_catalog = base.join(&*LOCAL_CATALOG_PATH);
+        let remote_catalogs = base.join(&*REMOTE_CATALOGS_PATH);
+        let index = base.join(&*INDEX_PATH);
+
+        Self {
+            inner: Arc::new(PathsInner {
+                base,
+                metadata,
+                blobs,
+                config,
+                local_catalog,
+                remote_catalogs,
+                index,
+            }),
+        }
+    }
+
+    pub fn base(&self) -> &Path {
+        &self.inner.base
+    }
+
+    pub fn metadata(&self) -> &Path {
+        &self.inner.metadata
+    }
+
+    pub fn config(&self) -> &Path {
+        &self.inner.config
+    }
+
+    pub fn blobs(&self) -> &Path {
+        &self.inner.blobs
+    }
+
+    pub fn local_catalog(&self) -> &Path {
+        &self.inner.local_catalog
+    }
+
+    pub fn remote_catalogs(&self) -> &Path {
+        &self.inner.remote_catalogs
+    }
+    
+    pub fn index(&self) -> &Path {
+        &self.inner.index
+    }
+}
+
+
 /// The type of a valid repository.
 #[derive(Debug)]
 pub struct Repository {
@@ -95,59 +184,43 @@ pub struct Repository {
     /// The local index.
     pub index: Index,
 
+    /// Paths to persistent repository data.
+    pub paths: Paths,
+
     /// Catalogs for local and remote object stores.
-    catalogs: HashMap<Option<String>, Option<Catalog>>,
-
-    /// The absolute path to the root of the repository.
-    path: PathBuf,
-
-    /// The absolute path to the repository's config file.
-    config_path: PathBuf,
-
-    /// The absolute path to the blob store of the repository.
-    blob_path: PathBuf,
-
-    /// The absolute path to the local catalog.
-    local_catalog_path: PathBuf,
-
-    /// The absolute path to the remote catalog directory of the repository.
-    remote_catalogs_path: PathBuf,
+    pub catalogs: Registry,
 }
 
 
 impl Repository {
     /// Initialize a repository.
     pub fn init<P: AsRef<Path>>(path: P) -> Result<()> {
-        let path_ref = path.as_ref();
+        let paths = Paths::new(path);
 
-        let metadata_path = path_ref.join(*METADATA_PATH);
-        if metadata_path.is_dir() {
+        if paths.metadata().is_dir() {
             bail!(
                 "a repository already exists at {}!",
-                metadata_path.to_string_lossy()
+                paths.metadata().display()
             );
         }
 
-        fs::create_dir_all(&metadata_path).chain_err(|| {
-            format!("error creating {}", metadata_path.display())
+        fs::create_dir_all(paths.metadata()).chain_err(|| {
+            format!("error creating {}", paths.metadata().display())
         })?;
 
-        let blobs_path = path_ref.join(&*BLOBS_PATH);
-        fs::create_dir_all(&blobs_path).chain_err(|| {
-            format!("error creating {}", blobs_path.display())
+        fs::create_dir_all(paths.blobs()).chain_err(|| {
+            format!("error creating {}", paths.blobs().display())
         })?;
 
-        let remote_catalogs_path = path_ref.join(&*REMOTE_CATALOGS_PATH);
-        fs::create_dir_all(&remote_catalogs_path).chain_err(|| {
-            format!("error creating {}", remote_catalogs_path.display())
+        fs::create_dir_all(paths.remote_catalogs()).chain_err(|| {
+            format!("error creating {}", paths.remote_catalogs().display())
         })?;
 
-        let config_path = path_ref.join(&*CONFIG_PATH);
-        File::create(&config_path)
+        File::create(paths.config())
             .and_then(|mut cfg_file| {
                 cfg_file.write_all(&toml::to_vec(&Config::default()).unwrap())
             })
-            .chain_err(|| format!("error creating {}", config_path.display()))?;
+            .chain_err(|| format!("error creating {}", paths.config().display()))?;
 
         Ok(())
     }
@@ -155,54 +228,24 @@ impl Repository {
 
     /// Load repository data.
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Repository> {
-        let path_ref = path.as_ref();
+        let paths = Paths::new(path);
 
-        let metadata_path = path_ref.join(&*METADATA_PATH);
-
-        if !metadata_path.is_dir() {
+        if !paths.metadata().is_dir() {
             bail!(
                 "no repository found at {}!",
-                metadata_path.to_string_lossy()
+                paths.metadata().display(),
             );
         }
 
-        let config_path = path_ref.join(&*CONFIG_PATH);
-
-        let config = {
-            let mut config_file = File::open(&config_path).chain_err(|| {
-                format!(
-                    "malformed repository at {}",
-                    metadata_path.to_string_lossy()
-                )
-            })?;
-            let mut config_string = String::new();
-            config_file.read_to_string(&mut config_string)?;
-
-            toml::from_str::<Config>(&config_string)?
-        };
-
-        let catalogs = {
-            let mut catalog_map: HashMap<_, _> = config
-                .remotes
-                .keys()
-                .map(|key| (Some(key.to_owned()), None))
-                .collect();
-            catalog_map.insert(None, None);
-
-            catalog_map
-        };
-
-        let index = Index::open(path_ref)?;
+        let config = Config::open(&paths)?;
+        let catalogs = Registry::new(&config, &paths);
+        let index = Index::open(&paths)?;
 
         Ok(Repository {
             config,
             catalogs,
+            paths,
             index,
-            path: path_ref.to_owned(),
-            config_path,
-            blob_path: path_ref.join(&*BLOBS_PATH),
-            local_catalog_path: path_ref.join(&*LOCAL_CATALOG_PATH),
-            remote_catalogs_path: path_ref.join(&*REMOTE_CATALOGS_PATH),
         })
     }
 
@@ -211,7 +254,7 @@ impl Repository {
     pub fn find<P: AsRef<Path>>(path: P) -> Result<Repository> {
         let mut attaca_path = path.as_ref().to_owned();
 
-        while !attaca_path.join(".attaca").is_dir() {
+        while !attaca_path.join(&*METADATA_PATH).is_dir() {
             if !attaca_path.pop() {
                 bail!(ErrorKind::RepositoryNotFound(path.as_ref().to_owned()));
             }
@@ -224,7 +267,7 @@ impl Repository {
     pub fn make_local_catalog(&self) -> Result<Catalog> {
         let mut objects = CatalogTrie::new();
 
-        for byte0_res in self.blob_path.read_dir()? {
+        for byte0_res in self.paths.blobs().read_dir()? {
             let byte0 = byte0_res?;
 
             for byte1_res in byte0.path().read_dir()? {
@@ -253,54 +296,14 @@ impl Repository {
             }
         }
 
-        Catalog::new(objects, self.local_catalog_path.clone())
-    }
-
-
-    pub fn get_catalog(&mut self, name_opt: Option<String>) -> Result<Catalog> {
-        match self.catalogs.get(&name_opt) {
-            Some(&Some(ref catalog)) => return Ok(catalog.clone()),
-            Some(&None) => {}
-            None => bail!(ErrorKind::CatalogNotFound(name_opt)),
-        }
-
-        let catalog_path = match name_opt {
-            Some(ref name) => {
-                Cow::Owned(self.remote_catalogs_path.join(format!("{}.catalog", name)))
-            }
-            None => Cow::Borrowed(&self.local_catalog_path),
-        };
-        let catalog = Catalog::load(catalog_path.clone().into_owned()).chain_err(
-            || {
-                ErrorKind::CatalogLoad(catalog_path.into_owned())
-            },
-        )?;
-        self.catalogs.insert(name_opt, Some(catalog.clone()));
-
-        Ok(catalog)
-    }
-
-
-    pub fn clear_catalogs(&mut self) -> Result<()> {
-        let catalog_names = self.catalogs.keys().cloned().collect::<Vec<_>>();
-
-        for name in catalog_names {
-            self.get_catalog(name)?.clear()?;
-        }
-
-        Ok(())
-    }
-
-
-    pub fn get_blob_path(&self) -> &Path {
-        &self.blob_path
+        Catalog::new(objects, self.paths.local_catalog().to_owned())
     }
 
 
     /// Update the `config.toml` file.
     fn write_config(&mut self) -> Result<()> {
         let config = toml::to_vec(&self.config)?;
-        let mut file = File::create(&self.config_path)?;
+        let mut file = File::create(&self.paths.config())?;
         file.write_all(&config)?;
         Ok(())
     }

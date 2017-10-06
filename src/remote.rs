@@ -71,7 +71,7 @@ impl Remote {
 
         Ok(Remote {
             local: Local::new(ctx).chain_err(|| ErrorKind::LocalLoad)?,
-            catalog: ctx.get_remote_catalog(remote_name)?,
+            catalog: ctx.catalogs().get(Some(remote_name.into()))?,
             inner: Arc::new(RemoteInner { conn, pool }),
         })
     }
