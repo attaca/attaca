@@ -1,8 +1,8 @@
 use futures::future::{self, FutureResult};
 
-use context::Store;
 use errors::*;
 use marshal::{Object, ObjectHash, Hashed};
+use store::Store;
 
 
 #[derive(Debug, Clone, Copy)]

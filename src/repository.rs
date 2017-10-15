@@ -28,10 +28,11 @@ use toml;
 use {METADATA_PATH, BLOBS_PATH, CONFIG_PATH, REMOTE_CATALOGS_PATH, LOCAL_CATALOG_PATH, INDEX_PATH,
      REFS_PATH};
 use catalog::{Registry, Catalog, CatalogTrie};
-use context::{Local, Remote, Context};
+use context::Context;
 use errors::*;
 use index::Index;
 use marshal::ObjectHash;
+use store::{Local, Remote, Ceph};
 use trace::Trace;
 
 
@@ -354,7 +355,7 @@ impl Repository {
             },
         )?;
         let local = Local::new(&self.paths, &local_catalog, io_pool);
-        let remote = Remote::connect(local, &remote_catalog, remote_config, io_pool)?;
+        let remote = Remote::Ceph(Ceph::connect(local, &remote_catalog, remote_config, io_pool)?);
 
         Ok(Context::new(trace, remote, marshal_pool, io_pool))
     }

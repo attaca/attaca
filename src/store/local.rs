@@ -18,10 +18,10 @@ use stable_deref_trait::StableDeref;
 
 use arc_slice;
 use catalog::{Catalog, CatalogLock};
-use context::Store;
 use errors::*;
 use marshal::{Hashed, ObjectHash, Object};
 use repository::Paths;
+use store::Store;
 
 
 pub struct LocalBufferFactory {

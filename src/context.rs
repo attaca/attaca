@@ -1,13 +1,4 @@
 //! # `context` - manage a valid repository.
-//!
-//! `Context` is the main point of entry for the Attaca API. Important pieces of functionality in
-//! this module include:
-//!
-//! * Creating/using `Context` and `RemoteContext`s.
-
-pub mod empty;
-pub mod local;
-pub mod remote;
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -26,20 +17,8 @@ use errors::*;
 use index::{Index, Cached};
 use marshal::{ObjectHash, Object, Marshaller, Hashed, DirTree};
 use split::SliceChunker;
+use store::{Store, Empty};
 use trace::Trace;
-
-pub use context::empty::Empty;
-pub use context::local::Local;
-pub use context::remote::Remote;
-
-
-pub trait Store: Send + Sync + Clone + 'static {
-    type Read: Future<Item = Object, Error = Error> + Send;
-    type Write: Future<Item = bool, Error = Error> + Send;
-
-    fn read_object(&self, object_hash: ObjectHash) -> Self::Read;
-    fn write_object(&self, hashed: Hashed) -> Self::Write;
-}
 
 
 /// A context for marshalling and local operations on a repository. `RemoteContext`s must be built

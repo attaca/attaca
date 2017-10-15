@@ -7,9 +7,9 @@ use futures::future::{self, Either, Loop};
 use futures::prelude::*;
 use sequence_trie::SequenceTrie;
 
-use context::Store;
 use errors::*;
 use marshal::{ObjectHash, Object};
+use store::Store;
 
 
 #[derive(Debug)]

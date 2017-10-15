@@ -5,7 +5,8 @@ use futures::prelude::*;
 
 use attaca::context::Context;
 use attaca::marshal::{ObjectHash, Object, DataObject};
-use attaca::repository::Repository;
+use attaca::Repository;
+use attaca::Store;
 
 use errors::*;
 

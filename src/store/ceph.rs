@@ -1,6 +1,6 @@
 //! # `remote` - operations on remote repositories.
 //!
-//! `Remote` contains a `RadosConnection` object, along with a reference to the parent context.
+//! `Ceph` contains a `RadosConnection` object, along with a reference to the parent context.
 //!
 //! At current the only supported remote is a Ceph/RADOS cluster.
 
@@ -12,10 +12,10 @@ use owning_ref::OwningRefMut;
 use rad::{ConnectionBuilder, Connection};
 
 use catalog::Catalog;
-use context::{Store, Local};
 use errors::*;
 use marshal::{Hashed, ObjectHash, Object};
 use repository::RemoteCfg;
+use store::{Store, Local};
 
 
 /// The type of a remote repository.
@@ -24,23 +24,23 @@ use repository::RemoteCfg;
 //       when the remote already contains them.
 // TODO: Make the act of writing an object asynchronous - return a future instead of a `Result.
 #[derive(Clone)]
-pub struct Remote {
+pub struct Ceph {
     local: Local,
 
     io_pool: CpuPool,
 
     catalog: Catalog,
-    inner: Arc<RemoteInner>,
+    inner: Arc<CephInner>,
 }
 
 
-struct RemoteInner {
+struct CephInner {
     conn: Mutex<Connection>,
     pool: String,
 }
 
 
-impl Remote {
+impl Ceph {
     /// Connect to a remote repository, given appropriate configuration data.
     pub fn connect(
         local: Local,
@@ -72,13 +72,13 @@ impl Remote {
 
         let pool = remote_config.object_store.pool.clone();
 
-        Ok(Remote {
+        Ok(Ceph {
             local,
 
             io_pool: io_pool.clone(),
 
             catalog: remote_catalog.clone(),
-            inner: Arc::new(RemoteInner { conn, pool }),
+            inner: Arc::new(CephInner { conn, pool }),
         })
     }
 
@@ -170,7 +170,7 @@ impl Remote {
 }
 
 
-impl Store for Remote {
+impl Store for Ceph {
     type Read = Box<Future<Item = Object, Error = Error> + Send>;
     type Write = Box<Future<Item = bool, Error = Error> + Send>;
 

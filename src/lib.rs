@@ -53,10 +53,12 @@ pub mod index;
 pub mod marshal;
 pub mod repository;
 pub mod split;
+pub mod store;
 pub mod trace;
 
 pub use errors::*;
 pub use repository::Repository;
+pub use store::Store;
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
