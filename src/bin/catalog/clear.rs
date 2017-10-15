@@ -2,7 +2,7 @@ use std::env;
 
 use clap::{App, SubCommand, Arg, ArgMatches};
 
-use attaca::repository::Repository;
+use attaca::Repository;
 
 use errors::*;
 
@@ -22,10 +22,7 @@ pub fn command() -> App<'static, 'static> {
 }
 
 
-pub fn go(matches: &ArgMatches) -> Result<()> {
-    let wd = env::current_dir()?;
-    let mut repository = Repository::find(&wd)?;
-
+pub fn go(repository: &mut Repository, matches: &ArgMatches) -> Result<()> {
     if matches.is_present("all") {
         repository.catalogs.clear()?;
     } else if matches.is_present("local") {
@@ -33,8 +30,7 @@ pub fn go(matches: &ArgMatches) -> Result<()> {
     } else if let Some(remote) = matches.value_of("REMOTE") {
         repository.catalogs.get(Some(remote.to_owned()))?.clear()?;
     } else {
-        eprintln!("{}", matches.usage());
-        bail!(ErrorKind::InvalidUsage(format!("{:?}", matches)));
+        bail!(ErrorKind::InvalidUsage);
     }
 
     Ok(())

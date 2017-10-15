@@ -33,17 +33,24 @@ pub fn command() -> App<'static, 'static> {
 }
 
 
-pub fn go(matches: &ArgMatches) -> Result<()> {
-    let wd = env::current_dir()?;
-    let mut context = Context::new(Repository::find(wd).chain_err(
-        || "unable to find repository",
-    )?);
-
+pub fn go(repository: &mut Repository, matches: &ArgMatches) -> Result<()> {
     let object_hash = value_t!(matches.value_of("OBJECT"), ObjectHash)?;
 
     let object = match matches.value_of("remote") {
-        Some(remote) => context.with_remote(remote)?.read_object(object_hash).wait()?,
-        None => context.with_local()?.read_object(object_hash).wait()?,
+        Some(remote) => {
+            repository
+                .remote(remote, ())?
+                .store()
+                .read_object(object_hash)
+                .wait()?
+        }
+        None => {
+            repository
+                .local(())?
+                .store()
+                .read_object(object_hash)
+                .wait()?
+        }
     };
 
     let pretty = match object {

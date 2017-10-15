@@ -7,6 +7,8 @@ use std::os::unix::io::{AsRawFd, FromRawFd};
 
 use clap::{App, SubCommand, Arg, ArgMatches};
 
+use attaca::Repository;
+
 use errors::*;
 
 
@@ -143,7 +145,7 @@ fn run_takedown<P: AsRef<Path>>(ir_path: P) -> Result<()> {
 }
 
 
-pub fn go(matches: &ArgMatches) -> Result<()> {
+pub fn go(repository: &mut Repository, matches: &ArgMatches) -> Result<()> {
     if let (subcmd, Some(sub_m)) = matches.subcommand() {
         let ir_path = matches
             .value_of("fetch-tools")
@@ -173,7 +175,7 @@ pub fn go(matches: &ArgMatches) -> Result<()> {
 
         let result = match subcmd {
             "noop" => Ok(()),
-            "write_all" => write_all::go(&ceph_path, sub_m),
+            "write_all" => write_all::go(repository, &ceph_path, sub_m),
             _ => unreachable!("Invalid subcommand {}", subcmd),
         }.chain_err(|| format!("run test suite '{}'", subcmd));
 
@@ -187,7 +189,6 @@ pub fn go(matches: &ArgMatches) -> Result<()> {
 
         result
     } else {
-        eprintln!("{}", matches.usage());
-        bail!(ErrorKind::InvalidUsage(format!("{:?}", matches)));
+        bail!(ErrorKind::InvalidUsage);
     }
 }

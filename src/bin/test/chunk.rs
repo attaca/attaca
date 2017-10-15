@@ -1,10 +1,15 @@
+use std::env;
+use std::sync::{Arc, Mutex};
+
 use clap::{App, Arg, SubCommand, ArgMatches};
+use futures::prelude::*;
 use histogram::Histogram;
 use memmap::{Mmap, Protection};
 
 use attaca::arc_slice;
+use attaca::repository::Repository;
 use attaca::split;
-use attaca::trace::SplitTrace;
+use attaca::trace::Trace;
 
 use errors::Result;
 
@@ -22,36 +27,48 @@ pub fn command() -> App<'static, 'static> {
 }
 
 
-#[derive(Default)]
-struct TraceSplit {
+#[derive(Debug, Default)]
+struct TraceSplitInner {
     processed: u64,
     total: u64,
     stats: Histogram,
 }
 
 
-impl SplitTrace for TraceSplit {
-    fn on_chunk(&mut self, _offset: u64, chunk: &[u8]) {
+#[derive(Debug, Clone, Default)]
+struct TraceSplit {
+    inner: Arc<Mutex<TraceSplitInner>>,
+}
+
+
+impl Trace for TraceSplit {
+    fn on_split_chunk(&self, _offset: u64, chunk: &[u8]) {
+        let mut inner = self.inner.lock().unwrap();
+
         eprintln!(
             "Chunk {:09} :: size {:08}, total MB: {:010}",
-            self.processed,
+            inner.processed,
             chunk.len(),
-            self.total / 1_000_000
+            inner.total / 1_000_000
         );
 
-        self.processed += 1;
-        self.total += chunk.len() as u64;
-        self.stats.increment(chunk.len() as u64).unwrap();
+        inner.processed += 1;
+        inner.total += chunk.len() as u64;
+        inner.stats.increment(chunk.len() as u64).unwrap();
     }
 }
 
 
-pub fn go(matches: &ArgMatches) -> Result<()> {
-    let mmap = Mmap::open_path(matches.value_of("INPUT").unwrap(), Protection::Read)?;
-    let mut trace = TraceSplit::default();
-    split::chunk_with_trace(arc_slice::mapped(mmap), &mut trace);
+pub fn go(repository: &mut Repository, matches: &ArgMatches) -> Result<()> {
+    let trace = TraceSplit::default();
+    let mut ctx = repository.local(trace.clone())?;
 
-    let stats = trace.stats;
+    ctx.split_file(matches.value_of("INPUT").unwrap())
+        .for_each(|_| Ok(()))
+        .join(ctx.close())
+        .wait()?;
+
+    let stats = &trace.inner.lock().unwrap().stats;
 
     println!(
         "(Sizes) Min: {} Avg: {} Max: {} StdDev: {}",

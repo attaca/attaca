@@ -4,13 +4,12 @@ use std::path::Path;
 use clap::{App, Arg, SubCommand, ArgMatches};
 use futures::prelude::*;
 
-use attaca::context::Context;
+use attaca::Repository;
 use attaca::marshal::ObjectHash;
-use attaca::repository::Repository;
 use attaca::trace::Trace;
 
 use errors::Result;
-use trace::ProgressTrace;
+use trace::Progress;
 
 
 const HELP_STR: &'static str = r#"
@@ -41,30 +40,29 @@ pub fn command() -> App<'static, 'static> {
 }
 
 
-fn marshal<T: Trace, P: AsRef<Path>>(trace: T, path: P) -> Result<ObjectHash> {
-    let wd = env::current_dir()?;
-    let repo = Repository::find(wd)?;
-    let mut context = Context::with_trace(repo, trace);
-    let mut batch = context.with_batch();
+fn marshal<T: Trace, P: AsRef<Path>>(
+    repository: &mut Repository,
+    trace: T,
+    path: P,
+) -> Result<ObjectHash> {
+    let mut context = repository.local(trace)?;
+    let chunk_stream = context.split_file(path);
+    let hash_future = context.hash_file(chunk_stream);
+    let write_future = context.close();
 
-    let chunked = batch.chunk_file(path)?;
-    let hash_future = batch.marshal_file(chunked);
-
-    let batch_future = context.with_local()?.write_batch(batch);
-
-    let ((), hash) = batch_future.join(hash_future).wait()?;
+    let ((), hash) = write_future.join(hash_future).wait()?;
 
     Ok(hash)
 }
 
 
-pub fn go(matches: &ArgMatches) -> Result<()> {
+pub fn go(repository: &mut Repository, matches: &ArgMatches) -> Result<()> {
     let path = matches.value_of("INPUT").unwrap();
 
     let hash = if matches.is_present("quiet") {
-        marshal((), path)?
+        marshal(repository, (), path)?
     } else {
-        marshal(ProgressTrace::new(), path)?
+        marshal(repository, Progress::new(None), path)?
     };
 
     println!("{}", hash);

@@ -78,6 +78,7 @@ impl Record {
 /// useful for representing things such as leaves of the tree formed by the large-object
 /// small-object hierarchy.
 #[derive(Debug, Clone)]
+#[cfg_attr(test, derive(PartialEq))]
 pub enum SmallRecord {
     Shallow(u64, ObjectHash),
     Deep(SmallObject),

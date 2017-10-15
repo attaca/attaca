@@ -7,14 +7,15 @@ error_chain! {
 
     foreign_links {
         Clap(::clap::Error);
+        GlobSet(::globset::Error);
         Nul(::std::ffi::NulError);
         Io(::std::io::Error);
     }
 
     errors {
-        InvalidUsage(args: String) {
+        InvalidUsage {
             description("invalid usage"),
-            display("invalid usage: {}", args),
+            display("invalid usage"),
         }
     }
 }

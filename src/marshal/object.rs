@@ -2,7 +2,7 @@
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::ffi::OsString;
 
 use bincode;
 use chrono::{DateTime, Utc};
@@ -35,7 +35,7 @@ impl<'a> RawSmallObject<'a> {
 }
 
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SmallObject {
     pub chunk: ArcSlice,
 }
@@ -71,7 +71,7 @@ impl LargeObject {
 /// The marshaled, deserialized representation of a subtree.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SubtreeObject {
-    pub entries: BTreeMap<PathBuf, ObjectHash>,
+    pub entries: BTreeMap<OsString, ObjectHash>,
 }
 
 
@@ -213,7 +213,6 @@ impl Object {
     pub fn as_raw(&self) -> RawObject {
         match *self {
             Object::Data(ref data) => RawObject::Data(data.as_raw()),
-
             Object::Subtree(ref subtree) => RawObject::Subtree(Cow::Borrowed(subtree)),
             Object::Commit(ref commit) => RawObject::Commit(Cow::Borrowed(commit)),
         }

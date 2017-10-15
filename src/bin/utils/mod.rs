@@ -1,5 +1,7 @@
 use clap::{App, ArgMatches, SubCommand};
 
+use attaca::Repository;
+
 use errors::*;
 
 mod read;
@@ -14,12 +16,11 @@ pub fn command() -> App<'static, 'static> {
 }
 
 
-pub fn go(matches: &ArgMatches) -> Result<()> {
+pub fn go(repository: &mut Repository, matches: &ArgMatches) -> Result<()> {
     match matches.subcommand() {
-        ("read", Some(sub_m)) => read::go(sub_m),
+        ("read", Some(sub_m)) => read::go(repository, sub_m),
         _ => {
-            eprintln!("{}", matches.usage());
-            bail!(ErrorKind::InvalidUsage(format!("{:?}", matches)));
+            bail!(ErrorKind::InvalidUsage);
         }
     }
 }

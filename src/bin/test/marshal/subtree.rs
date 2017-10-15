@@ -3,14 +3,14 @@ use std::path::Path;
 
 use clap::{App, Arg, SubCommand, ArgMatches};
 use futures::prelude::*;
+use futures::stream::FuturesUnordered;
 
-use attaca::context::Context;
+use attaca::Repository;
 use attaca::marshal::ObjectHash;
-use attaca::repository::Repository;
 use attaca::trace::Trace;
 
-use errors::Result;
-use trace::ProgressTrace;
+use errors::*;
+use trace::Progress;
 
 
 const HELP_STR: &'static str = r#"
@@ -41,28 +41,58 @@ pub fn command() -> App<'static, 'static> {
 }
 
 
-fn marshal<T: Trace, P: AsRef<Path>>(trace: T, path: P) -> Result<ObjectHash> {
-    let wd = env::current_dir()?;
-    let repo = Repository::find(wd)?;
-    let mut context = Context::with_trace(repo, trace);
-    let mut batch = context.with_batch();
+fn marshal<T: Trace, P: AsRef<Path>>(
+    repository: &mut Repository,
+    trace: T,
+    path: P,
+) -> Result<ObjectHash> {
+    let mut context = repository.local(trace)?;
 
-    let hash_future = batch.marshal_subtree(path);
-    let batch_future = context.with_local()?.write_batch(batch);
+    let mut entries = FuturesUnordered::new();
+    let mut stack = Vec::new();
 
-    let ((), hash) = batch_future.join(hash_future).wait()?;
+    let absolute_path = if path.as_ref().is_absolute() {
+        path.as_ref().to_owned()
+    } else {
+        repository.paths.base.join(path.as_ref())
+    };
+
+    stack.push(absolute_path.read_dir()?);
+
+    while let Some(iter) = stack.pop() {
+        for dir_entry_res in iter {
+            let dir_entry = dir_entry_res?;
+            let absolute_path = dir_entry.path();
+            let relative_path = absolute_path.strip_prefix(&repository.paths.base).unwrap();
+
+            if absolute_path.symlink_metadata()?.is_dir() {
+                stack.push(absolute_path.read_dir()?);
+            } else {
+                let chunk_stream = context.split_file(&absolute_path);
+                let entry_path = relative_path.to_owned();
+                entries.push(context.hash_file(chunk_stream).map(
+                    |hash| (entry_path, hash),
+                ));
+            }
+        }
+    }
+
+    let hash_future = context.hash_subtree(entries);
+    let write_future = context.close();
+
+    let ((), hash) = write_future.join(hash_future).wait()?;
 
     Ok(hash)
 }
 
 
-pub fn go(matches: &ArgMatches) -> Result<()> {
+pub fn go(repository: &mut Repository, matches: &ArgMatches) -> Result<()> {
     let path = matches.value_of("INPUT").unwrap();
 
     let hash = if matches.is_present("quiet") {
-        marshal((), path)?
+        marshal(repository, (), path)?
     } else {
-        marshal(ProgressTrace::new(), path)?
+        marshal(repository, Progress::new(None), path)?
     };
 
     println!("{}", hash);

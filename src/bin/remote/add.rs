@@ -133,8 +133,7 @@ fn parse_object_store(matches: &ArgMatches) -> Result<CephCfg> {
 }
 
 
-pub fn go(matches: &ArgMatches) -> Result<()> {
-    let mut repository = Repository::find(env::current_dir()?)?;
+pub fn go(repository: &mut Repository, matches: &ArgMatches) -> Result<()> {
     let name = matches.value_of("NAME").unwrap().to_owned();
 
     if repository.config.remotes.contains_key(&name) {

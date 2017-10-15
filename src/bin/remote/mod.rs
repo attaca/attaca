@@ -1,9 +1,11 @@
 use clap::{App, ArgMatches, SubCommand};
 
+use attaca::Repository;
+
 use errors::*;
 
-mod add;
-mod list;
+pub mod add;
+pub mod list;
 
 
 pub fn command() -> App<'static, 'static> {
@@ -14,13 +16,12 @@ pub fn command() -> App<'static, 'static> {
 }
 
 
-pub fn go(matches: &ArgMatches) -> Result<()> {
+pub fn go(repository: &mut Repository, matches: &ArgMatches) -> Result<()> {
     match matches.subcommand() {
-        ("add", Some(sub_m)) => add::go(sub_m),
-        ("list", Some(sub_m)) => list::go(sub_m),
+        ("add", Some(sub_m)) => add::go(repository, sub_m),
+        ("list", Some(sub_m)) => list::go(repository, sub_m),
         _ => {
-            eprintln!("{}", matches.usage());
-            bail!(ErrorKind::InvalidUsage(format!("{:?}", matches)));
+            bail!(ErrorKind::InvalidUsage);
         }
     }
 }

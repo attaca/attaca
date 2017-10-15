@@ -2,7 +2,7 @@ use std::env;
 
 use clap::{App, SubCommand, ArgMatches};
 
-use attaca::repository::Repository;
+use attaca::Repository;
 
 use errors::*;
 
@@ -12,8 +12,7 @@ pub fn command() -> App<'static, 'static> {
 }
 
 
-pub fn go(_matches: &ArgMatches) -> Result<()> {
-    let mut repository = Repository::find(env::current_dir()?)?;
+pub fn go(repository: &mut Repository, _matches: &ArgMatches) -> Result<()> {
     repository.index.update()?;
 
     Ok(())

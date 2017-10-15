@@ -202,7 +202,6 @@ impl Catalog {
         })
     }
 
-
     pub fn load(catalog_path: PathBuf) -> Result<Catalog> {
         let objects = if catalog_path.is_file() {
             bincode::deserialize_from(
@@ -224,7 +223,6 @@ impl Catalog {
         })
     }
 
-
     pub fn try_lock(&self, hash: ObjectHash) -> StdResult<CatalogLock, CatalogEntry> {
         let mut inner_lock = self.inner.lock().unwrap();
 
@@ -238,13 +236,11 @@ impl Catalog {
         }
     }
 
-
     pub fn get(&self, hash: ObjectHash) -> Option<CatalogEntry> {
         self.inner.lock().unwrap().objects.get(&hash).map(|entry| {
             entry.clone()
         })
     }
-
 
     pub fn search<K: Borrow<[u8]>>(&self, bytes: K) -> Vec<ObjectHash> {
         self.inner
@@ -256,11 +252,9 @@ impl Catalog {
             .collect()
     }
 
-
     pub fn len(&self) -> usize {
         self.inner.lock().unwrap().objects.count()
     }
-
 
     /// Clear all registered hashes from the catalog. Clearing a `Catalog` will cancel any
     /// in-progress locks, causing any outstanding locks to panic when dropped and `CatalogFuture`s
@@ -297,12 +291,12 @@ impl Drop for CatalogInner {
 #[derive(Debug)]
 pub struct Registry {
     catalogs: HashMap<Option<String>, Option<Catalog>>,
-    paths: Paths,
+    paths: Arc<Paths>,
 }
 
 
 impl Registry {
-    pub fn new(config: &Config, paths: &Paths) -> Self {
+    pub fn new(config: &Config, paths: &Arc<Paths>) -> Self {
         Self {
             catalogs: config
                 .remotes
@@ -323,11 +317,11 @@ impl Registry {
 
         let catalog_path = match name_opt {
             Some(ref name) => {
-                Cow::Owned(self.paths.remote_catalogs().join(
+                Cow::Owned(self.paths.remote_catalogs.join(
                     format!("{}.catalog", name),
                 ))
             }
-            None => Cow::Borrowed(self.paths.local_catalog()),
+            None => Cow::Borrowed(&self.paths.local_catalog),
         };
         let catalog = Catalog::load(catalog_path.clone().into_owned()).chain_err(
             || {
@@ -338,7 +332,6 @@ impl Registry {
 
         Ok(catalog)
     }
-
 
     pub fn clear(&mut self) -> Result<()> {
         let catalog_names = self.catalogs.keys().cloned().collect::<Vec<_>>();

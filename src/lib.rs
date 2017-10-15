@@ -1,12 +1,18 @@
 //! # `attaca` - distributed, resilient version control with a git-like interface
 
 #![feature(proc_macro, conservative_impl_trait, generators, offset_to)]
-#![recursion_limit="128"]
+#![recursion_limit="256"]
 
 #[cfg(not(target_pointer_width = "64"))]
 compile_error!(
     "Must be compiled on a 64-bit architecture due to the use of memory-mapping for potentially extremely large files!"
 );
+
+#[cfg(test)]
+extern crate histogram;
+
+#[cfg(test)]
+extern crate rand;
 
 #[cfg(test)]
 #[macro_use]
@@ -21,6 +27,7 @@ extern crate futures_await as futures;
 extern crate futures_bufio;
 extern crate futures_cpupool;
 extern crate generic_array;
+extern crate globset;
 extern crate itertools;
 #[macro_use]
 extern crate lazy_static;
@@ -29,16 +36,16 @@ extern crate memmap;
 extern crate owning_ref;
 extern crate qp_trie;
 extern crate rad;
-extern crate stable_deref_trait;
+extern crate seahash;
 #[macro_use]
 extern crate serde_derive;
-extern crate seahash;
+extern crate sequence_trie;
 extern crate sha3;
+extern crate stable_deref_trait;
 extern crate toml;
 extern crate typenum;
 
 pub mod arc_slice;
-pub mod batch;
 pub mod catalog;
 pub mod context;
 pub mod errors;
@@ -48,7 +55,8 @@ pub mod repository;
 pub mod split;
 pub mod trace;
 
-pub use errors::{Error, ErrorKind, Result};
+pub use errors::*;
+pub use repository::Repository;
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -85,6 +93,10 @@ lazy_static! {
 
     /// The location of the index file.
     static ref INDEX_PATH: PathBuf = METADATA_PATH.join("index.bin");
+
+
+    /// The location of the HEAD file.
+    static ref REFS_PATH: PathBuf = METADATA_PATH.join("refs.toml");
 
 
     /// Default paths to ignore.

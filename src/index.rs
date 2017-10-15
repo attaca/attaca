@@ -4,18 +4,17 @@ use std::fs::File;
 use std::io::Error as IoError;
 use std::mem;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
-use std::thread;
+use std::sync::Arc;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::os::unix::ffi::OsStrExt;
 
 use bincode;
 use chrono::prelude::*;
-use futures::prelude::*;
+use globset::GlobSet;
 use libc;
 
-use {INDEX_PATH, DEFAULT_IGNORES};
+use DEFAULT_IGNORES;
 use errors::*;
 use marshal::ObjectHash;
 use repository::Paths;
@@ -77,6 +76,14 @@ impl IndexMetadata {
 }
 
 
+#[derive(Debug, Clone, Copy)]
+pub enum Indexed {
+    Valid(Cached),
+    Invalid,
+    Untracked,
+}
+
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Hygiene {
     Clean,
@@ -85,41 +92,38 @@ pub enum Hygiene {
 }
 
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Cached {
+    Hashed(ObjectHash),
+    Unhashed,
+    Removed,
+}
+
+
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct IndexEntry {
     hygiene: Hygiene,
-    cached: IndexMetadata,
-
-    // Whether or not this file is actually present locally - true generally, false when the file
-    // exists on a remote.
-    local: bool,
-
-    // Whether or not this file has been "added" to a current commit.
-    added: bool,
-
-    object_hash: Option<ObjectHash>,
+    metadata: IndexMetadata,
+    cached: Cached,
 }
 
 
 impl IndexEntry {
-    fn fresh(metadata: IndexMetadata, object_hash: Option<ObjectHash>) -> IndexEntry {
+    fn fresh(metadata: IndexMetadata, cached: Cached) -> IndexEntry {
         IndexEntry {
             hygiene: Hygiene::Clean,
-            cached: metadata,
-            local: true,
-            added: false,
-            object_hash,
+            metadata,
+            cached,
         }
     }
 
-
     fn update(&mut self, fresh: &IndexMetadata, timestamp: &DateTime<Utc>) {
-        if self.hygiene == Hygiene::Clean {
+        if self.hygiene != Hygiene::Dirty {
             self.hygiene = {
-                if &self.cached == fresh {
+                if &self.metadata == fresh {
                     // If the timestamp of the index is older or the same as the cached mtime...
                     // then this entry is dodgy.
-                    if timestamp <= &self.cached.mtime {
+                    if timestamp <= &self.metadata.mtime {
                         Hygiene::Dodgy
                     } else {
                         Hygiene::Clean
@@ -130,13 +134,21 @@ impl IndexEntry {
             };
         }
     }
+
+    fn get(&self) -> Option<Cached> {
+        if self.hygiene == Hygiene::Clean {
+            Some(self.cached)
+        } else {
+            None
+        }
+    }
 }
 
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct IndexData {
     timestamp: DateTime<Utc>,
-    entries: Mutex<HashMap<PathBuf, IndexEntry>>,
+    entries: HashMap<PathBuf, IndexEntry>,
 }
 
 
@@ -144,7 +156,7 @@ impl IndexData {
     pub fn new() -> Self {
         IndexData {
             timestamp: Utc::now().with_nanosecond(0).unwrap(),
-            entries: Mutex::new(HashMap::new()),
+            entries: HashMap::new(),
         }
     }
 }
@@ -153,14 +165,14 @@ impl IndexData {
 #[derive(Debug)]
 pub struct Index {
     data: IndexData,
-    paths: Paths,
+    paths: Arc<Paths>,
 }
 
 
 impl Index {
-    pub fn open(paths: &Paths) -> Result<Index> {
-        let data = if paths.index().is_file() {
-            let mut index_file = File::open(paths.index()).chain_err(|| ErrorKind::IndexOpen)?;
+    pub fn open(paths: &Arc<Paths>) -> Result<Index> {
+        let data = if paths.index.exists() {
+            let mut index_file = File::open(&paths.index).chain_err(|| ErrorKind::IndexOpen)?;
             bincode::deserialize_from(&mut index_file, bincode::Infinite)
                 .chain_err(|| ErrorKind::IndexParse)?
         } else {
@@ -175,34 +187,33 @@ impl Index {
         Ok(index)
     }
 
-
     pub fn update(&mut self) -> Result<()> {
         // Create a new timestamp for when we *begin* indexing.
         let fresh_timestamp = Utc::now().with_nanosecond(0).unwrap();
-        let entries_mut = self.data.entries.get_mut().unwrap();
 
-        *entries_mut = {
-            let base_ref = self.paths.base();
+        self.data.entries = {
+            let base_ref = &self.paths.base;
             let timestamp_ref = &self.data.timestamp;
 
-            mem::replace(entries_mut, HashMap::new())
+            mem::replace(&mut self.data.entries, HashMap::new())
                 .into_iter()
                 .map(|(relative_path, mut entry)| {
-                    // If the entry is nonlocal, we shouldn't update its metadata.
-                    if !entry.local {
+                    let absolute_path = base_ref.join(&relative_path);
+                    if absolute_path.exists() {
+                        let file_type = absolute_path.symlink_metadata()?.file_type();
+                        if file_type.is_file() || file_type.is_symlink() {
+                            let fresh = IndexMetadata::load(absolute_path)?;
+                            entry.update(&fresh, timestamp_ref);
+                            if entry.hygiene != Hygiene::Dirty {
+                                return Ok(Some((relative_path, entry)));
+                            }
+                        }
+                    } else {
+                        entry.cached = Cached::Removed;
                         return Ok(Some((relative_path, entry)));
                     }
 
-                    let absolute_path = base_ref.join(&relative_path);
-                    if !absolute_path.is_file() {
-                        let fresh = IndexMetadata::load(absolute_path)?;
-                        entry.update(&fresh, timestamp_ref);
-                        if entry.hygiene != Hygiene::Dirty {
-                            return Ok(Some((relative_path, entry)));
-                        }
-                    }
-
-                    return Ok(None);
+                    Ok(None)
                 })
                 .filter_map(|kv_opt_res| match kv_opt_res {
                     Ok(Some(kv)) => Some(Ok(kv)),
@@ -219,8 +230,31 @@ impl Index {
         Ok(())
     }
 
+    pub fn update_entry<P: AsRef<Path>>(&mut self, path: P, object_hash: ObjectHash) -> Result<()> {
+        match self.data.entries.get_mut(path.as_ref()) {
+            Some(entry) => {
+                entry.update(
+                    &IndexMetadata::load(self.paths.base.join(&path))?,
+                    &self.data.timestamp,
+                );
 
-    fn insert_file(
+                // We check to ensure the entry does not seem to have been modified since its last
+                // update, and thus that it has not been changed since its hash was calculated.
+                ensure!(
+                    entry.hygiene == Hygiene::Clean,
+                    ErrorKind::IndexConcurrentModification(path.as_ref().to_owned())
+                );
+
+                entry.cached = Cached::Hashed(object_hash);
+            }
+
+            None => bail!(ErrorKind::IndexUpdateUntracked),
+        }
+
+        Ok(())
+    }
+
+    fn track_file(
         entries_mut: &mut HashMap<PathBuf, IndexEntry>,
         timestamp: &DateTime<Utc>,
         absolute_path: &Path,
@@ -230,167 +264,66 @@ impl Index {
 
         entries_mut
             .entry(relative_path)
-            .or_insert_with(|| IndexEntry::fresh(fresh, None))
+            .or_insert_with(|| IndexEntry::fresh(fresh, Cached::Unhashed))
             .update(&fresh, timestamp);
 
         Ok(())
     }
 
+    // TODO: Take an iterator of string slices instead of a `GlobSet`, and attempt to parse those
+    // string slices into `Glob`s of their own. Then, only visit subdirectories which we know might
+    // contain the files we're looking for.
+    pub fn track(&mut self, pattern: &GlobSet) -> Result<()> {
+        let mut stack = Vec::new();
+        stack.push(self.paths.base.read_dir()?);
 
-    pub fn insert<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
-        let entries_mut = self.data.entries.get_mut().unwrap();
-        let relative_path = path.as_ref();
-        let absolute_path = self.paths.base().join(relative_path);
+        while let Some(iter) = stack.pop() {
+            for dir_entry_res in iter {
+                let dir_entry = dir_entry_res?;
+                let absolute_path = dir_entry.path();
+                let relative_path = absolute_path.strip_prefix(&self.paths.base).unwrap();
 
-        if absolute_path.is_dir() {
-            let mut stack = Vec::new();
-            stack.push(absolute_path.read_dir()?);
+                // TODO: Replace `DEFAULT_IGNORES` with a `Gitignore` from the `gitignore` crate.
+                if DEFAULT_IGNORES.contains(relative_path) {
+                    continue;
+                }
 
-            while let Some(iter) = stack.pop() {
-                for dir_entry_res in iter {
-                    let dir_entry = dir_entry_res?;
-                    let absolute_path = dir_entry.path();
-                    let relative_path = absolute_path.strip_prefix(self.paths.base()).unwrap();
-
-                    if DEFAULT_IGNORES.contains(relative_path) {
-                        continue;
-                    }
-
-                    if absolute_path.is_dir() {
-                        stack.push(absolute_path.read_dir()?);
-                    } else {
-                        Self::insert_file(
-                            entries_mut,
-                            &self.data.timestamp,
-                            &absolute_path,
-                            relative_path.to_owned(),
-                        )?;
-                    }
+                if absolute_path.symlink_metadata()?.is_dir() {
+                    stack.push(absolute_path.read_dir()?);
+                } else if pattern.is_match(relative_path) {
+                    Self::track_file(
+                        &mut self.data.entries,
+                        &self.data.timestamp,
+                        &absolute_path,
+                        relative_path.to_owned(),
+                    )?;
                 }
             }
-        } else {
-            Self::insert_file(
-                entries_mut,
-                &self.data.timestamp,
-                &absolute_path,
-                relative_path.to_owned(),
-            )?;
         }
 
         Ok(())
     }
 
+    pub fn untrack(&mut self, pattern: &GlobSet) {
+        self.data.entries.retain(|path, _| !pattern.is_match(path));
+    }
 
-    pub fn add<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
-        let path_ref = path.as_ref();
+    pub fn iter<'a>(&'a self) -> impl Iterator<Item = (&'a PathBuf, Option<Cached>)> {
+        self.data.entries.iter().map(
+            |(path, entry)| (path, entry.get()),
+        )
+    }
 
-        if !self.data.entries.get_mut().unwrap().contains_key(path_ref) {
-            self.insert(path_ref.to_owned())?;
-        }
+    pub fn prune(&mut self) {
+        self.data.entries.retain(
+            |_, entry| entry.cached != Cached::Removed,
+        );
+    }
 
-        self.data
-            .entries
-            .get_mut()
-            .unwrap()
-            .get_mut(path_ref)
-            .unwrap()
-            .added = true;
+    pub fn cleanup(self) -> Result<()> {
+        let mut file = File::create(&self.paths.index)?;
+        bincode::serialize_into(&mut file, &self.data, bincode::Infinite)?;
 
         Ok(())
-    }
-
-
-    pub fn added(&mut self) -> HashMap<PathBuf, IndexEntry> {
-        self.data
-            .entries
-            .get_mut()
-            .unwrap()
-            .iter()
-            .filter_map(|(path, entry)| if entry.added {
-                Some((path.clone(), entry.clone()))
-            } else {
-                None
-            })
-            .collect()
-    }
-
-
-    pub fn clear(&mut self) {
-        self.data.entries.get_mut().unwrap().clear();
-    }
-
-
-    pub fn entries(&mut self) -> &HashMap<PathBuf, IndexEntry> {
-        self.data.entries.get_mut().unwrap()
-    }
-
-
-    pub fn share(self) -> SharedIndex {
-        SharedIndex { inner: Arc::new(self) }
-    }
-}
-
-
-impl Drop for Index {
-    fn drop(&mut self) {
-        // Don't save the index if we're panicking - keep the old one.
-        if !thread::panicking() {
-            let mut file = File::create(self.paths.index()).unwrap();
-            bincode::serialize_into(&mut file, &self.data, bincode::Infinite).unwrap();
-        }
-    }
-}
-
-
-#[derive(Debug, Clone)]
-pub struct SharedIndex {
-    inner: Arc<Index>,
-}
-
-
-impl SharedIndex {
-    pub fn get_or_insert<F, G>(
-        &mut self,
-        path: PathBuf,
-        thunk: G,
-    ) -> Box<Future<Item = ObjectHash, Error = Error>>
-    where
-        F: IntoFuture<Item = ObjectHash, Error = Error> + 'static,
-        G: FnOnce() -> F + 'static,
-    {
-        let this = self.inner.clone();
-
-        let result = {
-            async_block! {
-                if let Some(&IndexEntry {
-                                hygiene: Hygiene::Clean,
-                                object_hash: Some(object_hash),
-                                ..
-                            }) = this.data.entries.lock().unwrap().get(&path)
-                {
-                    return Ok(object_hash);
-                }
-
-                let full_path = this.paths.base().join(&path);
-
-                let meta_before = IndexMetadata::load(&full_path)?;
-                let object_hash = await!(thunk().into_future())?;
-                let meta_after = IndexMetadata::load(&full_path)?;
-
-                let mut entry = IndexEntry::fresh(meta_before, Some(object_hash));
-
-                entry.update(&meta_after, &this.data.timestamp);
-                ensure!(
-                    entry.hygiene == Hygiene::Clean,
-                    ErrorKind::IndexConcurrentModification(full_path)
-                );
-
-                this.data.entries.lock().unwrap().insert(path, entry);
-
-                Ok(object_hash)
-            }
-        };
-
-        Box::new(result)
     }
 }

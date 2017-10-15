@@ -2,7 +2,7 @@ use std::env;
 
 use clap::{App, SubCommand, ArgMatches};
 
-use attaca::repository::Repository;
+use attaca::Repository;
 
 use errors::*;
 
@@ -12,9 +12,7 @@ pub fn command() -> App<'static, 'static> {
 }
 
 
-pub fn go(_matches: &ArgMatches) -> Result<()> {
-    let repository = Repository::find(env::current_dir()?)?;
-
+pub fn go(repository: &mut Repository, _matches: &ArgMatches) -> Result<()> {
     for (name, remote) in repository.config.remotes.iter() {
         if let Some(ref ceph_conf) = remote.object_store.conf_file.as_ref() {
             println!("{}: ceph.conf path `{}`", name, ceph_conf.display());

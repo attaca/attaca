@@ -37,7 +37,7 @@ pub struct Batch<T: BatchTrace = ()> {
 
 
 impl<T: BatchTrace> Batch<T> {
-    pub fn with_trace(marshal_pool: CpuPool, trace: T) -> Self {
+    pub fn new(marshal_pool: &CpuPool, trace: T) -> Self {
         let (marshal_tx, marshal_rx) = mpsc::channel(BATCH_FUTURE_BUFFER_SIZE);
 
         Batch {
@@ -52,7 +52,6 @@ impl<T: BatchTrace> Batch<T> {
         }
     }
 
-
     /// Read a file as a byte slice. This will memory-map the underlying file.
     ///
     /// * `file` - the file to read. *Must be opened with read permissions!*
@@ -60,12 +59,10 @@ impl<T: BatchTrace> Batch<T> {
         Ok(arc_slice::mapped(Mmap::open(file, Protection::Read)?))
     }
 
-
     /// Read a file as a byte slice. This will memory-map the underlying file.
     fn read_path<P: AsRef<Path>>(&mut self, path: P) -> Result<ArcSlice> {
         self.read(&File::open(path)?)
     }
-
 
     /// Chunk the file at the given path.
     pub fn chunk_file<P: AsRef<Path>>(&mut self, path: P) -> Result<Chunked> {
@@ -76,14 +73,12 @@ impl<T: BatchTrace> Batch<T> {
         Ok(chunked)
     }
 
-
     pub fn load_file<P: AsRef<Path>>(&mut self, path: P) -> Result<DataTree> {
         let chunked = self.chunk_file(path)?;
         let data_tree = DataTree::load(chunked.to_vec().into_iter().map(SmallRecord::from));
 
         Ok(data_tree)
     }
-
 
     pub fn load_subtree<P: AsRef<Path>>(&mut self, path: P) -> Result<DirTree> {
         let path_ref = path.as_ref();
@@ -104,7 +99,6 @@ impl<T: BatchTrace> Batch<T> {
         Ok(dir_tree)
     }
 
-
     /// Marshal a chunked file into a tree of objects, returning the marshalled objects along with
     /// the hash of the root object.
     pub fn marshal_file(
@@ -123,7 +117,6 @@ impl<T: BatchTrace> Batch<T> {
 
         Box::new(self.marshal_pool.spawn(marshal))
     }
-
 
     pub fn marshal_subtree<P: AsRef<Path>>(
         &mut self,
@@ -148,12 +141,10 @@ impl<T: BatchTrace> Batch<T> {
         Box::new(result)
     }
 
-
     /// The total size of the batch, in chunks.
     pub fn len(&self) -> usize {
         self.len
     }
-
 
     /// Convert this `Batch` into a stream of `Hashed` objects.
     pub fn into_stream(self) -> Box<Stream<Item = Hashed, Error = Error> + Send> {

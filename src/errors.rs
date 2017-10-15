@@ -2,6 +2,8 @@
 
 use std::path::PathBuf;
 
+use marshal::ObjectHash;
+
 
 error_chain! {
     types { Error, ErrorKind, ResultExt, Result; }
@@ -20,6 +22,11 @@ error_chain! {
     }
 
     errors {
+        Absurd {
+            description("this is absurd and should never happen")
+            display("This is absurd in the logical sense and should never happen. This error only ever occurs if something which *should never error* - i.e. a Stream derived from an Iterator producing an Err result.")
+        }
+
         CatalogDeserialize(path: PathBuf) {
             description("could not deserialize catalog")
             display("could not deserialize catalog at path {}", path.display())
@@ -48,6 +55,16 @@ error_chain! {
             display("an error occurred while filling a catalog entry")
         }
 
+        DirTreeDelta {
+            description("failure to build a subtree hierarchy")
+            display("failure to build a subtree hierarchy")
+        }
+
+        EmptyStore {
+            description("attempted to write or read an object to/from the empty store")
+            display("Attempted to write or read an object to/from the empty store! The empty store always errors when operated upon.")
+        }
+
         IndexConcurrentModification(path: PathBuf) {
             description("file modified while hashing/updating the index, or racily modified before hashing/updating")
             display("file {} modified while hashing/updating the index, or racily modified before hashing/updating", path.display())
@@ -73,6 +90,11 @@ error_chain! {
             display("an error occurred while updating the index")
         }
 
+        IndexUpdateUntracked {
+            description("attempted to update the index entry for an untracked file")
+            display("attempted to update the index entry for an untracked file")
+        }
+
         InvalidHashLength(len: usize) {
             description("expected a string of 64 hex digits")
             display("expected a string of 64 hex digits, found a string of length {}", len)
@@ -86,6 +108,21 @@ error_chain! {
         LocalLoad {
             description("could not load local store")
             display("could not load local store")
+        }
+
+        ObjectNotASubtree(hash: ObjectHash) {
+            description("expected a subtree, but got a different kind of object")
+            display("Expected {} to be a subtree object, but... it wasn't.", hash)
+        }
+
+        MalformedSubtree(parent_hash: Option<ObjectHash>, child_hash: ObjectHash) {
+            description("subtree contained a non-data, non-subtree object in its entries")
+            display("The subtree object with hash {:?} contained an invalid child object, {}, which is not a small or large blob object or a subtree object. All children of subtrees must be data or subtree objects themselves.", parent_hash.as_ref().map(ToString::to_string), child_hash)
+        }
+
+        MarshalSubtreeInvalidated {
+            description("a subtree object had an entry modified more than once")
+            display("The Subtree type, or subtree builder object, should never experience more than one insertion or removal for any given child.")
         }
 
         RemoteConnect {

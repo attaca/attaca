@@ -2,7 +2,7 @@ use std::env;
 
 use clap::{App, SubCommand, ArgMatches};
 
-use attaca::repository::Repository;
+use attaca::Repository;
 use errors::*;
 
 
@@ -17,11 +17,8 @@ pub fn command() -> App<'static, 'static> {
 }
 
 
-pub fn go(_matches: &ArgMatches) -> Result<()> {
-    let wd = env::current_dir()?;
-    let mut repository = Repository::find(wd)?;
+pub fn go(repository: &mut Repository, _matches: &ArgMatches) -> Result<()> {
     let catalog = repository.catalogs.get(None)?;
-
     let stats = Stats { object_count: catalog.len() };
 
     println!("{:#?}", stats);

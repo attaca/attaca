@@ -11,14 +11,11 @@ use futures_cpupool::CpuPool;
 use owning_ref::OwningRefMut;
 use rad::{ConnectionBuilder, Connection};
 
-use WRITE_FUTURE_BUFFER_SIZE;
-use batch::Batch;
 use catalog::Catalog;
-use context::Context;
-use context::local::Local;
+use context::{Store, Local};
 use errors::*;
 use marshal::{Hashed, ObjectHash, Object};
-use trace::{Trace, WriteDestination, WriteTrace};
+use repository::RemoteCfg;
 
 
 /// The type of a remote repository.
@@ -44,45 +41,46 @@ struct RemoteInner {
 
 
 impl Remote {
-    //     /// Connect to a remote repository, given appropriate configuration data.
-    //     pub fn connect<T: Trace, U: AsRef<str> + Into<String>>(
-    //         ctx: &mut Context<T>,
-    //         remote_name: U,
-    //     ) -> Result<Self> {
-    //         let cfg = ctx.get_remote_cfg(remote_name.as_ref())?;
-    //
-    //         let conn = {
-    //             let mut builder = ConnectionBuilder::with_user(&cfg.object_store.user)
-    //                 .chain_err(|| ErrorKind::RemoteConnectInit)?;
-    //
-    //             if let Some(ref conf_path) = cfg.object_store.conf_file {
-    //                 builder = builder.read_conf_file(conf_path).chain_err(|| {
-    //                     ErrorKind::RemoteConnectReadConf
-    //                 })?;
-    //             }
-    //
-    //             builder = cfg.object_store
-    //                 .conf_options
-    //                 .iter()
-    //                 .fold(Ok(builder), |acc, (key, value)| {
-    //                     acc.and_then(|conn| conn.conf_set(key, value))
-    //                 })
-    //                 .chain_err(|| ErrorKind::RemoteConnectConfig)?;
-    //
-    //             Mutex::new(builder.connect().chain_err(|| ErrorKind::RemoteConnect)?)
-    //         };
-    //
-    //         let pool = cfg.object_store.pool.clone();
-    //
-    //         Ok(Remote {
-    //             local: Local::new(ctx).chain_err(|| ErrorKind::LocalLoad)?,
-    //
-    //             io_pool: CpuPool::new(1),
-    //
-    //             catalog: ctx.catalogs().get(Some(remote_name.into()))?,
-    //             inner: Arc::new(RemoteInner { conn, pool }),
-    //         })
-    //     }
+    /// Connect to a remote repository, given appropriate configuration data.
+    pub fn connect(
+        local: Local,
+        remote_catalog: &Catalog,
+        remote_config: &RemoteCfg,
+        io_pool: &CpuPool,
+    ) -> Result<Self> {
+        let conn = {
+            let mut builder = ConnectionBuilder::with_user(&remote_config.object_store.user)
+                .chain_err(|| ErrorKind::RemoteConnectInit)?;
+
+            if let Some(ref conf_path) = remote_config.object_store.conf_file {
+                builder = builder.read_conf_file(conf_path).chain_err(|| {
+                    ErrorKind::RemoteConnectReadConf
+                })?;
+            }
+
+            builder = remote_config
+                .object_store
+                .conf_options
+                .iter()
+                .fold(Ok(builder), |acc, (key, value)| {
+                    acc.and_then(|conn| conn.conf_set(key, value))
+                })
+                .chain_err(|| ErrorKind::RemoteConnectConfig)?;
+
+            Mutex::new(builder.connect().chain_err(|| ErrorKind::RemoteConnect)?)
+        };
+
+        let pool = remote_config.object_store.pool.clone();
+
+        Ok(Remote {
+            local,
+
+            io_pool: io_pool.clone(),
+
+            catalog: remote_catalog.clone(),
+            inner: Arc::new(RemoteInner { conn, pool }),
+        })
+    }
 
     /// Write a single object to the remote repository. Returns `false` and performs no I/O if the
     /// catalog shows that the remote already contains the object; `true` otherwise.
@@ -168,5 +166,19 @@ impl Remote {
         };
 
         Box::new(result)
+    }
+}
+
+
+impl Store for Remote {
+    type Read = Box<Future<Item = Object, Error = Error> + Send>;
+    type Write = Box<Future<Item = bool, Error = Error> + Send>;
+
+    fn read_object(&self, object_hash: ObjectHash) -> Self::Read {
+        self.read_object(object_hash)
+    }
+
+    fn write_object(&self, hashed: Hashed) -> Self::Write {
+        self.write_object(hashed)
     }
 }

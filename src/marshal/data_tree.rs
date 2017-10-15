@@ -498,12 +498,15 @@ impl DataTree {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     use quickcheck::TestResult;
+
+    use super::*;
+    use arc_slice;
 
     quickcheck! {
         fn search_vs_bulk_load(chunks: Vec<Vec<u8>>) -> TestResult {
+            let chunks = chunks.into_iter().map(arc_slice::owned).collect::<Vec<_>>();
+
             for chunk in chunks.iter() {
                 if chunk.len() == 0 {
                     return TestResult::discard();
@@ -514,12 +517,10 @@ mod tests {
             let mut index = Vec::new();
 
             let tree = DataTree::load(chunks.iter().map(|chunk| {
-                let slice = chunk.as_ref();
-
-                index.push((pos, slice));
+                index.push((pos, chunk.clone()));
                 pos += chunk.len() as u64;
 
-                SmallRecord::Deep(Cow::Borrowed(chunk))
+                SmallRecord::from(chunk.clone())
             }));
 
             if tree.len() != chunks.len() || tree.size() != pos {
@@ -528,9 +529,9 @@ mod tests {
 
             for (i, (pos, chunk)) in index.into_iter().enumerate() {
                 if tree.search_bytes(pos) != Some(i) ||
-                    tree.search(i) != Some(&SmallRecord::Deep(Cow::Borrowed(chunk)))
+                    tree.search(i) != Some(&SmallRecord::from(chunk.clone()))
                 {
-                    panic!("byte search: {}, search: {}, tree: {:?}", tree.search_bytes(pos) != Some(i), tree.search(i) != Some(&SmallRecord::Deep(Cow::Borrowed(chunk))), tree);
+                    panic!("byte search: {}, search: {}, tree: {:?}", tree.search_bytes(pos) != Some(i), tree.search(i) != Some(&SmallRecord::from(chunk.clone())), tree);
 
                     return TestResult::failed();
                 }
@@ -543,7 +544,7 @@ mod tests {
 
     #[test]
     fn load() {
-        let chunk = SmallRecord::Deep(Cow::Borrowed(&[0][..]));
+        let chunk = SmallRecord::from(arc_slice::owned(vec![0]));
 
         let tree = DataTree::load(vec![chunk; BRANCH_FACTOR + 1]);
 

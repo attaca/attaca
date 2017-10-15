@@ -10,7 +10,7 @@ use attaca::repository::Repository;
 use attaca::trace::Trace;
 
 use errors::*;
-use trace::ProgressTrace;
+use trace::Progress;
 
 
 const HELP_STR: &'static str = r#"
@@ -32,14 +32,6 @@ pub fn command() -> App<'static, 'static> {
                 .index(1),
         )
         .arg(
-            Arg::with_name("repository")
-                .help(
-                    "Overrides the current directory as a target repository for this test.",
-                )
-                .long("repository")
-                .takes_value(true),
-        )
-        .arg(
             Arg::with_name("quiet")
                 .help("Don't display progress.")
                 .short("q")
@@ -48,55 +40,48 @@ pub fn command() -> App<'static, 'static> {
 }
 
 
-fn run<P: AsRef<Path>, T: Trace>(conf_dir: P, matches: &ArgMatches, trace: T) -> Result<()> {
+fn run<T: Trace>(repository: &mut Repository, matches: &ArgMatches, trace: T) -> Result<()> {
     let path = matches.value_of("INPUT").unwrap();
-    let conf = conf_dir.as_ref().join("ceph.conf");
-    let keyring = conf_dir.as_ref().join("ceph.client.admin.keyring");
+    let mut context = repository.remote("_debug", trace)?;
 
-    let _ = ::execute(vec![
-        "attaca",
-        "remote",
-        "add",
-        "_debug",
-        "--ceph",
-        "--ceph-conf",
-        &conf.display().to_string(),
-        "--ceph-keyring",
-        &keyring.display().to_string(),
-    ]);
+    let chunk_stream = context.split_file(path);
+    let hash_future = context.hash_file(chunk_stream);
+    let write_future = context.close();
 
-    let wd = matches
-        .value_of("repository")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| env::current_dir().unwrap());
-    let repo = Repository::find(wd).chain_err(
-        || "unable to find repository",
-    )?;
-    let mut context = Context::with_trace(repo, trace);
-    let mut batch = context.with_batch();
-
-    let chunked = batch.chunk_file(path).chain_err(|| "unable to chunk file")?;
-    let hash_future = batch.marshal_file(chunked);
-
-    let mut options = HashMap::new();
-    options.insert("keyring".to_owned(), keyring.to_string_lossy().into_owned());
-
-    let mut remote_ctx = context.with_remote("_debug").chain_err(
-        || "unable to open remote context",
-    )?;
-
-    let batch_future = remote_ctx.write_batch(batch);
-
-    batch_future.join(hash_future).wait()?;
+    write_future.join(hash_future).wait()?;
 
     Ok(())
 }
 
 
-pub fn go<P: AsRef<Path>>(conf_dir: P, matches: &ArgMatches) -> Result<()> {
+pub fn go<P: AsRef<Path>>(
+    repository: &mut Repository,
+    conf_dir: P,
+    matches: &ArgMatches,
+) -> Result<()> {
+    let conf = conf_dir.as_ref().join("ceph.conf");
+    let keyring = conf_dir.as_ref().join("ceph.client.admin.keyring");
+
+    // HACK: Ignore errors if adding the remote fails (it will fail if the remote's already
+    // there.)
+    let _ = ::remote::add::go(
+        repository,
+        &::remote::add::command().get_matches_from_safe(
+            &[
+                "add".as_ref(),
+                "_debug".as_ref(),
+                "--ceph".as_ref(),
+                "--ceph-conf".as_ref(),
+                conf.as_os_str(),
+                "--ceph-keyring".as_ref(),
+                keyring.as_os_str(),
+            ],
+        )?,
+    );
+
     if matches.is_present("quiet") {
-        run(conf_dir, matches, ())
+        run(repository, matches, ())
     } else {
-        run(conf_dir, matches, ProgressTrace::new())
+        run(repository, matches, Progress::new(Some("_debug".to_string())))
     }
 }

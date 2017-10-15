@@ -1,223 +1,50 @@
 use std::io;
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, Weak, Mutex};
 use std::thread::{self, JoinHandle};
 
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 
-use attaca::batch::Batch;
 use attaca::marshal::ObjectHash;
-use attaca::trace::{Trace, BatchTrace, MarshalTrace, SplitTrace, WriteDestination, WriteTrace};
+use attaca::trace::Trace;
 
 
-pub struct MarshalProgressTrace {
-    total_known: usize,
-    pb: ProgressBar,
-}
+pub struct ProgressInner {
+    to_split: u64,
+    split: u64,
+    object_count: u64,
+    in_flight: u64,
+    written: u64,
+    fresh: u64,
 
+    remote: Option<String>,
 
-impl MarshalProgressTrace {
-    pub fn new(pb: ProgressBar) -> Self {
-        pb.set_style(ProgressStyle::default_bar().template(
-            "[{elapsed_precise}] {bar:40.green/blue} {pos}/{len} {msg}",
-        ));
+    split_progress: ProgressBar,
+    write_progress: ProgressBar,
 
-        pb.enable_steady_tick(500);
-
-        Self { total_known: 0, pb }
-    }
-}
-
-
-impl MarshalTrace for MarshalProgressTrace {
-    fn on_reserve(&mut self, n: usize) {
-        self.total_known += n;
-
-        self.pb.set_length(self.total_known as u64);
-    }
-
-
-    fn on_hashed(&mut self, object_hash: &ObjectHash) {
-        self.pb.inc(1);
-        self.pb.set_message(
-            &format!("{}...", &object_hash.to_string()[0..8]),
-        );
-    }
-}
-
-
-impl Drop for MarshalProgressTrace {
-    fn drop(&mut self) {
-        self.pb.finish();
-    }
-}
-
-
-pub struct SplitProgressTrace {
-    pb: ProgressBar,
-}
-
-
-impl SplitProgressTrace {
-    pub fn new(pb: ProgressBar) -> Self {
-        pb.set_style(ProgressStyle::default_bar().template(
-            "[{elapsed_precise}] {bar:40.cyan/blue} {bytes}/{total_bytes}",
-        ));
-
-        Self { pb }
-    }
-}
-
-
-impl SplitTrace for SplitProgressTrace {
-    fn on_chunk(&mut self, _offset: u64, chunk: &[u8]) {
-        self.pb.inc(chunk.len() as u64);
-    }
-}
-
-
-impl Drop for SplitProgressTrace {
-    fn drop(&mut self) {
-        self.pb.finish();
-    }
-}
-
-
-pub struct WriteProgressTrace {
-    in_progress: usize,
-    total_unique: u64,
-    last_written: Option<ObjectHash>,
-    pb: ProgressBar,
-}
-
-
-impl WriteProgressTrace {
-    pub fn new(total_unique: u64, pb: ProgressBar, destination: WriteDestination) -> Self {
-        pb.set_style(ProgressStyle::default_bar().template(
-            "[{elapsed_precise}] {bar:40.yellow/blue} {pos}/{len} {msg} {prefix}",
-        ));
-
-        pb.enable_steady_tick(500);
-
-        match destination {
-            WriteDestination::Local => pb.set_prefix("local"),
-            WriteDestination::Remote(name) => pb.set_prefix(&format!("remote {}", name)),
-        }
-
-        let mut new = Self {
-            in_progress: 0,
-            total_unique,
-            last_written: None,
-            pb,
-        };
-        new.update_msg();
-
-        new
-    }
-
-
-    fn update_msg(&mut self) {
-        match self.last_written.as_ref() {
-            Some(last_written) => {
-                self.pb.set_message(&format!(
-                    "({}) {}...",
-                    self.in_progress,
-                    &last_written.to_string()[0..8],
-                ))
-            }
-            None => self.pb.set_message(&format!("({})", self.in_progress)),
-        }
-    }
-}
-
-
-impl WriteTrace for WriteProgressTrace {
-    fn on_begin(&mut self, _object_hash: &ObjectHash) {
-        self.in_progress += 1;
-        self.update_msg();
-    }
-
-
-    fn on_complete(&mut self, object_hash: &ObjectHash, fresh: bool) {
-        self.in_progress -= 1;
-        if fresh {
-            self.pb.inc(1);
-            self.last_written = Some(*object_hash);
-        } else {
-            self.total_unique -= 1;
-            self.pb.set_length(self.total_unique);
-        }
-        self.update_msg();
-    }
-}
-
-
-impl Drop for WriteProgressTrace {
-    fn drop(&mut self) {
-        self.pb.finish();
-    }
-}
-
-
-pub struct BatchProgressTrace {
-    multi: Weak<MultiProgress>,
-}
-
-
-impl BatchProgressTrace {
-    pub fn new(multi: Weak<MultiProgress>) -> Self {
-        Self { multi }
-    }
-}
-
-
-impl BatchTrace for BatchProgressTrace {
-    type MarshalTrace = MarshalProgressTrace;
-    type SplitTrace = SplitProgressTrace;
-
-    fn on_marshal(&mut self, chunks: usize) -> Self::MarshalTrace {
-        let multi = Weak::upgrade(&self.multi).unwrap();
-        let pb = multi.add(ProgressBar::new(chunks as u64));
-
-        MarshalProgressTrace::new(pb)
-    }
-
-    fn on_split(&mut self, bytes: u64) -> Self::SplitTrace {
-        let progress_bar = Weak::upgrade(&self.multi).unwrap().add(
-            ProgressBar::new(bytes),
-        );
-
-        SplitProgressTrace::new(progress_bar)
-    }
-}
-
-
-pub struct ProgressTrace {
-    multi: Arc<MultiProgress>,
-    pb: ProgressBar,
     join_handle: Option<JoinHandle<io::Result<()>>>,
 }
 
 
-impl ProgressTrace {
-    pub fn new() -> Self {
-        let multi = Arc::new(MultiProgress::new());
-        let pb = multi.add(ProgressBar::hidden());
+impl ProgressInner {
+    fn update_split_progress(&mut self) {
+        self.split_progress.set_length(self.to_split);
+        self.split_progress.set_position(self.split);
+    }
 
-        let multi0 = multi.clone();
-        let join_handle = thread::spawn(move || multi0.join());
-
-        Self {
-            multi,
-            pb,
-            join_handle: Some(join_handle),
-        }
+    fn update_write_progress(&mut self) {
+        self.write_progress.set_length(self.object_count);
+        self.write_progress.set_position(self.written);
+        self.write_progress.set_message(
+            &format!("({})", self.in_flight),
+        );
     }
 }
 
 
-impl Drop for ProgressTrace {
+impl Drop for ProgressInner {
     fn drop(&mut self) {
-        self.pb.finish_and_clear();
+        self.split_progress.finish();
+        self.write_progress.finish();
 
         self.join_handle.take().map(
             |jh| { jh.join().unwrap().unwrap(); },
@@ -226,22 +53,88 @@ impl Drop for ProgressTrace {
 }
 
 
-impl Trace for ProgressTrace {
-    type BatchTrace = BatchProgressTrace;
-    type WriteTrace = WriteProgressTrace;
+#[derive(Clone)]
+pub struct Progress {
+    inner: Arc<Mutex<ProgressInner>>,
+}
 
-    fn on_batch(&mut self) -> Self::BatchTrace {
-        BatchProgressTrace::new(Arc::downgrade(&self.multi))
+
+impl Progress {
+    pub fn new(remote: Option<String>) -> Self {
+        let multi = MultiProgress::new();
+
+        let split_progress = multi.add(ProgressBar::new(0));
+        split_progress.set_style(ProgressStyle::default_bar().template(
+            "[{elapsed_precise}] {bar:40.cyan/blue} {bytes}/{total_bytes}",
+        ));
+
+
+        let write_progress = multi.add(ProgressBar::new(0));
+        write_progress.set_style(ProgressStyle::default_bar().template(
+            "[{elapsed_precise}] {bar:40.green/blue} {pos}/{len} {msg}",
+        ));
+        write_progress.enable_steady_tick(500);
+
+        let join_handle = Some(thread::spawn(move || multi.join()));
+
+        Self {
+            inner: Arc::new(Mutex::new(ProgressInner {
+                to_split: 0,
+                split: 0,
+                object_count: 0,
+                in_flight: 0,
+                written: 0,
+                fresh: 0,
+
+                remote,
+
+                split_progress,
+                write_progress,
+
+                join_handle,
+            })),
+        }
+    }
+}
+
+
+impl Trace for Progress {
+    fn on_split_begin(&self, size: u64) {
+        let mut inner = self.inner.lock().unwrap();
+
+        inner.to_split += size;
+        inner.update_split_progress();
     }
 
-    fn on_write(
-        &mut self,
-        batch: &Batch<Self::BatchTrace>,
-        destination: WriteDestination,
-    ) -> Self::WriteTrace {
-        let batch_len = batch.len() as u64;
-        let progress_bar = self.multi.add(ProgressBar::new(batch_len));
+    fn on_split_chunk(&self, _offset: u64, chunk: &[u8]) {
+        let mut inner = self.inner.lock().unwrap();
 
-        WriteProgressTrace::new(batch_len, progress_bar, destination)
+        inner.split += chunk.len() as u64;
+        inner.update_split_progress();
+    }
+
+    fn on_marshal_process(&self, _object_hash: &ObjectHash) {
+        let mut inner = self.inner.lock().unwrap();
+
+        inner.object_count += 1;
+        inner.update_write_progress();
+    }
+
+    fn on_write_object_start(&self, _object_hash: &ObjectHash) {
+        let mut inner = self.inner.lock().unwrap();
+
+        inner.in_flight += 1;
+        inner.update_write_progress();
+    }
+
+    fn on_write_object_finish(&self, _object_hash: &ObjectHash, fresh: bool) {
+        let mut inner = self.inner.lock().unwrap();
+
+        inner.in_flight -= 1;
+        if fresh {
+            inner.fresh += 1;
+        }
+        inner.written += 1;
+        inner.update_write_progress();
     }
 }

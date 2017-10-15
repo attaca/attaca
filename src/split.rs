@@ -10,12 +10,121 @@
 
 use std::cmp;
 use std::hash::{Hash, Hasher};
+use std::marker::PhantomData;
 use std::mem;
+use std::ops::Deref;
 
+use generic_array::ArrayLength;
 use seahash::SeaHasher;
+use typenum::Unsigned;
 
 use arc_slice::{self, ArcSlice};
-use trace::SplitTrace;
+use trace::Trace;
+
+
+pub struct GenericSplitter<Win, Min, Mod, Cst, T, F, H, I, S>
+where
+    Win: ArrayLength<u8>,
+    Min: Unsigned,
+    Mod: Unsigned,
+    Cst: Unsigned,
+    F: Fn(T) -> (H, I),
+    H: Deref<Target = [u8]>,
+    S: Iterator<Item = T>,
+{
+    acc: u64,
+    buf: Vec<u8>,
+    group: Vec<I>,
+    hash: F,
+    iterator: Option<S>,
+    _consts: PhantomData<(Win, Min, Mod, Cst)>,
+}
+
+
+impl<Win, Min, Mod, Cst, T, F, H, I, S> GenericSplitter<Win, Min, Mod, Cst, T, F, H, I, S>
+where
+    Win: ArrayLength<u8>,
+    Min: Unsigned,
+    Mod: Unsigned,
+    Cst: Unsigned,
+    F: Fn(T) -> (H, I),
+    H: Deref<Target = [u8]>,
+    S: Iterator<Item = T>,
+{
+    pub fn new(stream: S, hash: F) -> Self {
+        GenericSplitter {
+            acc: 0,
+            buf: Vec::new(),
+            group: Vec::new(),
+            hash,
+            iterator: Some(stream),
+            _consts: PhantomData,
+        }
+    }
+}
+
+
+impl<Win, Min, Mod, Cst, T, F, H, I, S> Iterator
+    for GenericSplitter<Win, Min, Mod, Cst, T, F, H, I, S>
+where
+    Win: ArrayLength<u8>,
+    Min: Unsigned,
+    Mod: Unsigned,
+    Cst: Unsigned,
+    F: Fn(T) -> (H, I),
+    H: Deref<Target = [u8]>,
+    S: Iterator<Item = T>,
+{
+    type Item = (Vec<u8>, Vec<I>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            match self.iterator.as_mut().map(Iterator::next) {
+                Some(Some(input)) => {
+                    let (hashed, item) = (self.hash)(input);
+                    let buf_len = self.buf.len();
+                    self.buf.extend_from_slice(&*hashed);
+                    self.group.push(item);
+
+                    for (i, &b) in (buf_len..).zip(&self.buf[buf_len..]) {
+                        self.acc = self.acc.wrapping_add(b as u64);
+
+                        if i >= Win::to_usize() {
+                            self.acc = self.acc.wrapping_sub(self.buf[i - Win::to_usize()] as u64);
+                        }
+                    }
+
+                    self.acc &= (1 << Mod::to_u32()) - 1;
+
+                    if self.buf.len() >= Win::to_usize() {
+                        let new_buf_len = self.buf.len();
+                        self.buf.drain(..new_buf_len - Win::to_usize());
+                    }
+
+                    if self.group.len() >= Min::to_usize() && self.acc == Cst::to_u64() {
+                        let split_zone = mem::replace(&mut self.buf, Vec::new());
+                        let group = mem::replace(&mut self.group, Vec::new());
+
+                        self.acc = 0;
+
+                        return Some((split_zone, group));
+                    }
+                }
+
+                Some(None) => {
+                    let split_zone = mem::replace(&mut self.buf, Vec::new());
+                    let group = mem::replace(&mut self.group, Vec::new());
+
+                    mem::drop(self.iterator.take());
+
+                    return Some((split_zone, group));
+                }
+
+                None => return None,
+            }
+        }
+    }
+}
 
 
 /// A "splitter" over a slice, which functions as an iterator producing ~10 kb [citation needed]
@@ -187,38 +296,4 @@ impl Iterator for SliceChunker {
 
         return Some(mem::replace(&mut self.rest, arc_slice::empty()));
     }
-}
-
-
-/// A chunked file, consisting of a `Vec` of `ArcSlice`s. We wrap this in a newtype for safety.
-pub struct Chunked(Vec<ArcSlice>);
-
-
-impl Chunked {
-    /// Extract the inner `Vec`, destroying the `Chunked` object.
-    pub fn to_vec(self) -> Vec<ArcSlice> {
-        self.0
-    }
-}
-
-
-/// As `chunk_with_trace`, but with the default no-op trace.
-pub fn chunk(bytes: ArcSlice) -> Chunked {
-    chunk_with_trace(bytes, &mut ())
-}
-
-
-/// Chunk a slice into roughly 3MB chunks.
-pub fn chunk_with_trace<'batch, T: SplitTrace>(bytes: ArcSlice, trace: &mut T) -> Chunked {
-    let mut offset = 0u64;
-
-    let slices = SliceChunker::new(bytes)
-        .inspect(|chunk| {
-            trace.on_chunk(offset, chunk);
-
-            offset += chunk.len() as u64;
-        })
-        .collect();
-
-    Chunked(slices)
 }

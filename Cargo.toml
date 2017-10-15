@@ -18,6 +18,7 @@ error-chain = "0.11.0"
 futures = "0.1.16"
 futures-bufio = "0.2.0"
 futures-cpupool = "0.1.6"
+globset = "0.2.0"
 histogram = "0.6.7"
 itertools = "0.6.3"
 lazy_static = "0.2.8"
@@ -59,6 +60,12 @@ git = "https://github.com/sdleffler/owning-ref-rs"
 [dependencies.qp-trie]
 features = ["serde"]
 version = "0.7.1"
+
+[dependencies.sequence_trie]
+git = "https://github.com/sdleffler/rust_sequence_trie"
+
+[dev-dependencies]
+rand = "0.3.17"
 
 [features]
 binaries = ["clap"]

@@ -5,22 +5,30 @@
 //!
 //! * Creating/using `Context` and `RemoteContext`s.
 
+pub mod empty;
 pub mod local;
 pub mod remote;
 
-use std::sync::{Arc, Mutex};
+use std::fmt;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
+use futures::future::{self, Either};
 use futures::prelude::*;
+use futures::stream;
+use futures::sync::mpsc::{self, Sender, Receiver};
 use futures_cpupool::CpuPool;
+use memmap::{Mmap, Protection};
 
-use WRITE_FUTURE_BUFFER_SIZE;
-use batch::Batch;
-use catalog::Registry;
+use {BATCH_FUTURE_BUFFER_SIZE, WRITE_FUTURE_BUFFER_SIZE};
+use arc_slice::{self, ArcSlice};
 use errors::*;
-use marshal::{ObjectHash, Object, Hashed};
-use repository::{Repository, RemoteCfg};
-use trace::{Trace, WriteDestination, WriteTrace};
+use index::{Index, Cached};
+use marshal::{ObjectHash, Object, Marshaller, Hashed, DirTree};
+use split::SliceChunker;
+use trace::Trace;
 
+pub use context::empty::Empty;
 pub use context::local::Local;
 pub use context::remote::Remote;
 
@@ -29,8 +37,8 @@ pub trait Store: Send + Sync + Clone + 'static {
     type Read: Future<Item = Object, Error = Error> + Send;
     type Write: Future<Item = bool, Error = Error> + Send;
 
-    fn read_object(&mut self, object_hash: ObjectHash) -> Self::Read;
-    fn write_object(&mut self, hashed: Hashed) -> Self::Write;
+    fn read_object(&self, object_hash: ObjectHash) -> Self::Read;
+    fn write_object(&self, hashed: Hashed) -> Self::Write;
 }
 
 
@@ -39,53 +47,162 @@ pub trait Store: Send + Sync + Clone + 'static {
 ///
 /// `Context` may optionally be supplied with a type `T` implementing `Trace`. This "trace object"
 /// is useful for doing things like tracking the progress of long-running operations.
-#[derive(Debug)]
 pub struct Context<T: Trace, S: Store> {
     trace: T,
     store: S,
 
+    marshal_pool: CpuPool,
     io_pool: CpuPool,
+
+    marshal_tx: Sender<Hashed>,
+    writes: Box<Future<Item = (), Error = Error> + Send>,
+}
+
+
+impl<T: Trace + fmt::Debug, S: Store + fmt::Debug> fmt::Debug for Context<T, S> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("Context")
+            .field("trace", &self.trace)
+            .field("store", &self.store)
+            .field("marshal_pool", &self.marshal_pool)
+            .field("io_pool", &self.io_pool)
+            .field("marshal_tx", &self.marshal_tx)
+            .finish()
+    }
 }
 
 
 impl<T: Trace, S: Store> Context<T, S> {
     /// Create a context from a loaded repository, with a supplied trace object.
-    pub fn new(trace: T, store: S, repository: Repository) -> Self {
+    pub fn new(trace: T, store: S, marshal_pool: &CpuPool, io_pool: &CpuPool) -> Self {
+        let (marshal_tx, marshal_rx) = mpsc::channel(BATCH_FUTURE_BUFFER_SIZE);
+
+        let writes = {
+            let trace = trace.clone();
+            let store = store.clone();
+            let writes_unboxed = marshal_rx
+                .map_err(|()| unreachable!("mpsc receivers never error"))
+                .map(move |hashed: Hashed| {
+                    let hash = *hashed.as_hash();
+                    let trace = trace.clone();
+
+                    trace.on_write_object_start(&hash);
+                    store.write_object(hashed).map(move |fresh| {
+                        trace.on_write_object_finish(&hash, fresh);
+                    })
+                })
+                .buffer_unordered(WRITE_FUTURE_BUFFER_SIZE)
+                .for_each(|_| Ok(()));
+
+            Box::new(io_pool.spawn(writes_unboxed))
+        };
+
         Self {
             trace,
             store,
 
-            io_pool: CpuPool::new(1),
+            marshal_pool: marshal_pool.clone(),
+            io_pool: io_pool.clone(),
+
+            marshal_tx,
+            writes,
         }
     }
 
-    pub fn write_batch(
+    pub fn split_file<P: AsRef<Path>>(
         &mut self,
-        batch: Batch<T::BatchTrace>,
-    ) -> Box<Future<Item = (), Error = Error>> {
-        let trace = Arc::new(Mutex::new(
-            self.trace.on_write(&batch, WriteDestination::Local),
-        ));
+        path: P,
+    ) -> Box<Stream<Item = ArcSlice, Error = Error> + Send> {
+        let trace = self.trace.clone();
+        let slice_res = Mmap::open_path(path, Protection::Read).map(|mmap| {
+            trace.on_split_begin(mmap.len() as u64);
+            arc_slice::mapped(mmap)
+        });
 
-        let io_pool = self.io_pool.clone();
-        let mut store = self.store.clone();
-
-        let writes = batch
-            .into_stream()
-            .map(move |hashed| {
-                let hash = *hashed.as_hash();
-                let trace = trace.clone();
-
-                trace.lock().unwrap().on_begin(&hash);
-                let write = store.write_object(hashed).map(move |fresh| {
-                    trace.lock().unwrap().on_complete(&hash, fresh);
+        let stream_future = {
+            async_block! {
+                let mut offset = 0u64;
+                let slices = SliceChunker::new(slice_res?).inspect(move |chunk| {
+                    trace.on_split_chunk(offset, chunk);
+                    offset += chunk.len() as u64;
                 });
-                io_pool.spawn(write)
-            })
-            .buffer_unordered(WRITE_FUTURE_BUFFER_SIZE)
-            .for_each(|_| Ok(()));
 
-        Box::new(self.io_pool.spawn(writes))
+                Ok(stream::iter_ok(slices))
+            }
+        };
+
+        Box::new(stream_future.flatten_stream())
+    }
+
+    pub fn hash_file<U>(
+        &mut self,
+        stream: U,
+    ) -> Box<Future<Item = ObjectHash, Error = Error> + Send>
+    where
+        U: Stream<Item = ArcSlice, Error = Error> + Send + 'static,
+    {
+        let marshal_tx = self.marshal_tx.clone();
+        let marshaller = Marshaller::with_trace(marshal_tx, self.trace.clone());
+
+        Box::new(self.marshal_pool.spawn(marshaller.process_chunks(stream)))
+    }
+
+    pub fn hash_subtree<U>(
+        &mut self,
+        stream: U,
+    ) -> Box<Future<Item = ObjectHash, Error = Error> + Send>
+    where
+        U: Stream<Item = (PathBuf, ObjectHash), Error = Error> + Send + 'static,
+    {
+        let marshal_tx = self.marshal_tx.clone();
+        let marshaller = Marshaller::with_trace(marshal_tx, self.trace.clone());
+        let hash_future = stream
+            .map(|(path, hash)| (path, Some(hash)))
+            .collect()
+            .and_then(|entries| {
+                DirTree::delta(Empty, None, entries).map_err(|err| {
+                    Error::with_chain(Error::from_kind(ErrorKind::DirTreeDelta), err)
+                })
+            })
+            .and_then(move |dir_tree| marshaller.process_dir_tree(dir_tree));
+
+        Box::new(self.marshal_pool.spawn(hash_future))
+    }
+
+    // TODO: Add inclusion and exclusion.
+    pub fn hash_changed(
+        &mut self,
+        index: &Index,
+    ) -> Box<Future<Item = ObjectHash, Error = Error> + Send> {
+        let marshal_tx = self.marshal_tx.clone();
+        let _marshaller = Marshaller::with_trace(marshal_tx, self.trace.clone());
+        let op_futures = index.iter().map(|(path, cached_opt)| {
+            match cached_opt {
+                Some(Cached::Hashed(object_hash)) => Either::A(future::ok(Some(object_hash))),
+                Some(Cached::Removed) => Either::A(future::ok(None)),
+
+                // If the file has no hash in the cache *or* has an invalid cache entry, we must
+                // split and hash it.
+                Some(Cached::Unhashed) |
+                None => {
+                    let chunk_stream = self.split_file(&path);
+                    let hash_future = self.hash_file(chunk_stream);
+
+                    Either::B(hash_future.map(Some))
+                }
+            }
+        });
+        let _op_stream = stream::futures_unordered(op_futures);
+
+        unimplemented!()
+    }
+
+    pub fn store(&self) -> &S {
+        &self.store
+    }
+
+    pub fn close(self) -> Box<Future<Item = (), Error = Error> + Send> {
+        self.writes
     }
 }
 
