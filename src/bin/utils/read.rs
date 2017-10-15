@@ -1,9 +1,6 @@
-use std::env;
-
 use clap::{App, SubCommand, Arg, ArgMatches};
 use futures::prelude::*;
 
-use attaca::context::Context;
 use attaca::marshal::{ObjectHash, Object, DataObject};
 use attaca::Repository;
 use attaca::Store;

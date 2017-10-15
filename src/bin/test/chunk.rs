@@ -1,14 +1,10 @@
-use std::env;
 use std::sync::{Arc, Mutex};
 
 use clap::{App, Arg, SubCommand, ArgMatches};
 use futures::prelude::*;
 use histogram::Histogram;
-use memmap::{Mmap, Protection};
 
-use attaca::arc_slice;
-use attaca::repository::Repository;
-use attaca::split;
+use attaca::Repository;
 use attaca::trace::Trace;
 
 use errors::Result;

@@ -1,5 +1,5 @@
 use std::io;
-use std::sync::{Arc, Weak, Mutex};
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
@@ -34,9 +34,16 @@ impl ProgressInner {
     fn update_write_progress(&mut self) {
         self.write_progress.set_length(self.object_count);
         self.write_progress.set_position(self.written);
-        self.write_progress.set_message(
-            &format!("({})", self.in_flight),
-        );
+
+        if let Some(ref name) = self.remote {
+            self.write_progress.set_message(
+                &format!("to {} ({})", name, self.in_flight),
+            );
+        } else {
+            self.write_progress.set_message(
+                &format!("to local ({})", self.in_flight),
+            );
+        }
     }
 }
 

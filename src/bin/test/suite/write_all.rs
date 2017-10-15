@@ -1,12 +1,9 @@
-use std::collections::HashMap;
-use std::env;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use clap::{App, SubCommand, Arg, ArgMatches};
 use futures::prelude::*;
 
-use attaca::context::Context;
-use attaca::repository::Repository;
+use attaca::Repository;
 use attaca::trace::Trace;
 
 use errors::*;
@@ -82,6 +79,10 @@ pub fn go<P: AsRef<Path>>(
     if matches.is_present("quiet") {
         run(repository, matches, ())
     } else {
-        run(repository, matches, Progress::new(Some("_debug".to_string())))
+        run(
+            repository,
+            matches,
+            Progress::new(Some("_debug".to_string())),
+        )
     }
 }

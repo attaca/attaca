@@ -1,5 +1,3 @@
-use std::env;
-
 use clap::{App, SubCommand, ArgMatches};
 
 use attaca::Repository;

@@ -2,12 +2,11 @@
 
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use futures::future::{self, Either};
 use futures::prelude::*;
 use futures::stream;
-use futures::sync::mpsc::{self, Sender, Receiver};
+use futures::sync::mpsc::{self, Sender};
 use futures_cpupool::CpuPool;
 use memmap::{Mmap, Protection};
 
@@ -15,7 +14,7 @@ use {BATCH_FUTURE_BUFFER_SIZE, WRITE_FUTURE_BUFFER_SIZE};
 use arc_slice::{self, ArcSlice};
 use errors::*;
 use index::{Index, Cached};
-use marshal::{ObjectHash, Object, Marshaller, Hashed, DirTree};
+use marshal::{ObjectHash, Marshaller, Hashed, DirTree};
 use split::SliceChunker;
 use store::{Store, Empty};
 use trace::Trace;

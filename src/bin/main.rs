@@ -62,7 +62,7 @@ fn go(matches: &ArgMatches) -> Result<()> {
         other => {
             let mut repository = Repository::load(env::current_dir()?)?;
 
-            let result = match matches.subcommand() {
+            let result = match other {
                 ("catalog", Some(sub_m)) => catalog::go(&mut repository, sub_m),
                 ("index", Some(sub_m)) => index::go(&mut repository, sub_m),
                 ("remote", Some(sub_m)) => remote::go(&mut repository, sub_m),

@@ -7,7 +7,6 @@ use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::result::Result as StdResult;
 use std::str::FromStr;
-use std::sync::Arc;
 
 use bincode;
 use digest_writer::{FixedOutput, Writer};

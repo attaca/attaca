@@ -19,7 +19,6 @@ use seahash::SeaHasher;
 use typenum::Unsigned;
 
 use arc_slice::{self, ArcSlice};
-use trace::Trace;
 
 
 pub struct GenericSplitter<Win, Min, Mod, Cst, T, F, H, I, S>
