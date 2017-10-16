@@ -104,6 +104,7 @@ pub enum Cached {
 pub struct IndexEntry {
     hygiene: Hygiene,
     metadata: IndexMetadata,
+    tracked: bool,
     cached: Cached,
 }
 
@@ -113,11 +114,18 @@ impl IndexEntry {
         IndexEntry {
             hygiene: Hygiene::Clean,
             metadata,
+            tracked: true,
             cached,
         }
     }
 
-    fn update(&mut self, fresh: &IndexMetadata, timestamp: &DateTime<Utc>) {
+    fn track(&mut self, tracked: bool) -> &mut Self {
+        self.tracked = tracked;
+
+        self
+    }
+
+    fn update(&mut self, fresh: &IndexMetadata, timestamp: &DateTime<Utc>) -> &mut Self {
         if self.hygiene != Hygiene::Dirty {
             self.hygiene = {
                 if &self.metadata == fresh {
@@ -133,6 +141,26 @@ impl IndexEntry {
                 }
             };
         }
+
+        self
+    }
+
+    fn clean(
+        &mut self,
+        fresh: &IndexMetadata,
+        timestamp: &DateTime<Utc>,
+        object_hash: ObjectHash,
+    ) -> Result<()> {
+        self.update(&fresh, &timestamp);
+        // We check to ensure the self does not seem to have been modified since its last
+        // update, and thus that it has not been changed since its hash was calculated.
+        ensure!(
+            self.hygiene == Hygiene::Clean,
+            ErrorKind::ConcurrentlyModifiedEntry
+        );
+        self.cached = Cached::Hashed(object_hash);
+
+        Ok(())
     }
 
     fn get(&self) -> Option<Cached> {
@@ -197,7 +225,7 @@ impl Index {
 
             mem::replace(&mut self.data.entries, HashMap::new())
                 .into_iter()
-                .map(|(relative_path, mut entry)| {
+                .map(|(relative_path, mut entry)| if entry.tracked {
                     let absolute_path = base_ref.join(&relative_path);
                     if absolute_path.exists() {
                         let file_type = absolute_path.symlink_metadata()?.file_type();
@@ -214,6 +242,8 @@ impl Index {
                     }
 
                     Ok(None)
+                } else {
+                    Ok(Some((relative_path, entry)))
                 })
                 .filter_map(|kv_opt_res| match kv_opt_res {
                     Ok(Some(kv)) => Some(Ok(kv)),
@@ -230,28 +260,22 @@ impl Index {
         Ok(())
     }
 
-    pub fn update_entry<P: AsRef<Path>>(&mut self, path: P, object_hash: ObjectHash) -> Result<()> {
+    pub fn clean<P: AsRef<Path>>(&mut self, path: P, object_hash: ObjectHash) -> Result<()> {
         match self.data.entries.get_mut(path.as_ref()) {
             Some(entry) => {
-                entry.update(
-                    &IndexMetadata::load(self.paths.base.join(&path))?,
-                    &self.data.timestamp,
-                );
-
-                // We check to ensure the entry does not seem to have been modified since its last
-                // update, and thus that it has not been changed since its hash was calculated.
-                ensure!(
-                    entry.hygiene == Hygiene::Clean,
-                    ErrorKind::IndexConcurrentModification(path.as_ref().to_owned())
-                );
-
-                entry.cached = Cached::Hashed(object_hash);
+                entry
+                    .clean(
+                        &IndexMetadata::load(self.paths.base.join(&path))?,
+                        &self.data.timestamp,
+                        object_hash,
+                    )
+                    .chain_err(|| {
+                        ErrorKind::ConcurrentlyModifiedFile(path.as_ref().to_owned())
+                    })
             }
 
             None => bail!(ErrorKind::IndexUpdateUntracked),
         }
-
-        Ok(())
     }
 
     fn track_file(
@@ -265,6 +289,7 @@ impl Index {
         entries_mut
             .entry(relative_path)
             .or_insert_with(|| IndexEntry::fresh(fresh, Cached::Unhashed))
+            .track(true)
             .update(&fresh, timestamp);
 
         Ok(())
@@ -305,13 +330,25 @@ impl Index {
     }
 
     pub fn untrack(&mut self, pattern: &GlobSet) {
-        self.data.entries.retain(|path, _| !pattern.is_match(path));
+        self.data
+            .entries
+            .iter_mut()
+            .filter(|&(ref path, _)| pattern.is_match(path))
+            .for_each(|(_, entry)| { entry.track(false); });
     }
 
-    pub fn iter<'a>(&'a self) -> impl Iterator<Item = (&'a PathBuf, Option<Cached>)> {
-        self.data.entries.iter().map(
-            |(path, entry)| (path, entry.get()),
-        )
+    pub fn iter<'a>(&'a self) -> impl Iterator<Item = (&'a Path, &'a IndexEntry)> {
+        self.data.entries.iter().map(|(path, entry)| {
+            (path.as_ref(), entry)
+        })
+    }
+
+    pub fn iter_tracked<'a>(&'a self) -> impl Iterator<Item = (&'a Path, Option<Cached>)> {
+        self.data
+            .entries
+            .iter()
+            .filter(|&(_, ref entry)| entry.tracked)
+            .map(|(path, entry)| (path.as_ref(), entry.get()))
     }
 
     pub fn prune(&mut self) {

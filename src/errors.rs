@@ -24,7 +24,7 @@ error_chain! {
     errors {
         Absurd {
             description("this is absurd and should never happen")
-            display("This is absurd in the logical sense and should never happen. This error only ever occurs if something which *should never error* - i.e. a Stream derived from an Iterator producing an Err result.")
+            display("this is absurd and should never happen")
         }
 
         CatalogDeserialize(path: PathBuf) {
@@ -55,6 +55,16 @@ error_chain! {
             display("an error occurred while filling a catalog entry")
         }
 
+        ConcurrentlyModifiedEntry {
+            description("an entry in the index may have been modified in between index update and cleaning")
+            display("an entry in the index may have been modified in between index update and cleaning")
+        }
+
+        ConcurrentlyModifiedFile(path: PathBuf) {
+            description("file modified while hashing/updating the index, or racily modified before hashing/updating")
+            display("file {} modified while hashing/updating the index, or racily modified before hashing/updating", path.display())
+        }
+
         DirTreeDelta {
             description("failure to build a subtree hierarchy")
             display("failure to build a subtree hierarchy")
@@ -63,11 +73,6 @@ error_chain! {
         EmptyStore {
             description("attempted to write or read an object to/from the empty store")
             display("Attempted to write or read an object to/from the empty store! The empty store always errors when operated upon.")
-        }
-
-        IndexConcurrentModification(path: PathBuf) {
-            description("file modified while hashing/updating the index, or racily modified before hashing/updating")
-            display("file {} modified while hashing/updating the index, or racily modified before hashing/updating", path.display())
         }
 
         IndexOpen {
@@ -117,12 +122,7 @@ error_chain! {
 
         MalformedSubtree(parent_hash: Option<ObjectHash>, child_hash: ObjectHash) {
             description("subtree contained a non-data, non-subtree object in its entries")
-            display("The subtree object with hash {:?} contained an invalid child object, {}, which is not a small or large blob object or a subtree object. All children of subtrees must be data or subtree objects themselves.", parent_hash.as_ref().map(ToString::to_string), child_hash)
-        }
-
-        MarshalSubtreeInvalidated {
-            description("a subtree object had an entry modified more than once")
-            display("The Subtree type, or subtree builder object, should never experience more than one insertion or removal for any given child.")
+            display("subtree object with hash {:?} contained a non-data, non-subtree object {} in its entries", parent_hash.as_ref().map(ToString::to_string), child_hash)
         }
 
         RemoteConnect {

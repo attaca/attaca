@@ -148,31 +148,56 @@ impl<T: Trace, S: Store> Context<T, S> {
     }
 
     // TODO: Add inclusion and exclusion.
-    pub fn hash_changed(
+    pub fn hash_subtree_delta(
         &mut self,
-        index: &Index,
+        root: Option<ObjectHash>,
+        index: &mut Index,
     ) -> Box<Future<Item = ObjectHash, Error = Error> + Send> {
-        let marshal_tx = self.marshal_tx.clone();
-        let _marshaller = Marshaller::with_trace(marshal_tx, self.trace.clone());
-        let op_futures = index.iter().map(|(path, cached_opt)| {
-            match cached_opt {
-                Some(Cached::Hashed(object_hash)) => Either::A(future::ok(Some(object_hash))),
-                Some(Cached::Removed) => Either::A(future::ok(None)),
+        let ops = {
+            let op_futures = index.iter_tracked().map(|(path, cached_opt)| {
+                match cached_opt {
+                    Some(Cached::Hashed(object_hash)) => Either::A(future::ok(
+                        (path.to_owned(), Some(object_hash)),
+                    )),
+                    Some(Cached::Removed) => Either::A(future::ok((path.to_owned(), None))),
 
-                // If the file has no hash in the cache *or* has an invalid cache entry, we must
-                // split and hash it.
-                Some(Cached::Unhashed) |
-                None => {
-                    let chunk_stream = self.split_file(&path);
-                    let hash_future = self.hash_file(chunk_stream);
+                    // If the file has no hash in the cache *or* has an invalid cache entry, we must
+                    // split and hash it.
+                    Some(Cached::Unhashed) |
+                    None => {
+                        let path = path.to_owned();
+                        let chunk_stream = self.split_file(&path);
+                        let hash_future = self.hash_file(chunk_stream);
 
-                    Either::B(hash_future.map(Some))
+                        Either::B(hash_future.map(|object_hash| (path, Some(object_hash))))
+                    }
+                }
+            });
+
+            match stream::futures_unordered(op_futures).collect().wait() {
+                Ok(ops) => ops,
+                Err(err) => return Box::new(future::err(err)),
+            }
+        };
+
+        {
+            let updates = ops.iter().filter_map(|&(ref path, ref hash_opt)| {
+                hash_opt.map(|hash| (path, hash))
+            });
+
+            for (path, hash) in updates {
+                if let Err(err) = index.clean(path, hash) {
+                    return Box::new(future::err(err));
                 }
             }
-        });
-        let _op_stream = stream::futures_unordered(op_futures);
+        }
 
-        unimplemented!()
+        let marshaller = Marshaller::with_trace(self.marshal_tx.clone(), self.trace.clone());
+        let result = DirTree::delta(self.store.clone(), root, ops).and_then(
+            move |dir_tree| marshaller.process_dir_tree(dir_tree),
+        );
+
+        Box::new(result)
     }
 
     pub fn store(&self) -> &S {
