@@ -66,14 +66,17 @@ pub fn go(repository: &mut Repository, matches: &ArgMatches) -> Result<()> {
 
     let commit_hash = {
         let mut ctx = repository.local(Progress::new(None))?;
-        let head = ctx.refs.head_hash().cloned().into_iter().collect();
+        let head = ctx.refs.head().cloned().into_iter().collect();
+
         ctx.hash_commit(
             include.as_ref(),
             exclude.as_ref(),
             head,
             message,
             Utc::now(),
-        ).wait()?
+        ).join(ctx.close())
+            .wait()?
+            .0
     };
 
     repository.refs.head = Head::Detached(commit_hash);
