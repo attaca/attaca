@@ -183,7 +183,7 @@ impl Local {
                     return Ok(local.clone());
                 }
 
-                let bytes = arc_slice::mapped(Mmap::open_path(path, Protection::Read)?);
+                let bytes = arc_slice::mapped(Mmap::open_path(path, Protection::Read).chain_err(|| ErrorKind::OpenLocalObject(object_hash))?);
                 let object = Object::from_bytes(bytes)?;
 
                 objects.lock().unwrap().insert(object_hash, object.clone());
