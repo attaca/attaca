@@ -21,6 +21,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use bincode;
 use futures_cpupool::CpuPool;
 use itertools::Itertools;
 use toml;
@@ -107,7 +108,8 @@ impl Config {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Head {
     Detached(ObjectHash),
-    Ref(String),
+    LocalRef(String),
+    RemoteRef(String, String),
     Root,
 }
 
@@ -116,31 +118,53 @@ pub enum Head {
 pub struct Refs {
     pub head: Head,
     pub branches: HashMap<String, ObjectHash>,
-    //pub remotes: HashMap<String, HashMap<String, ObjectHash>>,
+    pub remotes: HashMap<String, HashMap<String, ObjectHash>>,
 }
 
 
 impl Refs {
     pub fn open(paths: &Paths) -> Result<Self> {
         if paths.refs.exists() {
-            let mut refs_file = File::open(&paths.refs)?;
-            let mut refs_string = String::new();
-            refs_file.read_to_string(&mut refs_string)?;
-
-            Ok(toml::from_str::<Refs>(&refs_string)?)
+            let mut refs_bytes = Vec::new();
+            File::open(&paths.refs)
+                .map_err(Error::from)
+                .and_then(|mut refs_file| {
+                    refs_file.read_to_end(&mut refs_bytes).map_err(Error::from)
+                })
+                .and_then(|_| {
+                    bincode::deserialize::<Refs>(&refs_bytes).map_err(Error::from)
+                })
+                .chain_err(|| ErrorKind::OpenRefs(paths.refs.to_owned()))
         } else {
             Ok(Self {
                 head: Head::Root,
                 branches: HashMap::new(),
-                //remotes: HashMap::new(),
+                remotes: HashMap::new(),
             })
         }
     }
 
-    pub fn head_hash(&self) -> Option<&ObjectHash> {
+    pub fn close(self, paths: &Paths) -> Result<()> {
+        let mut refs_bytes = Vec::new();
+
+        bincode::serialize_into(&mut refs_bytes, &self, bincode::Infinite)
+            .map_err(Error::from)
+            .and_then(|_| File::create(&paths.refs).map_err(Error::from))
+            .and_then(|mut refs_file| {
+                refs_file.write_all(&refs_bytes).map_err(Error::from)
+            })
+            .chain_err(|| ErrorKind::CloseRefs(paths.refs.to_owned()))
+    }
+
+    pub fn head(&self) -> Option<&ObjectHash> {
         match self.head {
             Head::Detached(ref hash) => Some(hash),
-            Head::Ref(ref symref) => self.branches.get(symref),
+            Head::LocalRef(ref branch) => self.branches.get(branch),
+            Head::RemoteRef(ref remote, ref branch) => {
+                self.remotes.get(remote).and_then(
+                    |remote| remote.get(branch),
+                )
+            }
             Head::Root => None,
         }
     }
@@ -319,14 +343,6 @@ impl Repository {
         Ok(())
     }
 
-    /// Update the `HEAD` ref.
-    fn write_refs(&mut self) -> Result<()> {
-        let refs = toml::to_vec(&self.refs)?;
-        let mut file = File::create(&self.paths.refs)?;
-        file.write_all(&refs)?;
-        Ok(())
-    }
-
     /// Procure a context for working with the local object store.
     pub fn local_with_pools<T: Trace>(
         &mut self,
@@ -389,7 +405,7 @@ impl Repository {
     /// Clean up and drop the `Repository`, writing persistent data to the filesystem.
     pub fn cleanup(mut self) -> Result<()> {
         self.write_config()?;
-        self.write_refs()?;
+        self.refs.close(&self.paths)?;
         self.index.cleanup()?;
 
         Ok(())
