@@ -27,6 +27,9 @@ pub fn go(repository: &mut Repository, _matches: &ArgMatches) -> Result<()> {
         }
     }
 
+    added.sort_unstable_by_key(|&(path, _)| path);
+    tracked.sort_unstable_by_key(|&(path, _)| path);
+
     println!("Tracked:");
 
     for (path, entry) in tracked {

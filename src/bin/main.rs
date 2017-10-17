@@ -14,17 +14,16 @@ extern crate memmap;
 
 mod catalog;
 mod commit;
+mod debug;
 mod errors;
 mod index;
 mod init;
 mod remote;
-mod stats;
 mod status;
 mod test;
 mod trace;
 mod track;
 mod untrack;
-mod utils;
 
 use std::env;
 use std::ffi::OsString;
@@ -46,12 +45,11 @@ fn command() -> App<'static, 'static> {
         .version(crate_version!())
         .subcommand(catalog::command())
         .subcommand(commit::command())
+        .subcommand(debug::command())
         .subcommand(index::command())
         .subcommand(init::command())
         .subcommand(remote::command())
-        .subcommand(stats::command())
         .subcommand(status::command())
-        .subcommand(utils::command())
         .subcommand(test::command())
         .subcommand(track::command())
         .subcommand(untrack::command())
@@ -70,13 +68,12 @@ fn go(matches: &ArgMatches) -> Result<()> {
             let result = match other {
                 ("catalog", Some(sub_m)) => catalog::go(&mut repository, sub_m),
                 ("commit", Some(sub_m)) => commit::go(&mut repository, sub_m),
+                ("debug", Some(sub_m)) => debug::go(&mut repository, sub_m),
                 ("index", Some(sub_m)) => index::go(&mut repository, sub_m),
                 ("remote", Some(sub_m)) => remote::go(&mut repository, sub_m),
-                ("stats", Some(sub_m)) => stats::go(&mut repository, sub_m),
                 ("status", Some(sub_m)) => status::go(&mut repository, sub_m),
                 ("test", Some(sub_m)) => test::go(&mut repository, sub_m),
                 ("untrack", Some(sub_m)) => untrack::go(&mut repository, sub_m),
-                ("utils", Some(sub_m)) => utils::go(&mut repository, sub_m),
                 ("track", Some(sub_m)) => track::go(&mut repository, sub_m),
                 _ => {
                     Err(Error::from_kind(ErrorKind::InvalidUsage))
