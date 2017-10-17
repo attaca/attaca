@@ -169,14 +169,14 @@ impl Iterator for SliceSplitter {
             return None;
         }
 
-        let mut acc = 0;
+        let mut acc = 0u16;
 
         for i in 0..self.slice.len() {
             if i >= SPLIT_WINDOW {
-                acc -= self.slice[i - SPLIT_WINDOW] as u16;
+                acc = acc.wrapping_sub(self.slice[i - SPLIT_WINDOW] as u16);
             }
 
-            acc += self.slice[i] as u16;
+            acc = acc.wrapping_add(self.slice[i] as u16);
             acc &= SPLIT_MODULUS_MASK;
 
             if acc == SPLIT_CONSTANT && i >= SPLIT_MINIMUM {
@@ -267,18 +267,18 @@ impl Iterator for SliceChunker {
         let mut ring = Ring::new();
 
         let mut offset = 0;
-        let mut acc = 0;
+        let mut acc = 0u16;
 
         for (i, slice) in self.splitter.by_ref().enumerate() {
             let sig = seahash(&slice[slice.len() - cmp::min(SPLIT_WINDOW, slice.len())..]);
 
             if i >= CHUNK_WINDOW {
-                acc -= ring.push_pop(sig) as u16;
+                acc = acc.wrapping_sub(ring.push_pop(sig) as u16);
             } else {
                 ring.push(sig);
             }
 
-            acc += sig as u16;
+            acc = acc.wrapping_add(sig as u16);
             acc &= CHUNK_MODULUS_MASK;
 
             offset += slice.len();
