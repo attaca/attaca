@@ -98,7 +98,7 @@ lazy_static! {
 
 
     /// The location of the HEAD file.
-    static ref REFS_PATH: PathBuf = METADATA_PATH.join("refs.toml");
+    static ref REFS_PATH: PathBuf = METADATA_PATH.join("refs.bin");
 
 
     /// Default paths to ignore.
