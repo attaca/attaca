@@ -55,6 +55,11 @@ error_chain! {
             display("an error occurred while filling a catalog entry")
         }
 
+        CloseRefs(path: PathBuf) {
+            description("error writing refs to filesystem")
+            display("error writing refs to filesystem at path {}", path.display())
+        }
+
         ConcurrentlyModifiedEntry {
             description("an entry in the index may have been modified in between index update and cleaning")
             display("an entry in the index may have been modified in between index update and cleaning")
@@ -118,6 +123,16 @@ error_chain! {
         ObjectNotASubtree(hash: ObjectHash) {
             description("expected a subtree, but got a different kind of object")
             display("Expected {} to be a subtree object, but... it wasn't.", hash)
+        }
+
+        OpenLocalObject(hash: ObjectHash) {
+            description("error opening local object")
+            display("error opening local object {}", hash)
+        }
+
+        OpenRefs(path: PathBuf) {
+            description("error opening serialized refs")
+            display("error opening serialized refs at path {}", path.display())
         }
 
         MalformedSubtree(parent_hash: Option<ObjectHash>, child_hash: ObjectHash) {
