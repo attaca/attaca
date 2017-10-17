@@ -8,15 +8,13 @@ use errors::*;
 
 pub fn command() -> App<'static, 'static> {
     SubCommand::with_name("track")
-        .arg(Arg::with_name("PATH")
-             .help("Begin tracking changes to files.")
-             .index(1)
-             .multiple(true))
+        .help("Begin tracking changes to files.")
+        .arg(Arg::with_name("PATH").index(1).multiple(true))
 }
 
 
 pub fn go(repository: &mut Repository, matches: &ArgMatches) -> Result<()> {
-    let glob_set = if let Some(paths) = matches.values_of("PATH") {
+    let pattern = if let Some(paths) = matches.values_of("PATH") {
         let mut builder = GlobSetBuilder::new();
         for path in paths {
             builder.add(Glob::new(path)?);
@@ -26,7 +24,12 @@ pub fn go(repository: &mut Repository, matches: &ArgMatches) -> Result<()> {
         bail!("No files!");
     };
 
-    repository.index.track(&glob_set)?;
+    repository.index.register(&pattern)?;
+    repository
+        .index
+        .iter_mut()
+        .filter(|&(path, _)| pattern.is_match(path))
+        .for_each(|(_, entry)| entry.tracked = true);
 
     Ok(())
 }

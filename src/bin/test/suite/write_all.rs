@@ -39,7 +39,7 @@ pub fn command() -> App<'static, 'static> {
 
 fn run<T: Trace>(repository: &mut Repository, matches: &ArgMatches, trace: T) -> Result<()> {
     let path = matches.value_of("INPUT").unwrap();
-    let mut context = repository.remote("_debug", trace)?;
+    let context = repository.remote("_debug", trace)?;
 
     let chunk_stream = context.split_file(path);
     let hash_future = context.hash_file(chunk_stream);

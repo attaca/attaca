@@ -45,7 +45,7 @@ fn marshal<T: Trace, P: AsRef<Path>>(
     trace: T,
     path: P,
 ) -> Result<ObjectHash> {
-    let mut context = repository.local(trace)?;
+    let context = repository.local(trace)?;
 
     let mut entries = FuturesUnordered::new();
     let mut stack = Vec::new();
@@ -53,7 +53,7 @@ fn marshal<T: Trace, P: AsRef<Path>>(
     let absolute_path = if path.as_ref().is_absolute() {
         path.as_ref().to_owned()
     } else {
-        repository.paths.base.join(path.as_ref())
+        context.paths.base.join(path.as_ref())
     };
 
     stack.push(absolute_path.read_dir()?);
@@ -62,15 +62,17 @@ fn marshal<T: Trace, P: AsRef<Path>>(
         for dir_entry_res in iter {
             let dir_entry = dir_entry_res?;
             let absolute_path = dir_entry.path();
-            let relative_path = absolute_path.strip_prefix(&repository.paths.base).unwrap();
 
             if absolute_path.symlink_metadata()?.is_dir() {
                 stack.push(absolute_path.read_dir()?);
             } else {
                 let chunk_stream = context.split_file(&absolute_path);
-                let entry_path = relative_path.to_owned();
+                let relative_path = absolute_path
+                    .strip_prefix(&context.paths.base)
+                    .unwrap()
+                    .to_owned();
                 entries.push(context.hash_file(chunk_stream).map(
-                    |hash| (entry_path, hash),
+                    |hash| (relative_path, hash),
                 ));
             }
         }

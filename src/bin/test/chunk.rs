@@ -57,7 +57,7 @@ impl Trace for TraceSplit {
 
 pub fn go(repository: &mut Repository, matches: &ArgMatches) -> Result<()> {
     let trace = TraceSplit::default();
-    let mut ctx = repository.local(trace.clone())?;
+    let ctx = repository.local(trace.clone())?;
 
     ctx.split_file(matches.value_of("INPUT").unwrap())
         .for_each(|_| Ok(()))

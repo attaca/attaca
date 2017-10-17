@@ -43,6 +43,13 @@ impl From<SubtreeObject> for Record {
 }
 
 
+impl From<CommitObject> for Record {
+    fn from(commit_object: CommitObject) -> Self {
+        Record::Meta(commit_object.into())
+    }
+}
+
+
 impl From<SmallRecord> for Record {
     fn from(small_record: SmallRecord) -> Self {
         Record::Data(small_record.into())

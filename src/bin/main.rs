@@ -1,4 +1,5 @@
 extern crate attaca;
+extern crate chrono;
 #[macro_use]
 extern crate clap;
 #[macro_use]
@@ -12,11 +13,13 @@ extern crate itertools;
 extern crate memmap;
 
 mod catalog;
+mod commit;
 mod errors;
 mod index;
 mod init;
 mod remote;
 mod stats;
+mod status;
 mod test;
 mod trace;
 mod track;
@@ -42,10 +45,12 @@ fn command() -> App<'static, 'static> {
         .about(crate_description!())
         .version(crate_version!())
         .subcommand(catalog::command())
+        .subcommand(commit::command())
         .subcommand(index::command())
         .subcommand(init::command())
         .subcommand(remote::command())
         .subcommand(stats::command())
+        .subcommand(status::command())
         .subcommand(utils::command())
         .subcommand(test::command())
         .subcommand(track::command())
@@ -64,9 +69,11 @@ fn go(matches: &ArgMatches) -> Result<()> {
 
             let result = match other {
                 ("catalog", Some(sub_m)) => catalog::go(&mut repository, sub_m),
+                ("commit", Some(sub_m)) => commit::go(&mut repository, sub_m),
                 ("index", Some(sub_m)) => index::go(&mut repository, sub_m),
                 ("remote", Some(sub_m)) => remote::go(&mut repository, sub_m),
                 ("stats", Some(sub_m)) => stats::go(&mut repository, sub_m),
+                ("status", Some(sub_m)) => status::go(&mut repository, sub_m),
                 ("test", Some(sub_m)) => test::go(&mut repository, sub_m),
                 ("untrack", Some(sub_m)) => untrack::go(&mut repository, sub_m),
                 ("utils", Some(sub_m)) => utils::go(&mut repository, sub_m),

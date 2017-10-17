@@ -116,7 +116,7 @@ pub enum Head {
 pub struct Refs {
     pub head: Head,
     pub branches: HashMap<String, ObjectHash>,
-    pub remotes: HashMap<String, HashMap<String, ObjectHash>>,
+    //pub remotes: HashMap<String, HashMap<String, ObjectHash>>,
 }
 
 
@@ -132,8 +132,16 @@ impl Refs {
             Ok(Self {
                 head: Head::Root,
                 branches: HashMap::new(),
-                remotes: HashMap::new(),
+                //remotes: HashMap::new(),
             })
+        }
+    }
+
+    pub fn head_hash(&self) -> Option<&ObjectHash> {
+        match self.head {
+            Head::Detached(ref hash) => Some(hash),
+            Head::Ref(ref symref) => self.branches.get(symref),
+            Head::Root => None,
         }
     }
 }
@@ -329,7 +337,7 @@ impl Repository {
         let catalog = self.catalogs.get(None)?;
         let store = Local::new(&self.paths, &catalog, io_pool);
 
-        Ok(Context::new(trace, store, marshal_pool, io_pool))
+        Ok(Context::new(self, trace, store, marshal_pool, io_pool))
     }
 
     pub fn local<T: Trace>(&mut self, trace: T) -> Result<Context<T, Local>> {
@@ -347,17 +355,24 @@ impl Repository {
         io_pool: &CpuPool,
         trace: T,
     ) -> Result<Context<T, Remote>> {
-        let local_catalog = self.catalogs.get(None)?;
-        let remote_catalog = self.catalogs.get(Some(remote_name.as_ref().to_owned()))?;
-        let remote_config = self.config.remotes.get(remote_name.as_ref()).ok_or_else(
-            || {
-                Error::from_kind(ErrorKind::RemoteNotFound(remote_name.as_ref().to_owned()))
-            },
-        )?;
-        let local = Local::new(&self.paths, &local_catalog, io_pool);
-        let remote = Remote::Ceph(Ceph::connect(local, &remote_catalog, remote_config, io_pool)?);
+        let remote = {
+            let local_catalog = self.catalogs.get(None)?;
+            let remote_catalog = self.catalogs.get(Some(remote_name.as_ref().to_owned()))?;
+            let remote_config = self.config.remotes.get(remote_name.as_ref()).ok_or_else(
+                || {
+                    Error::from_kind(ErrorKind::RemoteNotFound(remote_name.as_ref().to_owned()))
+                },
+            )?;
+            let local = Local::new(&self.paths, &local_catalog, io_pool);
+            Remote::Ceph(Ceph::connect(
+                local,
+                &remote_catalog,
+                remote_config,
+                io_pool,
+            )?)
+        };
 
-        Ok(Context::new(trace, remote, marshal_pool, io_pool))
+        Ok(Context::new(self, trace, remote, marshal_pool, io_pool))
     }
 
     pub fn remote<T: Trace, U: AsRef<str>>(

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::hash_map::{HashMap, Entry};
 use std::ffi::CString;
 use std::fs::File;
 use std::io::Error as IoError;
@@ -102,30 +102,45 @@ pub enum Cached {
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct IndexEntry {
-    hygiene: Hygiene,
+    pub hygiene: Hygiene,
     metadata: IndexMetadata,
-    tracked: bool,
-    cached: Cached,
+
+    pub tracked: bool,
+
+    // We tell serde to skip this value so that it's set to false whenever deserialized. If we
+    // switch over to git-style `add`, then we'll stop skipping it so that `add`s persist between
+    // index operations.
+    #[serde(skip)]
+    pub added: bool,
+
+    pub cached: Cached,
 }
 
 
 impl IndexEntry {
-    fn fresh(metadata: IndexMetadata, cached: Cached) -> IndexEntry {
+    pub fn fresh(metadata: IndexMetadata, cached: Cached) -> IndexEntry {
         IndexEntry {
             hygiene: Hygiene::Clean,
             metadata,
-            tracked: true,
+            tracked: false,
+            added: false,
             cached,
         }
     }
 
-    fn track(&mut self, tracked: bool) -> &mut Self {
+    pub fn track(&mut self, tracked: bool) -> &mut Self {
         self.tracked = tracked;
 
         self
     }
 
-    fn update(&mut self, fresh: &IndexMetadata, timestamp: &DateTime<Utc>) -> &mut Self {
+    pub fn add(&mut self, added: bool) -> &mut Self {
+        self.added = added;
+
+        self
+    }
+
+    pub fn update(&mut self, fresh: &IndexMetadata, timestamp: &DateTime<Utc>) -> &mut Self {
         if self.hygiene != Hygiene::Dirty {
             self.hygiene = {
                 if &self.metadata == fresh {
@@ -145,7 +160,7 @@ impl IndexEntry {
         self
     }
 
-    fn clean(
+    pub fn clean(
         &mut self,
         fresh: &IndexMetadata,
         timestamp: &DateTime<Utc>,
@@ -163,7 +178,7 @@ impl IndexEntry {
         Ok(())
     }
 
-    fn get(&self) -> Option<Cached> {
+    pub fn get(&self) -> Option<Cached> {
         if self.hygiene == Hygiene::Clean {
             Some(self.cached)
         } else {
@@ -278,27 +293,10 @@ impl Index {
         }
     }
 
-    fn track_file(
-        entries_mut: &mut HashMap<PathBuf, IndexEntry>,
-        timestamp: &DateTime<Utc>,
-        absolute_path: &Path,
-        relative_path: PathBuf,
-    ) -> Result<()> {
-        let fresh = IndexMetadata::load(absolute_path)?;
-
-        entries_mut
-            .entry(relative_path)
-            .or_insert_with(|| IndexEntry::fresh(fresh, Cached::Unhashed))
-            .track(true)
-            .update(&fresh, timestamp);
-
-        Ok(())
-    }
-
     // TODO: Take an iterator of string slices instead of a `GlobSet`, and attempt to parse those
     // string slices into `Glob`s of their own. Then, only visit subdirectories which we know might
     // contain the files we're looking for.
-    pub fn track(&mut self, pattern: &GlobSet) -> Result<()> {
+    pub fn register(&mut self, pattern: &GlobSet) -> Result<()> {
         let mut stack = Vec::new();
         stack.push(self.paths.base.read_dir()?);
 
@@ -306,35 +304,34 @@ impl Index {
             for dir_entry_res in iter {
                 let dir_entry = dir_entry_res?;
                 let absolute_path = dir_entry.path();
-                let relative_path = absolute_path.strip_prefix(&self.paths.base).unwrap();
+                let relative_path = absolute_path
+                    .strip_prefix(&self.paths.base)
+                    .unwrap()
+                    .to_owned();
 
                 // TODO: Replace `DEFAULT_IGNORES` with a `Gitignore` from the `gitignore` crate.
-                if DEFAULT_IGNORES.contains(relative_path) {
+                if DEFAULT_IGNORES.contains(&relative_path) {
                     continue;
                 }
 
                 if absolute_path.symlink_metadata()?.is_dir() {
                     stack.push(absolute_path.read_dir()?);
-                } else if pattern.is_match(relative_path) {
-                    Self::track_file(
-                        &mut self.data.entries,
-                        &self.data.timestamp,
-                        &absolute_path,
-                        relative_path.to_owned(),
-                    )?;
+                } else if pattern.is_match(&relative_path) {
+                    let fresh = IndexMetadata::load(absolute_path)?;
+
+                    match self.data.entries.entry(relative_path) {
+                        Entry::Occupied(mut occupied) => {
+                            occupied.get_mut().update(&fresh, &self.data.timestamp);
+                        }
+                        Entry::Vacant(vacant) => {
+                            vacant.insert(IndexEntry::fresh(fresh, Cached::Unhashed));
+                        }
+                    }
                 }
             }
         }
 
         Ok(())
-    }
-
-    pub fn untrack(&mut self, pattern: &GlobSet) {
-        self.data
-            .entries
-            .iter_mut()
-            .filter(|&(ref path, _)| pattern.is_match(path))
-            .for_each(|(_, entry)| { entry.track(false); });
     }
 
     pub fn iter<'a>(&'a self) -> impl Iterator<Item = (&'a Path, &'a IndexEntry)> {
@@ -343,12 +340,10 @@ impl Index {
         })
     }
 
-    pub fn iter_tracked<'a>(&'a self) -> impl Iterator<Item = (&'a Path, Option<Cached>)> {
-        self.data
-            .entries
-            .iter()
-            .filter(|&(_, ref entry)| entry.tracked)
-            .map(|(path, entry)| (path.as_ref(), entry.get()))
+    pub fn iter_mut<'a>(&'a mut self) -> impl Iterator<Item = (&'a Path, &'a mut IndexEntry)> {
+        self.data.entries.iter_mut().map(|(path, entry)| {
+            (path.as_ref(), entry)
+        })
     }
 
     pub fn prune(&mut self) {
