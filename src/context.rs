@@ -147,6 +147,10 @@ impl<'a, T: Trace, S: Store> Context<'a, T, S> {
         Box::new(stream_future.flatten_stream())
     }
 
+    pub fn read_object(&self, object_hash: ObjectHash) -> Box<Future<Item = Object, Error = Error> + Send> {
+        Box::new(self.store.read_object(object_hash))
+    }
+
     pub fn read_commit(
         &self,
         commit_hash: ObjectHash,
