@@ -28,7 +28,10 @@ impl<'a> RawSmallObject<'a> {
 
         assert!(offset >= 0);
 
-        let sliced_slice = slice.map(|slice| &slice[offset as usize..self.chunk.len()]);
+        let sliced_slice = slice.map(|slice| {
+            let offset = offset as usize;
+            &slice[offset..offset + self.chunk.len()]
+        });
 
         SmallObject { chunk: sliced_slice }
     }

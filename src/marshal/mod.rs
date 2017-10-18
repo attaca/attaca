@@ -14,6 +14,8 @@ pub mod record;
 
 
 pub use self::dir_tree::DirTree;
-pub use self::marshaller::{ObjectHash, Marshaller, Hashed};
-pub use self::object::{Object, SmallObject, LargeObject, DataObject, SubtreeObject, CommitObject};
+pub use self::marshaller::{hash, serialize_and_hash, serialize_into_and_hash, ObjectHash,
+                           Marshaller, Hashed};
+pub use self::object::{RawObject, Object, SmallObject, LargeObject, DataObject, SubtreeObject,
+                       CommitObject};
 pub use self::record::{Record, DataRecord, MetaRecord, SmallRecord};

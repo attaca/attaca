@@ -19,7 +19,7 @@ use sha3::{Sha3_256, Digest};
 use typenum::consts;
 
 use errors::*;
-use marshal::{LargeObject, SubtreeObject, Record, SmallRecord, DirTree};
+use marshal::{RawObject, Object, LargeObject, SubtreeObject, Record, SmallRecord, DirTree};
 use marshal::dir_tree::Node;
 use split::GenericSplitter;
 use trace::Trace;
@@ -148,6 +148,43 @@ impl<L: Write, R: Write> Write for Fork<L, R> {
 }
 
 
+pub fn serialize_into_and_hash<W: Write>(
+    raw_object: &RawObject,
+    writer: &mut W,
+) -> Result<ObjectHash> {
+    let mut digest_writer = Writer::new(Sha3_256::new());
+
+    bincode::serialize_into(
+        &mut Fork::new(writer, BufWriter::new(&mut digest_writer)),
+        &raw_object,
+        bincode::Infinite,
+    )?;
+
+    Ok(ObjectHash(digest_writer.fixed_result()))
+}
+
+
+pub fn hash(object: &Object) -> ObjectHash {
+    serialize_into_and_hash(&object.as_raw(), &mut io::sink())
+        .expect("Sink should never error, Digest should never error!")
+}
+
+
+pub fn serialize_and_hash(object: &Object) -> Hashed {
+    let raw_object = object.as_raw();
+    let size = bincode::serialized_size(&raw_object);
+    let mut buf = Vec::with_capacity(size as usize);
+    let hash = serialize_into_and_hash(&raw_object, &mut buf).expect(
+        "Vec should never error, Digest should never error!",
+    );
+
+    Hashed {
+        hash,
+        bytes: Some(buf),
+    }
+}
+
+
 #[derive(Debug)]
 pub struct Hashed {
     hash: ObjectHash,
@@ -156,6 +193,11 @@ pub struct Hashed {
 
 
 impl Hashed {
+    pub fn from_hash(hash: ObjectHash) -> Self {
+        Hashed { hash, bytes: None }
+    }
+
+
     pub fn as_hash(&self) -> &ObjectHash {
         &self.hash
     }
@@ -194,10 +236,7 @@ type LeafSplitter<A, B, C, D, E> = GenericSplitter<
 
 impl<T: Trace> Marshaller<T> {
     pub fn with_trace(output: Sender<Hashed>, trace: T) -> Self {
-        Self {
-            output,
-            trace,
-        }
+        Self { output, trace }
     }
 
     pub fn process<R: Into<Record>>(
@@ -210,36 +249,16 @@ impl<T: Trace> Marshaller<T> {
 
         let async = {
             async_block! {
-                let (hash, bytes) = match record.to_deep() {
-                    Ok(object) => {
-                        let raw_object = object.as_raw();
-                        let size = bincode::serialized_size(&raw_object);
-
-                        let mut buf = Vec::with_capacity(size as usize);
-                        let mut digest_writer = Writer::new(Sha3_256::new());
-
-                        bincode::serialize_into(
-                            &mut Fork::new(&mut buf, BufWriter::new(&mut digest_writer)),
-                            &raw_object,
-                            bincode::Infinite,
-                        ).expect("No actual I/O, impossible to have an I/O error.");
-
-                        let digest = digest_writer.fixed_result();
-
-                        (ObjectHash(digest), Some(buf))
-                    }
-
-                    Err(hash) => (hash, None),
+                let hashed = match record.to_deep() {
+                    Ok(object) => serialize_and_hash(&object),
+                    Err(hash) => Hashed::from_hash(hash),
                 };
-
+                let hash = *hashed.as_hash();
                 trace.on_marshal_process(&hash);
-
-                await!(output.send(Hashed { hash, bytes })).expect("Channel closed!");
-
+                await!(output.send(hashed)).expect("Channel closed!");
                 Ok(hash)
             }
         };
-
 
         Box::new(async)
     }
