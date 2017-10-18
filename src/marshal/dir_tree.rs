@@ -56,29 +56,29 @@ impl Node {
                             }
                             Node::Leaf(hash) => {
                                 let object = await!(store.read_object(hash))?;
-                                if let Object::Subtree(subtree) = object {
-                                    let mut entries: HashMap<
-                                        _,
-                                        _,
-                                    > = subtree
-                                        .entries
-                                        .into_iter()
-                                        .map(|(component, entry)| (component, Node::Leaf(entry)))
-                                        .collect();
+                                match object {
+                                    Object::Subtree(subtree) => {
+                                        let mut entries = subtree
+                                            .entries
+                                            .into_iter()
+                                            .map(|(component, entry)| (component, Node::Leaf(entry)))
+                                            .collect::<HashMap<_, _>>();
 
-                                    let node = entries
-                                        .get_mut(&component)
-                                        .map(|entry| mem::replace(entry, Node::Empty))
-                                        .unwrap_or(Node::Empty);
+                                        let node = entries
+                                            .get_mut(&component)
+                                            .map(|entry| mem::replace(entry, Node::Empty))
+                                            .unwrap_or(Node::Empty);
 
-                                    await!(
-                                        node.entry(path, store, func).map(move |(new_node, out)| {
-                                            entries.insert(component, new_node);
-                                            (Node::Branch(entries), out)
-                                        })
-                                    )
-                                } else {
-                                    Ok((self, await!(func(None).into_future())?))
+                                        await!(
+                                            node.entry(path, store, func).map(move |(new_node, out)| {
+                                                entries.insert(component, new_node);
+                                                (Node::Branch(entries), out)
+                                            })
+                                        )
+                                    }
+                                    _ => {
+                                        Ok((self, await!(func(None).into_future())?))
+                                    }
                                 }
                             }
                             Node::Empty => {

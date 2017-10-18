@@ -17,7 +17,7 @@ use {BATCH_FUTURE_BUFFER_SIZE, WRITE_FUTURE_BUFFER_SIZE};
 use arc_slice::{self, ArcSlice};
 use errors::*;
 use index::Cached;
-use marshal::{ObjectHash, Marshaller, Hashed, CommitObject, DirTree};
+use marshal::{ObjectHash, Marshaller, Hashed, Object, CommitObject, DirTree};
 use repository::Repository;
 use split::SliceChunker;
 use store::{Store, Empty};
@@ -147,7 +147,26 @@ impl<'a, T: Trace, S: Store> Context<'a, T, S> {
         Box::new(stream_future.flatten_stream())
     }
 
-    pub fn hash_file<U>(&self, stream: U) -> Box<Future<Item = ObjectHash, Error = Error> + Send>
+    pub fn read_head(&self) -> Box<Future<Item = Option<CommitObject>, Error = Error> + Send> {
+        match self.refs.head() {
+            Some(commit_hash) => {
+                let async = self.store.read_object(commit_hash).and_then(
+                    move |object| {
+                        match object {
+                            Object::Commit(commit_object) => Ok(Some(commit_object)),
+                            _ => bail!(ErrorKind::ObjectNotACommit(commit_hash)),
+                        }
+                    },
+                );
+
+                Box::new(async)
+            }
+
+            None => Box::new(future::ok(None)),
+        }
+    }
+
+    pub fn write_file<U>(&self, stream: U) -> Box<Future<Item = ObjectHash, Error = Error> + Send>
     where
         U: Stream<Item = ArcSlice, Error = Error> + Send + 'static,
     {
@@ -157,7 +176,10 @@ impl<'a, T: Trace, S: Store> Context<'a, T, S> {
         Box::new(self.marshal_pool.spawn(marshaller.process_chunks(stream)))
     }
 
-    pub fn hash_subtree<U>(&self, stream: U) -> Box<Future<Item = ObjectHash, Error = Error> + Send>
+    pub fn write_subtree<U>(
+        &self,
+        stream: U,
+    ) -> Box<Future<Item = ObjectHash, Error = Error> + Send>
     where
         U: Stream<Item = (PathBuf, ObjectHash), Error = Error> + Send + 'static,
     {
@@ -176,7 +198,7 @@ impl<'a, T: Trace, S: Store> Context<'a, T, S> {
         Box::new(self.marshal_pool.spawn(hash_future))
     }
 
-    pub fn hash_commit(
+    pub fn write_commit(
         &self,
         include_opt: Option<&GlobSet>,
         exclude_opt: Option<&GlobSet>,
@@ -209,7 +231,7 @@ impl<'a, T: Trace, S: Store> Context<'a, T, S> {
                             let path = path.to_owned();
                             let chunk_stream = self.split_file(&path);
                             let index_tx = self.index_tx.clone();
-                            let hash_future = self.hash_file(chunk_stream);
+                            let hash_future = self.write_file(chunk_stream);
 
                             Either::B(hash_future.and_then(|object_hash| {
                                 index_tx
@@ -223,10 +245,12 @@ impl<'a, T: Trace, S: Store> Context<'a, T, S> {
 
             let marshaller = marshaller.clone();
             let store = self.store.clone();
-            let root = self.refs.head().cloned();
             stream::futures_unordered(entries_iter)
                 .collect()
-                .and_then(move |ops| DirTree::delta(store, root, ops))
+                .join(self.read_head().map(|commit_opt| {
+                    commit_opt.map(|commit| commit.subtree)
+                }))
+                .and_then(move |(ops, root)| DirTree::delta(store, root, ops))
                 .and_then(move |dir_tree| marshaller.process_dir_tree(dir_tree))
         };
 
@@ -250,7 +274,6 @@ impl<'a, T: Trace, S: Store> Context<'a, T, S> {
         let repository = self.repository;
         let close_future = self.writes.join(
             self.index_rx.map_err(|_| Error::from_kind(ErrorKind::Absurd)).for_each(move |(path, object_hash)| {
-                println!("\n\nCleaning entry: ({}, {})\n", path.display(), object_hash);
                 repository.index.clean(path, object_hash)
             }),
         ).map(|((), ())| ());

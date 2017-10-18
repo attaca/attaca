@@ -156,14 +156,15 @@ impl Refs {
             .chain_err(|| ErrorKind::CloseRefs(paths.refs.to_owned()))
     }
 
-    pub fn head(&self) -> Option<&ObjectHash> {
+    pub fn head(&self) -> Option<ObjectHash> {
         match self.head {
-            Head::Detached(ref hash) => Some(hash),
-            Head::LocalRef(ref branch) => self.branches.get(branch),
+            Head::Detached(hash) => Some(hash),
+            Head::LocalRef(ref branch) => self.branches.get(branch).cloned(),
             Head::RemoteRef(ref remote, ref branch) => {
-                self.remotes.get(remote).and_then(
-                    |remote| remote.get(branch),
-                )
+                self.remotes
+                    .get(remote)
+                    .and_then(|remote| remote.get(branch))
+                    .cloned()
             }
             Head::Root => None,
         }

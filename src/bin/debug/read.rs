@@ -1,3 +1,4 @@
+use chrono::prelude::*;
 use clap::{App, SubCommand, Arg, ArgMatches};
 use futures::prelude::*;
 
@@ -13,7 +14,12 @@ pub enum Pretty {
     Small { size: u64 },
     Large { size: u64, children: usize },
     Subtree { entries: usize },
-    Commit,
+    Commit {
+        parents: Vec<ObjectHash>,
+        subtree: ObjectHash,
+        message: String,
+        timestamp: DateTime<Utc>,
+    },
 }
 
 
@@ -28,6 +34,7 @@ pub fn command() -> App<'static, 'static> {
                 .long("remote")
                 .value_name("REMOTE"),
         )
+        .arg(Arg::with_name("full").short("f").long("full"))
 }
 
 
@@ -51,23 +58,32 @@ pub fn go(repository: &mut Repository, matches: &ArgMatches) -> Result<()> {
         }
     };
 
-    let pretty = match object {
-        Object::Data(ref data_object) => {
-            match *data_object {
-                DataObject::Small(ref small_object) => Pretty::Small { size: small_object.size() },
-                DataObject::Large(ref large_object) => Pretty::Large {
-                    size: large_object.size(),
-                    children: large_object.children.len(),
-                },
+    if matches.is_present("full") {
+        println!("{:#?}", object);
+    } else {
+        let pretty = match object {
+            Object::Data(ref data_object) => {
+                match *data_object {
+                    DataObject::Small(ref small_object) => Pretty::Small { size: small_object.size() },
+                    DataObject::Large(ref large_object) => Pretty::Large {
+                        size: large_object.size(),
+                        children: large_object.children.len(),
+                    },
+                }
             }
-        }
-        Object::Subtree(ref subtree_object) => Pretty::Subtree {
-            entries: subtree_object.entries.len(),
-        },
-        Object::Commit(ref _commit_object) => Pretty::Commit,
-    };
+            Object::Subtree(ref subtree_object) => Pretty::Subtree {
+                entries: subtree_object.entries.len(),
+            },
+            Object::Commit(ref commit_object) => Pretty::Commit {
+                parents: commit_object.parents.clone(),
+                subtree: commit_object.subtree,
+                message: commit_object.message.clone(),
+                timestamp: commit_object.timestamp,
+            },
+        };
 
-    println!("{:#?}", pretty);
+        println!("{:#?}", pretty);
+    }
 
     Ok(())
 }

@@ -120,9 +120,14 @@ error_chain! {
             display("could not load local store")
         }
 
+        ObjectNotACommit(hash: ObjectHash) {
+            description("expected a commit, but got a different kind of object")
+            display("expected {} to be a commit object, but got a different kind of object", hash)
+        }
+
         ObjectNotASubtree(hash: ObjectHash) {
             description("expected a subtree, but got a different kind of object")
-            display("Expected {} to be a subtree object, but... it wasn't.", hash)
+            display("expected {} to be a subtree object, but got a different kind of object", hash)
         }
 
         OpenLocalObject(hash: ObjectHash) {

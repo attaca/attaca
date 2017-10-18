@@ -71,14 +71,14 @@ fn marshal<T: Trace, P: AsRef<Path>>(
                     .strip_prefix(&context.paths.base)
                     .unwrap()
                     .to_owned();
-                entries.push(context.hash_file(chunk_stream).map(
+                entries.push(context.write_file(chunk_stream).map(
                     |hash| (relative_path, hash),
                 ));
             }
         }
     }
 
-    let hash_future = context.hash_subtree(entries);
+    let hash_future = context.write_subtree(entries);
     let write_future = context.close();
 
     let ((), hash) = write_future.join(hash_future).wait()?;

@@ -65,18 +65,21 @@ pub fn go(repository: &mut Repository, matches: &ArgMatches) -> Result<()> {
     repository.index.update()?;
 
     let commit_hash = {
-        let mut ctx = repository.local(Progress::new(None))?;
-        let head = ctx.refs.head().cloned().into_iter().collect();
+        let ctx = repository.local(Progress::new(None))?;
 
-        ctx.hash_commit(
+        let head_hash = ctx.refs.head();
+        // Merges are unimplemented. So, the only possible parent is the head.
+        let commit_hash = ctx.write_commit(
             include.as_ref(),
             exclude.as_ref(),
-            head,
+            head_hash.into_iter().collect(),
             message,
             Utc::now(),
-        ).join(ctx.close())
-            .wait()?
-            .0
+        ).wait()?;
+
+        ctx.close().wait()?;
+
+        commit_hash
     };
 
     repository.refs.head = Head::Detached(commit_hash);

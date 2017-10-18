@@ -46,7 +46,7 @@ fn marshal<T: Trace, P: AsRef<Path>>(
 ) -> Result<ObjectHash> {
     let context = repository.local(trace)?;
     let chunk_stream = context.split_file(path);
-    let hash_future = context.hash_file(chunk_stream);
+    let hash_future = context.write_file(chunk_stream);
     let write_future = context.close();
 
     let ((), hash) = write_future.join(hash_future).wait()?;
