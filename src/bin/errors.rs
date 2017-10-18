@@ -1,3 +1,6 @@
+use attaca::marshal::ObjectHash;
+
+
 error_chain! {
     types { Error, ErrorKind, ResultExt, Result; }
 
@@ -14,6 +17,11 @@ error_chain! {
     }
 
     errors {
+        FsckFailure(expected: ObjectHash, actual: ObjectHash) {
+            description("an object did not hash to the expected value"),
+            display("an object {} did not hash to the expected value {}", actual, expected)
+        }
+        
         InvalidUsage {
             description("invalid usage"),
             display("invalid usage"),

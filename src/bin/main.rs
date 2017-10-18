@@ -11,11 +11,13 @@ extern crate histogram;
 extern crate indicatif;
 extern crate itertools;
 extern crate memmap;
+extern crate sha3;
 
 mod catalog;
 mod commit;
 mod debug;
 mod errors;
+mod fsck;
 mod index;
 mod init;
 mod log;
@@ -47,6 +49,7 @@ fn command() -> App<'static, 'static> {
         .subcommand(catalog::command())
         .subcommand(commit::command())
         .subcommand(debug::command())
+        .subcommand(fsck::command())
         .subcommand(log::command())
         .subcommand(index::command())
         .subcommand(init::command())
@@ -71,6 +74,7 @@ fn go(matches: &ArgMatches) -> Result<()> {
                 ("catalog", Some(sub_m)) => catalog::go(&mut repository, sub_m),
                 ("commit", Some(sub_m)) => commit::go(&mut repository, sub_m),
                 ("debug", Some(sub_m)) => debug::go(&mut repository, sub_m),
+                ("fsck", Some(sub_m)) => fsck::go(&mut repository, sub_m),
                 ("log", Some(sub_m)) => log::go(&mut repository, sub_m),
                 ("index", Some(sub_m)) => index::go(&mut repository, sub_m),
                 ("remote", Some(sub_m)) => remote::go(&mut repository, sub_m),
