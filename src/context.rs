@@ -147,21 +147,25 @@ impl<'a, T: Trace, S: Store> Context<'a, T, S> {
         Box::new(stream_future.flatten_stream())
     }
 
+    pub fn read_commit(
+        &self,
+        commit_hash: ObjectHash,
+    ) -> Box<Future<Item = CommitObject, Error = Error> + Send> {
+        let async = self.store.read_object(commit_hash).and_then(
+            move |object| {
+                match object {
+                    Object::Commit(commit_object) => Ok(commit_object),
+                    _ => bail!(ErrorKind::ObjectNotACommit(commit_hash)),
+                }
+            },
+        );
+
+        Box::new(async)
+    }
+
     pub fn read_head(&self) -> Box<Future<Item = Option<CommitObject>, Error = Error> + Send> {
         match self.refs.head() {
-            Some(commit_hash) => {
-                let async = self.store.read_object(commit_hash).and_then(
-                    move |object| {
-                        match object {
-                            Object::Commit(commit_object) => Ok(Some(commit_object)),
-                            _ => bail!(ErrorKind::ObjectNotACommit(commit_hash)),
-                        }
-                    },
-                );
-
-                Box::new(async)
-            }
-
+            Some(commit_hash) => Box::new(self.read_commit(commit_hash).map(Some)),
             None => Box::new(future::ok(None)),
         }
     }
