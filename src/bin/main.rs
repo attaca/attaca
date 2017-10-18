@@ -18,6 +18,7 @@ mod debug;
 mod errors;
 mod index;
 mod init;
+mod log;
 mod remote;
 mod status;
 mod test;
@@ -46,6 +47,7 @@ fn command() -> App<'static, 'static> {
         .subcommand(catalog::command())
         .subcommand(commit::command())
         .subcommand(debug::command())
+        .subcommand(log::command())
         .subcommand(index::command())
         .subcommand(init::command())
         .subcommand(remote::command())
@@ -69,6 +71,7 @@ fn go(matches: &ArgMatches) -> Result<()> {
                 ("catalog", Some(sub_m)) => catalog::go(&mut repository, sub_m),
                 ("commit", Some(sub_m)) => commit::go(&mut repository, sub_m),
                 ("debug", Some(sub_m)) => debug::go(&mut repository, sub_m),
+                ("log", Some(sub_m)) => log::go(&mut repository, sub_m),
                 ("index", Some(sub_m)) => index::go(&mut repository, sub_m),
                 ("remote", Some(sub_m)) => remote::go(&mut repository, sub_m),
                 ("status", Some(sub_m)) => status::go(&mut repository, sub_m),

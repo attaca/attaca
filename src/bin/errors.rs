@@ -7,6 +7,7 @@ error_chain! {
 
     foreign_links {
         Clap(::clap::Error);
+        Fmt(::std::fmt::Error);
         GlobSet(::globset::Error);
         Nul(::std::ffi::NulError);
         Io(::std::io::Error);
