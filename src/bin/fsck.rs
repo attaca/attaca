@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::fmt::Write;
 
 use clap::{App, SubCommand, Arg, ArgMatches};
 use futures::prelude::*;
@@ -44,9 +45,10 @@ pub fn go(repository: &mut Repository, matches: &ArgMatches) -> Result<()> {
         _ => panic!("clap verification failure!"),
     };
 
-    {
+    let errors = {
         let ctx = repository.local(())?;
 
+        let mut errors = Vec::new();
         let mut hashes = ctx.refs.head().into_iter().collect::<Vec<_>>();
         let mut visited = HashSet::new();
 
@@ -62,7 +64,10 @@ pub fn go(repository: &mut Repository, matches: &ArgMatches) -> Result<()> {
                 .from_err::<Error>()
                 .for_each(|(hash, object)| {
                     let real_hash = marshal::hash(&object);
-                    ensure!(hash == real_hash, ErrorKind::FsckFailure(hash, real_hash));
+
+                    if hash != real_hash {
+                        errors.push(Error::from_kind(ErrorKind::FsckFailure(hash, real_hash)));
+                    }
 
                     match object {
                         Object::Data(DataObject::Large(ref large_object))
@@ -87,6 +92,21 @@ pub fn go(repository: &mut Repository, matches: &ArgMatches) -> Result<()> {
         }
 
         ctx.close().wait()?;
+
+        errors
+    };
+
+    if errors.is_empty() {
+        println!("No errors detected!");
+    } else {
+        let mut buf = String::new();
+        writeln!(buf, "Oh no! {} errors detected:", errors.len())?;
+
+        for ek in errors {
+            writeln!(buf, "\t{}", ek)?;
+        }
+
+        println!("{}", buf);
     }
 
     Ok(())
