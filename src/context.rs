@@ -263,19 +263,6 @@ impl<'a, T: Trace, S: Store> Context<'a, T, S> {
 
                 await!(marshaller.process_tree(tree))
             }
-//            stream::futures_unordered(entries_iter)
-//                .collect()
-//                .join(self.read_head().map(|commit_opt| {
-//                    commit_opt.map(|commit| commit.subtree)
-//                }))
-//                .and_then(move |(ops, root)| match root {
-//                    Some(root_hash) => Either::A(BackedTree::new(store, root_hash).operate(ops)),
-//                    None => Either::B(future::ok(Tree::from_iter(ops.into_iter().filter_map(|op| match op {
-//                        TreeOp::Insert(path, hash) => Some((path, hash)),
-//                        TreeOp::Remove(_) => None,
-//                    })))),
-//                })
-//                .and_then(move |dir_tree| marshaller.process_dir_tree(dir_tree))
         };
 
         let commit_future = subtree_future.and_then(move |subtree| {

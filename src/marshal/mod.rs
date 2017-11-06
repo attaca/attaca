@@ -8,14 +8,12 @@
 
 //pub mod data_tree;
 pub mod backed;
-pub mod dir_tree;
 pub mod marshaller;
 pub mod object;
 pub mod record;
 pub mod tree;
 
 
-pub use self::dir_tree::DirTree;
 pub use self::marshaller::{hash, serialize_and_hash, serialize_into_and_hash, ObjectHash,
                            Marshaller, Hashed};
 pub use self::object::{RawObject, Object, SmallObject, LargeObject, DataObject, SubtreeObject,

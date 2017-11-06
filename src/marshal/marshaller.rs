@@ -19,8 +19,7 @@ use sha3::{Sha3_256, Digest};
 use typenum::consts;
 
 use errors::*;
-use marshal::{RawObject, Object, LargeObject, SubtreeObject, Record, SmallRecord, DirTree};
-use marshal::dir_tree::Node;
+use marshal::{RawObject, Object, LargeObject, SubtreeObject, Record, SmallRecord};
 use marshal::tree::Tree;
 use split::GenericSplitter;
 use store::Store;
@@ -324,61 +323,6 @@ impl<T: Trace> Marshaller<T> {
         };
 
         Box::new(result)
-    }
-
-    fn process_dir_tree_inner(
-        &self,
-        prefix: &Path,
-        node: Node,
-    ) -> Box<Future<Item = Option<ObjectHash>, Error = Error> + Send> {
-        let async = match node {
-            Node::Branch(entries) => {
-                let marshaller = self.clone();
-                let hash_futures = entries.into_iter().map(move |(component, entry)| {
-                    marshaller
-                        .process_dir_tree_inner(&prefix.join(&component), entry)
-                        .map(|hash_opt| hash_opt.map(|hash| (component, hash)))
-                });
-                let hash_stream =
-                    stream::futures_unordered(hash_futures).filter_map(|hash_opt| hash_opt);
-
-                let marshaller = self.clone();
-                let hash_future = hash_stream
-                    .fold::<_, _, FutureResult<_, Error>>(
-                        BTreeMap::new(),
-                        |mut acc, (component, entry)| {
-                            acc.insert(component, entry);
-                            future::ok(acc)
-                        },
-                    )
-                    .and_then(move |entries| marshaller.process(SubtreeObject { entries }))
-                    .map(Some);
-
-                Either::A(hash_future)
-            }
-            Node::Leaf(object_hash) => Either::B(future::ok(Some(object_hash))), 
-            Node::Empty => Either::B(future::ok(None)),
-        };
-
-        Box::new(async)
-    }
-
-    #[deprecated]
-    pub fn process_dir_tree(
-        &self,
-        dir_tree: DirTree,
-    ) -> Box<Future<Item = ObjectHash, Error = Error> + Send> {
-        let marshaller = self.clone();
-        let async = marshaller
-            .process_dir_tree_inner(Path::new(""), dir_tree.root)
-            .and_then(move |out| match out {
-                Some(object_hash) => Either::A(future::ok(object_hash)),
-                None => Either::B(marshaller.process(
-                    SubtreeObject { entries: BTreeMap::new() },
-                )),
-            });
-
-        Box::new(async)
     }
 
     pub fn process_tree<U: Into<Tree>>(
