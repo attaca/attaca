@@ -21,7 +21,9 @@ use typenum::consts;
 use errors::*;
 use marshal::{RawObject, Object, LargeObject, SubtreeObject, Record, SmallRecord, DirTree};
 use marshal::dir_tree::Node;
+use marshal::tree::Tree;
 use split::GenericSplitter;
+use store::Store;
 use trace::Trace;
 
 
@@ -31,6 +33,12 @@ pub struct ObjectHash(GenericArray<u8, consts::U32>);
 
 
 impl ObjectHash {
+    #[inline]
+    pub fn zero() -> Self {
+        ObjectHash(GenericArray::clone_from_slice(&[0; 32]))
+    }
+
+
     #[inline]
     pub fn as_slice(&self) -> &[u8] {
         &self.0
@@ -355,6 +363,7 @@ impl<T: Trace> Marshaller<T> {
         Box::new(async)
     }
 
+    #[deprecated]
     pub fn process_dir_tree(
         &self,
         dir_tree: DirTree,
@@ -370,6 +379,13 @@ impl<T: Trace> Marshaller<T> {
             });
 
         Box::new(async)
+    }
+
+    pub fn process_tree<U: Into<Tree>>(
+        &self,
+        tree: U,
+    ) -> impl Future<Item = ObjectHash, Error = Error> + Send {
+        tree.into().marshal(self.clone())
     }
 }
 
@@ -404,14 +420,15 @@ mod test {
             let (tx, rx) = mpsc::channel(64);
             let hasher = Marshaller::with_trace(tx, ());
             let marshal_future = pool.spawn(hasher.process_chunks(stream::iter_ok(chunks)));
+            mem::drop(hasher);
             let joined = pool.spawn(rx.collect())
                 .map_err(|_| Error::from_kind(ErrorKind::Absurd))
                 .join(marshal_future);
 
             let (hashes, _marshal_success) = joined.wait().unwrap();
 
-            if hashes.len() < n || hashes.len() > 2 * n {
-                TestResult::failed()
+            if hashes.len() < n || hashes.len() > 2 * n + 1 {
+                TestResult::error(format!("{} hashed objects produced from {} inputs", hashes.len(), n))
             } else {
                 TestResult::passed()
             }

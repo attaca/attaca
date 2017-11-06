@@ -22,6 +22,13 @@ pub enum Record {
 }
 
 
+impl From<ObjectHash> for Record {
+    fn from(object_hash: ObjectHash) -> Self {
+        Record::Meta(object_hash.into())
+    }
+}
+
+
 impl From<SmallObject> for Record {
     fn from(small_object: SmallObject) -> Self {
         Record::Data(small_object.into())

@@ -1,7 +1,10 @@
+use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::mem;
+use std::ops::{Index, IndexMut};
 use std::path::PathBuf;
+use std::result::Result as StdResult;
 
 use futures::future::{self, Either, Loop};
 use futures::prelude::*;
@@ -21,20 +24,21 @@ pub enum Node {
 
 
 impl Node {
-    pub fn entry<K, I, S, T, A, F>(
+    pub fn entry<K, I, S, F, A>(
         mut self,
         mut path: I,
         store: S,
         func: F,
-    ) -> Box<Future<Item = (Self, T), Error = Error> + Send>
+    ) -> Box<Future<Item = Self, Error = Error> + Send>
     where
         K: Into<OsString> + 'static,
         I: Iterator<Item = K> + Send + 'static,
+
         S: Store,
-        T: Send + 'static,
-        A: IntoFuture<Item = T, Error = Error> + 'static,
-        A::Future: Send,
+
         F: FnOnce(Option<&mut Node>) -> A + Send + 'static,
+        A: IntoFuture<Item = (), Error = Error> + 'static,
+        A::Future: Send,
     {
         let async = {
             async_block! {
@@ -49,9 +53,9 @@ impl Node {
                                     .map(|entry| mem::replace(entry, Node::Empty))
                                     .unwrap_or(Node::Empty);
 
-                                await!(node.entry(path, store, func).map(move |(new_node, out)| {
+                                await!(node.entry(path, store, func).map(move |new_node| {
                                     entries.insert(component, new_node);
-                                    (Node::Branch(entries), out)
+                                    Node::Branch(entries)
                                 }))
                             }
                             Node::Leaf(hash) => {
@@ -70,28 +74,28 @@ impl Node {
                                             .unwrap_or(Node::Empty);
 
                                         await!(
-                                            node.entry(path, store, func).map(move |(new_node, out)| {
+                                            node.entry(path, store, func).map(move |new_node| {
                                                 entries.insert(component, new_node);
-                                                (Node::Branch(entries), out)
+                                                Node::Branch(entries)
                                             })
                                         )
                                     }
                                     _ => {
-                                        Ok((self, await!(func(None).into_future())?))
+                                        Ok(self)
                                     }
                                 }
                             }
                             Node::Empty => {
-                                let (new_node, out) = await!(Node::Empty.entry(path, store, func))?;
+                                let new_node = await!(Node::Empty.entry(path, store, func))?;
                                 let mut entries = HashMap::new();
                                 entries.insert(component, new_node);
-                                Ok((Node::Branch(entries), out))
+                                Ok(Node::Branch(entries))
                             }
                         }
                     }
                     None => {
-                        let out = await!(func(Some(&mut self)).into_future())?;
-                        Ok((self, out))
+                        await!(func(Some(&mut self)).into_future())?;
+                        Ok(self)
                     }
                 }
             }
@@ -109,6 +113,7 @@ pub struct DirTree {
 
 
 impl DirTree {
+    #[deprecated]
     pub fn delta<S: Store, I: IntoIterator<Item = (PathBuf, Option<ObjectHash>)> + 'static>(
         store: S,
         root_opt: Option<ObjectHash>,
@@ -152,9 +157,10 @@ impl DirTree {
                                 }
 
                                 Ok(())
-                            }).map(|(dir_tree, ())| { 
-                                assert!(path.pop().is_some()); 
-                                Loop::Continue((dir_tree, stack, path)) 
+                            })
+                            .map(|dir_tree| {
+                                assert!(path.pop().is_some());
+                                Loop::Continue((dir_tree, stack, path))
                             });
 
                         Either::A(operate_future)

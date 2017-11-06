@@ -497,7 +497,7 @@ impl DataTree {
 
 
 #[cfg(test)]
-mod tests {
+mod test {
     use quickcheck::TestResult;
 
     use super::*;

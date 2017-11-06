@@ -2,6 +2,7 @@
 
 use std::ops::{Deref, DerefMut};
 use std::fmt;
+use std::iter::FromIterator;
 use std::path::{Path, PathBuf};
 
 use chrono::prelude::*;
@@ -17,7 +18,7 @@ use {BATCH_FUTURE_BUFFER_SIZE, WRITE_FUTURE_BUFFER_SIZE};
 use arc_slice::{self, ArcSlice};
 use errors::*;
 use index::Cached;
-use marshal::{ObjectHash, Marshaller, Hashed, Object, CommitObject, DirTree};
+use marshal::{ObjectHash, Marshaller, Hashed, Object, CommitObject, Tree, BackedTree, TreeOp};
 use repository::Repository;
 use split::SliceChunker;
 use store::{Store, Empty};
@@ -147,7 +148,10 @@ impl<'a, T: Trace, S: Store> Context<'a, T, S> {
         Box::new(stream_future.flatten_stream())
     }
 
-    pub fn read_object(&self, object_hash: ObjectHash) -> Box<Future<Item = Object, Error = Error> + Send> {
+    pub fn read_object(
+        &self,
+        object_hash: ObjectHash,
+    ) -> Box<Future<Item = Object, Error = Error> + Send> {
         Box::new(self.store.read_object(object_hash))
     }
 
@@ -193,15 +197,9 @@ impl<'a, T: Trace, S: Store> Context<'a, T, S> {
     {
         let marshal_tx = self.marshal_tx.clone();
         let marshaller = Marshaller::with_trace(marshal_tx, self.trace.clone());
-        let hash_future = stream
-            .map(|(path, hash)| (path, Some(hash)))
-            .collect()
-            .and_then(|entries| {
-                DirTree::delta(Empty, None, entries).map_err(|err| {
-                    Error::with_chain(Error::from_kind(ErrorKind::DirTreeDelta), err)
-                })
-            })
-            .and_then(move |dir_tree| marshaller.process_dir_tree(dir_tree));
+        let hash_future = stream.collect().and_then(move |entries| {
+            marshaller.process_tree(Tree::from_iter(entries))
+        });
 
         Box::new(self.marshal_pool.spawn(hash_future))
     }
@@ -230,8 +228,8 @@ impl<'a, T: Trace, S: Store> Context<'a, T, S> {
                 })
                 .map(|(path, entry)| {
                     match entry.get() {
-                        Some(Cached::Hashed(object_hash)) => Either::A(future::ok((path.to_owned(), Some(object_hash)))),
-                        Some(Cached::Removed) => Either::A(future::ok((path.to_owned(), None))),
+                        Some(Cached::Hashed(object_hash)) => Either::A(future::ok(TreeOp::Insert(path.to_owned(), object_hash))),
+                        Some(Cached::Removed) => Either::A(future::ok(TreeOp::Remove(path.to_owned()))),
 
                         // If the file has no hash in the cache *or* has an invalid cache entry, we must
                         // split and hash it.
@@ -244,7 +242,7 @@ impl<'a, T: Trace, S: Store> Context<'a, T, S> {
                             Either::B(hash_future.and_then(|object_hash| {
                                 index_tx
                                     .send((path.clone(), object_hash))
-                                    .map(move |_| (path, Some(object_hash)))
+                                    .map(move |_| TreeOp::Insert(path, object_hash))
                                     .map_err(|_| Error::from_kind(ErrorKind::Absurd))
                             }))
                         }
@@ -253,13 +251,31 @@ impl<'a, T: Trace, S: Store> Context<'a, T, S> {
 
             let marshaller = marshaller.clone();
             let store = self.store.clone();
-            stream::futures_unordered(entries_iter)
-                .collect()
-                .join(self.read_head().map(|commit_opt| {
-                    commit_opt.map(|commit| commit.subtree)
-                }))
-                .and_then(move |(ops, root)| DirTree::delta(store, root, ops))
-                .and_then(move |dir_tree| marshaller.process_dir_tree(dir_tree))
+            let future_head_opt = self.read_head();
+            let future_ops = stream::futures_unordered(entries_iter).collect();
+
+            async_block! {
+                let (ops, head_opt) = await!(future_ops.join(future_head_opt))?;
+                let tree = match head_opt {
+                    Some(commit) => await!(BackedTree::new(store, commit.subtree).operate(ops))?.into(),
+                    None => Tree::from_iter(ops.into_iter().filter_map(TreeOp::into_insert)),
+                };
+
+                await!(marshaller.process_tree(tree))
+            }
+//            stream::futures_unordered(entries_iter)
+//                .collect()
+//                .join(self.read_head().map(|commit_opt| {
+//                    commit_opt.map(|commit| commit.subtree)
+//                }))
+//                .and_then(move |(ops, root)| match root {
+//                    Some(root_hash) => Either::A(BackedTree::new(store, root_hash).operate(ops)),
+//                    None => Either::B(future::ok(Tree::from_iter(ops.into_iter().filter_map(|op| match op {
+//                        TreeOp::Insert(path, hash) => Some((path, hash)),
+//                        TreeOp::Remove(_) => None,
+//                    })))),
+//                })
+//                .and_then(move |dir_tree| marshaller.process_dir_tree(dir_tree))
         };
 
         let commit_future = subtree_future.and_then(move |subtree| {
