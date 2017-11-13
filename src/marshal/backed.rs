@@ -7,17 +7,17 @@ use futures::prelude::*;
 use errors::*;
 use marshal::{ObjectHash, Object, SubtreeEntry, Marshaller};
 use marshal::tree::{Tree as RawTree, Entry};
-use store::Store;
+use store::ObjectStore;
 use trace::Trace;
 
 
-pub struct Tree<S: Store> {
+pub struct Tree<S: ObjectStore> {
     tree: RawTree,
     store: S,
 }
 
 
-impl<S: Store> From<Tree<S>> for RawTree {
+impl<S: ObjectStore> From<Tree<S>> for RawTree {
     fn from(tree: Tree<S>) -> RawTree {
         tree.tree
     }
@@ -25,7 +25,7 @@ impl<S: Store> From<Tree<S>> for RawTree {
 
 
 #[async]
-fn bounce<I: IntoIterator + 'static, S: Store>(
+fn bounce<I: IntoIterator + 'static, S: ObjectStore>(
     tree: RawTree,
     path: I,
     store: S,
@@ -75,7 +75,7 @@ impl TreeOp {
 }
 
 
-impl<S: Store> Tree<S> {
+impl<S: ObjectStore> Tree<S> {
     pub fn new(store: S, root: SubtreeEntry) -> Self {
         Self {
             tree: RawTree::from(root),

@@ -12,7 +12,16 @@ pub use self::empty::Empty;
 pub use self::local::Local;
 
 
-pub trait Store: Send + Sync + Clone + 'static {
+pub trait RefStore: Send + Sync + Clone + 'static {
+    type CompareAndSwap: Future<Item = ObjectHash, Error = Error> + Send;
+    type Get: Future<Item = ObjectHash, Error = Error> + Send;
+
+    fn compare_and_swap(&self, branch: String, prev_hash: ObjectHash, new_hash: ObjectHash) -> Self::CompareAndSwap;
+    fn get(&self, branch: String) -> Self::Get;
+}
+
+
+pub trait ObjectStore: Send + Sync + Clone + 'static {
     type Read: Future<Item = Object, Error = Error> + Send;
     type Write: Future<Item = bool, Error = Error> + Send;
 
@@ -22,7 +31,7 @@ pub trait Store: Send + Sync + Clone + 'static {
 
 
 pub enum RemoteRead {
-    Ceph(<Ceph as Store>::Read),
+    Ceph(<Ceph as ObjectStore>::Read),
 }
 
 
@@ -39,7 +48,7 @@ impl Future for RemoteRead {
 
 
 pub enum RemoteWrite {
-    Ceph(<Ceph as Store>::Write),
+    Ceph(<Ceph as ObjectStore>::Write),
 }
 
 
@@ -61,7 +70,7 @@ pub enum Remote {
 }
 
 
-impl Store for Remote {
+impl ObjectStore for Remote {
     type Read = RemoteRead;
     type Write = RemoteWrite;
 

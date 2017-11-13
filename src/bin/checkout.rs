@@ -8,7 +8,7 @@ use futures::prelude::*;
 use attaca::context::Context;
 use attaca::marshal::{ObjectHash, Object, DataObject, SubtreeObject, SubtreeEntry};
 use attaca::repository::Repository;
-use attaca::store::Store;
+use attaca::store::ObjectStore;
 use attaca::trace::Trace;
 
 use errors::*;
@@ -25,7 +25,7 @@ pub fn command() -> App<'static, 'static> {
 }
 
 
-fn write_data_object<T: Trace, S: Store>(
+fn write_data_object<T: Trace, S: ObjectStore>(
     ctx: &Context<T, S>,
     path: PathBuf,
     object_hash: ObjectHash,

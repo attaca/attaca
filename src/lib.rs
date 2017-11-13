@@ -58,7 +58,7 @@ pub mod trace;
 
 pub use errors::*;
 pub use repository::Repository;
-pub use store::Store;
+pub use store::ObjectStore;
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};

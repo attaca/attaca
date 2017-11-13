@@ -22,7 +22,7 @@ use marshal::{ObjectHash, Marshaller, Hashed, Object, SubtreeEntry, CommitObject
               BackedTree, TreeOp};
 use repository::Repository;
 use split::SliceChunker;
-use store::Store;
+use store::ObjectStore;
 use trace::Trace;
 
 
@@ -31,7 +31,7 @@ use trace::Trace;
 ///
 /// `Context` may optionally be supplied with a type `T` implementing `Trace`. This "trace object"
 /// is useful for doing things like tracking the progress of long-running operations.
-pub struct Context<'a, T: Trace, S: Store> {
+pub struct Context<'a, T: Trace, S: ObjectStore> {
     repository: &'a mut Repository,
 
     trace: T,
@@ -47,7 +47,7 @@ pub struct Context<'a, T: Trace, S: Store> {
 }
 
 
-impl<'a, T: Trace, S: Store> Deref for Context<'a, T, S> {
+impl<'a, T: Trace, S: ObjectStore> Deref for Context<'a, T, S> {
     type Target = Repository;
 
     fn deref(&self) -> &Self::Target {
@@ -56,14 +56,14 @@ impl<'a, T: Trace, S: Store> Deref for Context<'a, T, S> {
 }
 
 
-impl<'a, T: Trace, S: Store> DerefMut for Context<'a, T, S> {
+impl<'a, T: Trace, S: ObjectStore> DerefMut for Context<'a, T, S> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut *self.repository
     }
 }
 
 
-impl<'a, T: Trace + fmt::Debug, S: Store + fmt::Debug> fmt::Debug for Context<'a, T, S> {
+impl<'a, T: Trace + fmt::Debug, S: ObjectStore + fmt::Debug> fmt::Debug for Context<'a, T, S> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("Context")
             .field("repository", &self.repository)
@@ -76,7 +76,7 @@ impl<'a, T: Trace + fmt::Debug, S: Store + fmt::Debug> fmt::Debug for Context<'a
 }
 
 
-impl<'a, T: Trace, S: Store> Context<'a, T, S> {
+impl<'a, T: Trace, S: ObjectStore> Context<'a, T, S> {
     /// Create a context from a loaded repository, with a supplied trace object.
     pub fn new(
         repository: &'a mut Repository,

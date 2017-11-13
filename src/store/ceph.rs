@@ -15,7 +15,7 @@ use catalog::Catalog;
 use errors::*;
 use marshal::{Hashed, ObjectHash, Object};
 use repository::RemoteCfg;
-use store::{Store, Local};
+use store::{ObjectStore, Local};
 
 
 /// The type of a remote repository.
@@ -170,7 +170,7 @@ impl Ceph {
 }
 
 
-impl Store for Ceph {
+impl ObjectStore for Ceph {
     type Read = Box<Future<Item = Object, Error = Error> + Send>;
     type Write = Box<Future<Item = bool, Error = Error> + Send>;
 

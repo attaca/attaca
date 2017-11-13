@@ -21,7 +21,7 @@ use catalog::{Catalog, CatalogLock};
 use errors::*;
 use marshal::{Hashed, ObjectHash, Object};
 use repository::Paths;
-use store::Store;
+use store::ObjectStore;
 
 
 pub struct LocalBufferFactory {
@@ -96,7 +96,7 @@ impl DerefMut for LocalBuffer {
 
 
 /// The type of a local object store.
-// TODO: Store `Weak` references to `Mmap`s in `Local` so that we cut down on the number of file
+// TODO: ObjectStore `Weak` references to `Mmap`s in `Local` so that we cut down on the number of file
 // descriptors that our process owns.
 #[derive(Debug, Clone)]
 pub struct Local {
@@ -266,7 +266,7 @@ impl Local {
 }
 
 
-impl Store for Local {
+impl ObjectStore for Local {
     type Read = Box<Future<Item = Object, Error = Error> + Send>;
     type Write = Box<Future<Item = bool, Error = Error> + Send>;
 
