@@ -12,6 +12,14 @@ use errors::Result;
 use marshal::ObjectHash;
 
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ShallowObject {
+    Data(ObjectHash, u64),
+    Subtree(ObjectHash),
+    Commit(ObjectHash),
+}
+
+
 /// The marshaled, deserialized representation of a "small" object (composed of a single chunk.)
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct RawSmallObject<'a> {
@@ -71,10 +79,27 @@ impl LargeObject {
 }
 
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SubtreeEntry {
+    File(ObjectHash, u64),
+    Subtree(ObjectHash),
+}
+
+
+impl SubtreeEntry {
+    pub fn hash(&self) -> ObjectHash {
+        match *self {
+            SubtreeEntry::File(hash, _) => hash,
+            SubtreeEntry::Subtree(hash) => hash,
+        }
+    }
+}
+
+
 /// The marshaled, deserialized representation of a subtree.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SubtreeObject {
-    pub entries: BTreeMap<OsString, ObjectHash>,
+    pub entries: BTreeMap<OsString, SubtreeEntry>,
 }
 
 

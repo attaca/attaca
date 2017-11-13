@@ -5,7 +5,7 @@ use clap::{App, SubCommand, Arg, ArgMatches};
 use futures::prelude::*;
 use futures::stream;
 
-use attaca::marshal::{self, Object, DataObject};
+use attaca::marshal::{self, Object, DataObject, SubtreeEntry};
 use attaca::Repository;
 
 use errors::*;
@@ -71,15 +71,23 @@ pub fn go(repository: &mut Repository, matches: &ArgMatches) -> Result<()> {
 
                     match object {
                         Object::Data(DataObject::Large(ref large_object))
-                            if depth <= Depth::Data => {
+                            if depth >= Depth::Data => {
                             hashes.extend(large_object.children.iter().map(|&(_, hash)| hash));
                         }
-                        Object::Subtree(ref subtree_object) if depth <= Depth::Subtree => {
-                            hashes.extend(subtree_object.entries.iter().map(|(_, &hash)| hash));
+                        Object::Subtree(ref subtree_object) if depth >= Depth::Subtree => {
+                            hashes.extend(subtree_object.entries.iter().filter_map(
+                                |(_, entry)| match *entry {
+                                    SubtreeEntry::File(hash, _) if depth >= Depth::Data => Some(
+                                        hash,
+                                    ),
+                                    SubtreeEntry::Subtree(hash) => Some(hash),
+                                    _ => None,
+                                },
+                            ));
                         }
-                        Object::Commit(ref commit_object) if depth <= Depth::Commit => {
+                        Object::Commit(ref commit_object) if depth >= Depth::Commit => {
                             hashes.extend(commit_object.parents.iter().cloned());
-                            if depth <= Depth::Subtree {
+                            if depth >= Depth::Subtree {
                                 hashes.push(commit_object.subtree);
                             }
                         }

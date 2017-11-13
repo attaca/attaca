@@ -14,6 +14,7 @@ extern crate memmap;
 extern crate sha3;
 
 mod catalog;
+mod checkout;
 mod commit;
 mod debug;
 mod errors;
@@ -47,6 +48,7 @@ fn command() -> App<'static, 'static> {
         .about(crate_description!())
         .version(crate_version!())
         .subcommand(catalog::command())
+        .subcommand(checkout::command())
         .subcommand(commit::command())
         .subcommand(debug::command())
         .subcommand(fsck::command())
@@ -65,13 +67,14 @@ fn go(matches: &ArgMatches) -> Result<()> {
     match matches.subcommand() {
         // First match commands which don't need a loaded repository.
         ("init", Some(sub_m)) => init::go(sub_m),
-        
+
         // Other commands need a repository to act on.
         other => {
             let mut repository = Repository::load(env::current_dir()?)?;
 
             let result = match other {
                 ("catalog", Some(sub_m)) => catalog::go(&mut repository, sub_m),
+                ("checkout", Some(sub_m)) => checkout::go(&mut repository, sub_m),
                 ("commit", Some(sub_m)) => commit::go(&mut repository, sub_m),
                 ("debug", Some(sub_m)) => debug::go(&mut repository, sub_m),
                 ("fsck", Some(sub_m)) => fsck::go(&mut repository, sub_m),
@@ -82,9 +85,7 @@ fn go(matches: &ArgMatches) -> Result<()> {
                 ("test", Some(sub_m)) => test::go(&mut repository, sub_m),
                 ("untrack", Some(sub_m)) => untrack::go(&mut repository, sub_m),
                 ("track", Some(sub_m)) => track::go(&mut repository, sub_m),
-                _ => {
-                    Err(Error::from_kind(ErrorKind::InvalidUsage))
-                }
+                _ => Err(Error::from_kind(ErrorKind::InvalidUsage)),
             };
 
             repository.cleanup()?;
@@ -104,7 +105,6 @@ fn run() -> Result<()> {
 
     result
 }
-
 
 pub fn execute<I, T>(iterable: I) -> Result<()>
 where

@@ -18,10 +18,11 @@ use {BATCH_FUTURE_BUFFER_SIZE, WRITE_FUTURE_BUFFER_SIZE};
 use arc_slice::{self, ArcSlice};
 use errors::*;
 use index::Cached;
-use marshal::{ObjectHash, Marshaller, Hashed, Object, CommitObject, Tree, BackedTree, TreeOp};
+use marshal::{ObjectHash, Marshaller, Hashed, Object, SubtreeEntry, CommitObject, Tree,
+              BackedTree, TreeOp};
 use repository::Repository;
 use split::SliceChunker;
-use store::{Store, Empty};
+use store::Store;
 use trace::Trace;
 
 
@@ -193,7 +194,7 @@ impl<'a, T: Trace, S: Store> Context<'a, T, S> {
         stream: U,
     ) -> Box<Future<Item = ObjectHash, Error = Error> + Send>
     where
-        U: Stream<Item = (PathBuf, ObjectHash), Error = Error> + Send + 'static,
+        U: Stream<Item = (PathBuf, SubtreeEntry), Error = Error> + Send + 'static,
     {
         let marshal_tx = self.marshal_tx.clone();
         let marshaller = Marshaller::with_trace(marshal_tx, self.trace.clone());
@@ -228,21 +229,22 @@ impl<'a, T: Trace, S: Store> Context<'a, T, S> {
                 })
                 .map(|(path, entry)| {
                     match entry.get() {
-                        Some(Cached::Hashed(object_hash)) => Either::A(future::ok(TreeOp::Insert(path.to_owned(), object_hash))),
+                        Some(Cached::Hashed(object_hash, size)) => Either::A(future::ok(TreeOp::Insert(path.to_owned(), SubtreeEntry::File(object_hash, size)))),
                         Some(Cached::Removed) => Either::A(future::ok(TreeOp::Remove(path.to_owned()))),
 
                         // If the file has no hash in the cache *or* has an invalid cache entry, we must
                         // split and hash it.
                         Some(Cached::Unhashed) | None => {
                             let path = path.to_owned();
+                            let size = path.symlink_metadata().into_future().map(|m| m.len());
                             let chunk_stream = self.split_file(&path);
                             let index_tx = self.index_tx.clone();
                             let hash_future = self.write_file(chunk_stream);
 
-                            Either::B(hash_future.and_then(|object_hash| {
+                            Either::B(hash_future.join(size.from_err()).and_then(|(object_hash, size)| {
                                 index_tx
                                     .send((path.clone(), object_hash))
-                                    .map(move |_| TreeOp::Insert(path, object_hash))
+                                    .map(move |_| TreeOp::Insert(path, SubtreeEntry::File(object_hash, size)))
                                     .map_err(|_| Error::from_kind(ErrorKind::Absurd))
                             }))
                         }
@@ -257,7 +259,7 @@ impl<'a, T: Trace, S: Store> Context<'a, T, S> {
             async_block! {
                 let (ops, head_opt) = await!(future_ops.join(future_head_opt))?;
                 let tree = match head_opt {
-                    Some(commit) => await!(BackedTree::new(store, commit.subtree).operate(ops))?.into(),
+                    Some(commit) => await!(BackedTree::new(store, SubtreeEntry::Subtree(commit.subtree)).operate(ops))?.into(),
                     None => Tree::from_iter(ops.into_iter().filter_map(TreeOp::into_insert)),
                 };
 

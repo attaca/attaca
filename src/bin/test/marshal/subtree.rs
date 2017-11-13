@@ -5,7 +5,7 @@ use futures::prelude::*;
 use futures::stream::FuturesUnordered;
 
 use attaca::Repository;
-use attaca::marshal::ObjectHash;
+use attaca::marshal::{ObjectHash, SubtreeEntry};
 use attaca::trace::Trace;
 
 use errors::*;
@@ -66,14 +66,15 @@ fn marshal<T: Trace, P: AsRef<Path>>(
             if absolute_path.symlink_metadata()?.is_dir() {
                 stack.push(absolute_path.read_dir()?);
             } else {
+                let size = absolute_path.metadata()?.len();
                 let chunk_stream = context.split_file(&absolute_path);
                 let relative_path = absolute_path
                     .strip_prefix(&context.paths.base)
                     .unwrap()
                     .to_owned();
-                entries.push(context.write_file(chunk_stream).map(
-                    |hash| (relative_path, hash),
-                ));
+                entries.push(context.write_file(chunk_stream).map(move |hash| {
+                    (relative_path, SubtreeEntry::File(hash, size))
+                }));
             }
         }
     }

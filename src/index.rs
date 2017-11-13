@@ -94,7 +94,7 @@ pub enum Hygiene {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Cached {
-    Hashed(ObjectHash),
+    Hashed(ObjectHash, u64),
     Unhashed,
     Removed,
 }
@@ -173,7 +173,7 @@ impl IndexEntry {
             self.hygiene == Hygiene::Clean,
             ErrorKind::ConcurrentlyModifiedEntry
         );
-        self.cached = Cached::Hashed(object_hash);
+        self.cached = Cached::Hashed(object_hash, fresh.size as u64);
 
         Ok(())
     }

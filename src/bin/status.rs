@@ -34,7 +34,7 @@ pub fn go(repository: &mut Repository, _matches: &ArgMatches) -> Result<()> {
 
     for (path, entry) in tracked {
         match entry.cached {
-            Cached::Hashed(hashed) => {
+            Cached::Hashed(hashed, _) => {
                 println!(
                     "\t[{:?}] {} Hashed({})",
                     entry.hygiene,
@@ -51,7 +51,7 @@ pub fn go(repository: &mut Repository, _matches: &ArgMatches) -> Result<()> {
 
     for (path, entry) in added {
         match entry.cached {
-            Cached::Hashed(hashed) => {
+            Cached::Hashed(hashed, _) => {
                 println!(
                     "\t[{:?}] {} Hashed({})",
                     entry.hygiene,

@@ -1,28 +1,24 @@
 use std::borrow::Borrow;
-use std::collections::BTreeMap;
 use std::fmt;
 use std::io::{self, BufWriter, Write};
 use std::mem;
 use std::ops::Deref;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::result::Result as StdResult;
 use std::str::FromStr;
 
 use bincode;
 use digest_writer::{FixedOutput, Writer};
-use futures::future::{self, Either, FutureResult};
 use futures::prelude::*;
-use futures::stream;
 use futures::sync::mpsc::Sender;
 use generic_array::GenericArray;
 use sha3::{Sha3_256, Digest};
 use typenum::consts;
 
 use errors::*;
-use marshal::{RawObject, Object, LargeObject, SubtreeObject, Record, SmallRecord};
+use marshal::{RawObject, Object, LargeObject, Record, SmallRecord};
 use marshal::tree::Tree;
 use split::GenericSplitter;
-use store::Store;
 use trace::Trace;
 
 
@@ -345,7 +341,6 @@ mod test {
     use quickcheck::TestResult;
 
     use arc_slice;
-    use marshal::SmallObject;
 
     quickcheck! {
         #[test]

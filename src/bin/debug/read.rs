@@ -64,7 +64,9 @@ pub fn go(repository: &mut Repository, matches: &ArgMatches) -> Result<()> {
         let pretty = match object {
             Object::Data(ref data_object) => {
                 match *data_object {
-                    DataObject::Small(ref small_object) => Pretty::Small { size: small_object.size() },
+                    DataObject::Small(ref small_object) => Pretty::Small {
+                        size: small_object.size(),
+                    },
                     DataObject::Large(ref large_object) => Pretty::Large {
                         size: large_object.size(),
                         children: large_object.children.len(),

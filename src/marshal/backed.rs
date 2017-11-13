@@ -2,12 +2,11 @@ use std::borrow::Borrow;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
-use futures::future;
 use futures::prelude::*;
 
 use errors::*;
-use marshal::{ObjectHash, Object, Marshaller};
-use marshal::tree::{Tree as RawTree, Blocked, Entry};
+use marshal::{ObjectHash, Object, SubtreeEntry, Marshaller};
+use marshal::tree::{Tree as RawTree, Entry};
 use store::Store;
 use trace::Trace;
 
@@ -54,7 +53,7 @@ where
 
 
 pub enum TreeOp {
-    Insert(PathBuf, ObjectHash),
+    Insert(PathBuf, SubtreeEntry),
     Remove(PathBuf),
 }
 
@@ -67,9 +66,9 @@ impl TreeOp {
         }
     }
 
-    pub fn into_insert(self) -> Option<(PathBuf, ObjectHash)> {
+    pub fn into_insert(self) -> Option<(PathBuf, SubtreeEntry)> {
         match self {
-            TreeOp::Insert(path, object_hash) => Some((path, object_hash)),
+            TreeOp::Insert(path, entry) => Some((path, entry)),
             TreeOp::Remove(_) => None,
         }
     }
@@ -77,7 +76,7 @@ impl TreeOp {
 
 
 impl<S: Store> Tree<S> {
-    pub fn new(store: S, root: ObjectHash) -> Self {
+    pub fn new(store: S, root: SubtreeEntry) -> Self {
         Self {
             tree: RawTree::from(root),
             store,
@@ -91,9 +90,7 @@ impl<S: Store> Tree<S> {
         for op in ops_vec {
             let path_vec = op.path().iter().map(OsStr::to_owned).collect::<Vec<_>>();
             match op {
-                TreeOp::Insert(_, object_hash) => {
-                    self = await!(self.insert(path_vec, object_hash))?
-                }
+                TreeOp::Insert(_, entry) => self = await!(self.insert(path_vec, entry))?,
                 TreeOp::Remove(_) => self = await!(self.remove(path_vec))?,
             }
         }
@@ -105,12 +102,12 @@ impl<S: Store> Tree<S> {
     pub fn insert<I: IntoIterator<Item = OsString> + 'static>(
         self,
         path: I,
-        object_hash: ObjectHash,
+        subtree_entry: SubtreeEntry,
     ) -> Result<Self> {
         let (entry, store) = await!(bounce(self.tree, path, self.store))?;
         let tree = match entry {
-            Entry::Occupied(occupied) => occupied.replace(object_hash).into_inner(),
-            Entry::Vacant(vacant) => vacant.insert(object_hash).into_inner(),
+            Entry::Occupied(occupied) => occupied.replace(subtree_entry).into_inner(),
+            Entry::Vacant(vacant) => vacant.insert(subtree_entry).into_inner(),
         };
 
         Ok(Self { tree, store })

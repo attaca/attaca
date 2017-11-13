@@ -317,9 +317,7 @@ impl Registry {
 
         let catalog_path = match name_opt {
             Some(ref name) => {
-                Cow::Owned(self.paths.remote_catalogs.join(
-                    format!("{}.catalog", name),
-                ))
+                Cow::Owned(self.paths.remote_catalogs.join(format!("{}.catalog", name)))
             }
             None => Cow::Borrowed(&self.paths.local_catalog),
         };

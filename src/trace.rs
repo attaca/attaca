@@ -21,7 +21,7 @@ pub trait Trace: Clone + Send + Sync + Sized + 'static {
     fn on_marshal_process(&self, _object_hash: &ObjectHash) {}
 
     fn on_marshal_subtree(&self, _count: u64, _object_hash: &ObjectHash) {}
-    
+
     fn on_write_object_start(&self, _object_hash: &ObjectHash) {}
 
     fn on_write_object_finish(&self, _object_hash: &ObjectHash, _fresh: bool) {}

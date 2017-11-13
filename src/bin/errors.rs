@@ -26,5 +26,10 @@ error_chain! {
             description("invalid usage"),
             display("invalid usage"),
         }
+
+        NotACommit(hash: ObjectHash) {
+            description("not a commit hash"),
+            display("{} is not a commit hash", hash),
+        }
     }
 }

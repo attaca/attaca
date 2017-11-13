@@ -16,8 +16,8 @@ pub mod tree;
 
 pub use self::marshaller::{hash, serialize_and_hash, serialize_into_and_hash, ObjectHash,
                            Marshaller, Hashed};
-pub use self::object::{RawObject, Object, SmallObject, LargeObject, DataObject, SubtreeObject,
-                       CommitObject};
+pub use self::object::{RawObject, ShallowObject, Object, SmallObject, LargeObject, DataObject,
+                       SubtreeObject, SubtreeEntry, CommitObject};
 pub use self::record::{Record, DataRecord, MetaRecord, SmallRecord};
 pub use self::tree::Tree;
 pub use self::backed::{Tree as BackedTree, TreeOp};

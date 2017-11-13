@@ -36,9 +36,11 @@ impl ProgressInner {
         self.write_progress.set_position(self.written);
 
         if let Some(ref name) = self.remote {
-            self.write_progress.set_message(
-                &format!("to {} ({})", name, self.in_flight),
-            );
+            self.write_progress.set_message(&format!(
+                "to {} ({})",
+                name,
+                self.in_flight
+            ));
         } else {
             self.write_progress.set_message(
                 &format!("to local ({})", self.in_flight),
