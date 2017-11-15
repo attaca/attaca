@@ -18,6 +18,7 @@
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{Read, Write};
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -35,6 +36,16 @@ use index::Index;
 use marshal::ObjectHash;
 use store::{Local, Remote, Ceph};
 use trace::Trace;
+
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SshCfg {
+    /// Socket address to connect to with SSH.
+    pub address: SocketAddr,
+
+    /// SSH username.
+    pub username: String,
+}
 
 
 /// The persistent configuration data for a single pool of a RADOS cluster.
@@ -55,11 +66,25 @@ pub struct CephCfg {
 }
 
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ObjectStoreCfg {
+    Ceph(CephCfg),
+    Ssh(SshCfg),
+}
+
+
 /// The persistent configuration data for an etcd cluster.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EtcdCfg {
     /// A list of cluster members to attempt connections to.
     pub cluster: Vec<String>,
+}
+
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum RefStoreCfg {
+    Etcd(EtcdCfg),
+    Ssh(SshCfg),
 }
 
 
@@ -69,7 +94,7 @@ pub struct RemoteCfg {
     /// The remote object store.
     ///
     /// TODO: Support object stores other than Ceph/RADOS.
-    pub object_store: CephCfg,
+    pub object_store: ObjectStoreCfg,
 
     /// The remote ref store.
     ///
@@ -381,12 +406,18 @@ impl Repository {
                 },
             )?;
             let local = Local::new(&self.paths, &local_catalog, io_pool);
-            Remote::Ceph(Ceph::connect(
-                local,
-                &remote_catalog,
-                remote_config,
-                io_pool,
-            )?)
+
+            match remote_config.object_store {
+                ObjectStoreCfg::Ceph(ref ceph_cfg) => {
+                    Remote::Ceph(Ceph::connect(
+                        local,
+                        &remote_catalog,
+                        ceph_cfg,
+                        io_pool,
+                    )?)
+                }
+                ObjectStoreCfg::Ssh(ref _ssh_cfg) => unimplemented!(),
+            }
         };
 
         Ok(Context::new(self, trace, remote, marshal_pool, io_pool))

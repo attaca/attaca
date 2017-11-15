@@ -41,6 +41,7 @@ extern crate seahash;
 extern crate serde_derive;
 extern crate sequence_trie;
 extern crate sha3;
+extern crate ssh2;
 extern crate stable_deref_trait;
 extern crate toml;
 extern crate typenum;

@@ -14,7 +14,7 @@ use rad::{ConnectionBuilder, Connection};
 use catalog::Catalog;
 use errors::*;
 use marshal::{Hashed, ObjectHash, Object};
-use repository::RemoteCfg;
+use repository::CephCfg;
 use store::{ObjectStore, Local};
 
 
@@ -45,21 +45,21 @@ impl Ceph {
     pub fn connect(
         local: Local,
         remote_catalog: &Catalog,
-        remote_config: &RemoteCfg,
+        remote_config: &CephCfg,
         io_pool: &CpuPool,
     ) -> Result<Self> {
         let conn = {
-            let mut builder = ConnectionBuilder::with_user(&remote_config.object_store.user)
+            let mut builder = ConnectionBuilder::with_user(&remote_config.user)
                 .chain_err(|| ErrorKind::RemoteConnectInit)?;
 
-            if let Some(ref conf_path) = remote_config.object_store.conf_file {
+            if let Some(ref conf_path) = remote_config.conf_file {
                 builder = builder.read_conf_file(conf_path).chain_err(|| {
                     ErrorKind::RemoteConnectReadConf
                 })?;
             }
 
             builder = remote_config
-                .object_store
+                
                 .conf_options
                 .iter()
                 .fold(Ok(builder), |acc, (key, value)| {
@@ -70,7 +70,7 @@ impl Ceph {
             Mutex::new(builder.connect().chain_err(|| ErrorKind::RemoteConnect)?)
         };
 
-        let pool = remote_config.object_store.pool.clone();
+        let pool = remote_config.pool.clone();
 
         Ok(Ceph {
             local,

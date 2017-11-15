@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use clap::{App, SubCommand, Arg, ArgGroup, ArgMatches};
 use itertools::Itertools;
 
-use attaca::repository::{RemoteCfg, CephCfg, EtcdCfg, Repository};
+use attaca::repository::{RemoteCfg, ObjectStoreCfg, CephCfg, EtcdCfg, Repository};
 
 use errors::*;
 
@@ -144,7 +144,7 @@ pub fn go(repository: &mut Repository, matches: &ArgMatches) -> Result<()> {
     repository.config.remotes.insert(
         name,
         RemoteCfg {
-            object_store,
+            object_store: ObjectStoreCfg::Ceph(object_store),
             ref_store: EtcdCfg::default(),
         },
     );
