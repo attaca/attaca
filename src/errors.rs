@@ -180,5 +180,10 @@ error_chain! {
             description("repository not found")
             display("no repository found in {} or in any parent directory", path.display())
         }
+
+        SshError {
+            description("an error occurred while calling into ssh2")
+            display("an error occurred while calling into ssh2")
+        }
     }
 }
