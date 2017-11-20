@@ -173,7 +173,7 @@ impl<'a, T: Trace, S: ObjectStore> Context<'a, T, S> {
     }
 
     pub fn read_head(&self) -> Box<Future<Item = Option<CommitObject>, Error = Error> + Send> {
-        match self.refs.head() {
+        match self.refs.head_as_hash() {
             Some(commit_hash) => Box::new(self.read_commit(commit_hash).map(Some)),
             None => Box::new(future::ok(None)),
         }

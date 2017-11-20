@@ -49,7 +49,7 @@ pub fn go(repository: &mut Repository, matches: &ArgMatches) -> Result<()> {
         let ctx = repository.local(())?;
 
         let mut errors = Vec::new();
-        let mut hashes = ctx.refs.head().into_iter().collect::<Vec<_>>();
+        let mut hashes = ctx.refs.head_as_hash().into_iter().collect::<Vec<_>>();
         let mut visited = HashSet::new();
 
         while !hashes.is_empty() {

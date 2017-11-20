@@ -50,7 +50,7 @@ pub fn go(repository: &mut Repository, _matches: &ArgMatches) -> Result<()> {
         let ctx = repository.local(())?;
 
         let mut commits = BinaryHeap::new();
-        let mut hashes = ctx.refs.head().into_iter().collect::<Vec<_>>();
+        let mut hashes = ctx.refs.head_as_hash().into_iter().collect::<Vec<_>>();
         let mut visited = HashSet::new();
 
         while !hashes.is_empty() {

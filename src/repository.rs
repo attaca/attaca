@@ -52,6 +52,7 @@ pub struct SshCfg {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CephCfg {
     /// Path to a ceph.conf file.
+    // TODO: Disallow this!
     pub conf_file: Option<PathBuf>,
 
     /// The working RADOS object pool.
@@ -99,7 +100,7 @@ pub struct RemoteCfg {
     /// The remote ref store.
     ///
     /// TODO: Support ref stores other than etcd.
-    pub ref_store: EtcdCfg,
+    pub ref_store: RefStoreCfg,
 }
 
 
@@ -169,6 +170,10 @@ impl Refs {
         }
     }
 
+    pub fn from_bytes<R: Read>(reader: &mut R) -> Result<Self> {
+        bincode::deserialize_from(reader, bincode::Infinite).map_err(Error::from)
+    }
+
     pub fn close(self, paths: &Paths) -> Result<()> {
         let mut refs_bytes = Vec::new();
 
@@ -181,7 +186,7 @@ impl Refs {
             .chain_err(|| ErrorKind::CloseRefs(paths.refs.to_owned()))
     }
 
-    pub fn head(&self) -> Option<ObjectHash> {
+    pub fn head_as_hash(&self) -> Option<ObjectHash> {
         match self.head {
             Head::Detached(hash) => Some(hash),
             Head::LocalRef(ref branch) => self.branches.get(branch).cloned(),
@@ -409,12 +414,7 @@ impl Repository {
 
             match remote_config.object_store {
                 ObjectStoreCfg::Ceph(ref ceph_cfg) => {
-                    Remote::Ceph(Ceph::connect(
-                        local,
-                        &remote_catalog,
-                        ceph_cfg,
-                        io_pool,
-                    )?)
+                    Remote::Ceph(Ceph::connect(local, &remote_catalog, ceph_cfg, io_pool)?)
                 }
                 ObjectStoreCfg::Ssh(ref _ssh_cfg) => unimplemented!(),
             }

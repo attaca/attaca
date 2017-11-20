@@ -15,6 +15,7 @@ extern crate sha3;
 
 mod catalog;
 mod checkout;
+mod clone;
 mod commit;
 mod debug;
 mod errors;
@@ -49,6 +50,7 @@ fn command() -> App<'static, 'static> {
         .version(crate_version!())
         .subcommand(catalog::command())
         .subcommand(checkout::command())
+        .subcommand(clone::command())
         .subcommand(commit::command())
         .subcommand(debug::command())
         .subcommand(fsck::command())
@@ -67,6 +69,7 @@ fn go(matches: &ArgMatches) -> Result<()> {
     match matches.subcommand() {
         // First match commands which don't need a loaded repository.
         ("init", Some(sub_m)) => init::go(sub_m),
+        ("clone", Some(sub_m)) => clone::go(sub_m),
 
         // Other commands need a repository to act on.
         other => {

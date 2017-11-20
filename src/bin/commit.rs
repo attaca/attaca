@@ -67,7 +67,7 @@ pub fn go(repository: &mut Repository, matches: &ArgMatches) -> Result<()> {
     let commit_hash = {
         let ctx = repository.local(Progress::new(None))?;
 
-        let head_hash = ctx.refs.head();
+        let head_hash = ctx.refs.head_as_hash();
         // Merges are unimplemented. So, the only possible parent is the head.
         let commit_hash = ctx.write_commit(
             include.as_ref(),
