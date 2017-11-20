@@ -2,11 +2,30 @@ use futures::future::{self, FutureResult};
 
 use errors::*;
 use marshal::{Object, ObjectHash, Hashed};
-use store::ObjectStore;
+use store::{RefStore, ObjectStore};
 
 
 #[derive(Debug, Clone, Copy)]
 pub struct Empty;
+
+
+impl RefStore for Empty {
+    type CompareAndSwap = FutureResult<ObjectHash, Error>;
+    type Get = FutureResult<ObjectHash, Error>;
+
+    fn compare_and_swap_branch(
+        &self,
+        _branch: String,
+        _prev_hash: ObjectHash,
+        _new_hash: ObjectHash,
+    ) -> Self::CompareAndSwap {
+        future::err(Error::from_kind(ErrorKind::EmptyStore))
+    }
+
+    fn get_branch(&self, _branch: String) -> Self::Get {
+        future::err(Error::from_kind(ErrorKind::EmptyStore))
+    }
+}
 
 
 impl ObjectStore for Empty {

@@ -2,10 +2,12 @@ use futures::prelude::*;
 
 use errors::*;
 use marshal::{ObjectHash, Hashed, Object};
+use repository::RemoteCfg;
 
 mod ceph;
 mod empty;
 mod local;
+mod ssh;
 
 pub use self::ceph::Ceph;
 pub use self::empty::Empty;
@@ -16,8 +18,8 @@ pub trait RefStore: Send + Sync + Clone + 'static {
     type CompareAndSwap: Future<Item = ObjectHash, Error = Error> + Send;
     type Get: Future<Item = ObjectHash, Error = Error> + Send;
 
-    fn compare_and_swap(&self, branch: String, prev_hash: ObjectHash, new_hash: ObjectHash) -> Self::CompareAndSwap;
-    fn get(&self, branch: String) -> Self::Get;
+    fn compare_and_swap_branch(&self, branch: String, prev_hash: ObjectHash, new_hash: ObjectHash) -> Self::CompareAndSwap;
+    fn get_branch(&self, branch: String) -> Self::Get;
 }
 
 
@@ -27,6 +29,41 @@ pub trait ObjectStore: Send + Sync + Clone + 'static {
 
     fn read_object(&self, object_hash: ObjectHash) -> Self::Read;
     fn write_object(&self, hashed: Hashed) -> Self::Write;
+}
+
+
+#[derive(Debug, Clone)]
+pub struct Bicameral<R: RefStore, O: ObjectStore> {
+    ref_store: R,
+    obj_store: O,
+}
+
+
+impl<R: RefStore, O: ObjectStore> RefStore for Bicameral<R, O> {
+    type CompareAndSwap = R::CompareAndSwap;
+    type Get = R::Get;
+
+    fn compare_and_swap_branch(&self, branch: String, prev_hash: ObjectHash, new_hash: ObjectHash) -> Self::CompareAndSwap {
+        self.ref_store.compare_and_swap_branch(branch, prev_hash, new_hash)
+    }
+
+    fn get_branch(&self, branch: String) -> Self::Get {
+        self.ref_store.get_branch(branch)
+    }
+}
+
+
+impl<R: RefStore, O: ObjectStore> ObjectStore for Bicameral<R, O> {
+    type Read = O::Read;
+    type Write = O::Write;
+
+    fn read_object(&self, object_hash: ObjectHash) -> Self::Read {
+        self.obj_store.read_object(object_hash)
+    }
+
+    fn write_object(&self, hashed: Hashed) -> Self::Write {
+        self.obj_store.write_object(hashed)
+    }
 }
 
 
