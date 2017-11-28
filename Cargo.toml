@@ -4,74 +4,13 @@ description = "A resilient, distributed version control system based on Git and 
 name = "attaca"
 version = "0.1.0"
 
-[[bin]]
-doc = false
-name = "attaca"
-path = "src/bin/main.rs"
-required-features = ["binaries"]
-
 [dependencies]
-bincode = "0.8.0"
-digest = "0.6.2"
-digest-writer = "0.2.0"
-error-chain = "0.11.0"
-futures = "0.1.16"
-futures-await = "0.1.0"
-futures-bufio = "0.2.0"
-futures-cpupool = "0.1.6"
-globset = "0.2.0"
-histogram = "0.6.7"
-itertools = "0.6.3"
-lazy_static = "0.2.8"
-libc = "0.2.29"
-memmap = "0.5.2"
-quickcheck = "0.4.1"
-rad = "0.5.0"
-seahash = "3.0.5"
-serde = "1.0.11"
-serde_derive = "1.0.11"
-sha3 = "0.6.0"
-slog = "2.0.6"
-ssh2 = "0.3.2"
-stable_deref_trait = "1.0.0"
-toml = "0.4.4"
-typenum = "1.9.0"
+clap = "2.28.0"
+failure = "0.1.0"
+failure_derive = "0.1.1"
 
-[dependencies.chrono]
-features = ["serde"]
-version = "0.4.0"
-
-[dependencies.clap]
-optional = true
-version = "2.26.0"
-
-[dependencies.generic-array]
-features = ["serde"]
-version = "0.8.2"
-
-[dependencies.indicatif]
-git = "https://github.com/sdleffler/indicatif"
-optional = false
-
-[dependencies.owning_ref]
-git = "https://github.com/sdleffler/owning-ref-rs"
-
-[dependencies.qp-trie]
-features = ["serde"]
-version = "0.7.1"
-
-[dependencies.sequence_trie]
-git = "https://github.com/sdleffler/rust_sequence_trie"
-
-[dev-dependencies]
-rand = "0.3.17"
-
-[features]
-binaries = ["clap"]
-default = ["dev"]
-dev = ["binaries"]
-max_level_trace = ["slog/max_level_trace"]
-
-[lib]
-name = "attaca"
-path = "src/lib.rs"
+[workspace]
+members = [
+    "attaca-core",
+    "attaca-api",
+]

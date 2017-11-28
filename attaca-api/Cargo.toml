@@ -1,0 +1,11 @@
+[package]
+authors = ["Sean Leffler <sean@errno.com>"]
+name = "attaca-api"
+version = "0.1.0"
+
+[dependencies]
+failure = "0.1.0"
+futures-await = "0.1.0"
+
+[dependencies.attaca-core]
+path = "../attaca-core"

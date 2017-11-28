@@ -1,3 +1,5 @@
 /target/
+/attaca-core/target/
+/attaca-api/target/
 **/*.rs.bk
 **/.*.swp
