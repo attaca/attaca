@@ -1,18 +1,21 @@
-struct PadAdapter<'a, 'b: 'a> {
+use std::fmt;
+
+
+pub struct Indenter<'a, 'b: 'a> {
     fmt: &'a mut fmt::Formatter<'b>,
     on_newline: bool,
 }
 
-impl<'a, 'b: 'a> PadAdapter<'a, 'b> {
-    fn new(fmt: &'a mut fmt::Formatter<'b>) -> PadAdapter<'a, 'b> {
-        PadAdapter {
+impl<'a, 'b: 'a> Indenter<'a, 'b> {
+    pub fn new(fmt: &'a mut fmt::Formatter<'b>) -> Indenter<'a, 'b> {
+        Indenter {
             fmt,
             on_newline: false,
         }
     }
 }
 
-impl<'a, 'b: 'a> fmt::Write for PadAdapter<'a, 'b> {
+impl<'a, 'b: 'a> fmt::Write for Indenter<'a, 'b> {
     fn write_str(&mut self, mut s: &str) -> fmt::Result {
         while !s.is_empty() {
             if self.on_newline {

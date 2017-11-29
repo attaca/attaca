@@ -5,7 +5,9 @@ version = "0.1.0"
 
 [dependencies]
 failure = "0.1.0"
+failure_derive = "0.1.1"
 futures-await = "0.1.0"
+globset = "0.2.1"
 
 [dependencies.attaca-core]
 path = "../attaca-core"

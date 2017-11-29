@@ -31,7 +31,9 @@ version = "0.1.0"
 dependencies = [
  "attaca-core 0.1.0",
  "failure 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "failure_derive 0.1.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "futures-await 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "globset 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]

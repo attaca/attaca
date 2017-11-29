@@ -1,15 +1,18 @@
-use std::fmt;
+use std::collections::HashSet;
+use std::fmt::{self, Write};
 use std::iter;
 
 use failure::Error;
 use futures::prelude::*;
-use futures::stream::FuturesUnordered;
+use futures::stream::{self, FuturesUnordered};
 
 use attaca::arc_slice::ArcSlice;
-use attaca::object::{DataObject, Object};
+use attaca::hasher;
+use attaca::object::{DataObject, Object, SubtreeEntry};
 use attaca::object_hash::ObjectHash;
 use attaca::repository::Repository;
 
+use utils::Indenter;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum FsckDepth {
@@ -45,22 +48,110 @@ pub struct FsckError {
 }
 
 
-#[derive(Debug, Fail)]
+impl fmt::Display for FsckError {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        writeln!(
+            fmt,
+            "failed to validate object with hash {}, due to mismatches:",
+            self.root_hash
+        )?;
+
+        let mut writer = Indenter::new(fmt);
+        for mismatch in &self.mismatches {
+            writeln!(
+                writer,
+                "hash {} resolved to an object with hash {}",
+                mismatch.expected_hash,
+                mismatch.actual_hash
+            )?;
+        }
+
+        Ok(())
+    }
+}
+
+
+#[derive(Debug)]
 pub struct FsckMismatch {
     expected_hash: ObjectHash,
     actual_hash: ObjectHash,
 }
 
 
-pub fn fsck<R: Repository>(root_hash: ObjectHash, options: FsckOptions) -> Result<(), Error> {
+pub fn fsck<R: Repository>(
+    root_hash: ObjectHash,
+    repository: &R,
+    options: FsckOptions,
+) -> Result<(), Error> {
     let depth = options.depth;
 
-    let errors = {
+    let mut mismatches = Vec::new();
+    let mut hashes = vec![root_hash];
+    let mut visited = HashSet::new();
 
-    };
+    while !hashes.is_empty() {
+        let object_stream = {
+            let next_hashes = hashes.drain(..).filter(|&hash| visited.insert(hash));
+            stream::futures_unordered(next_hashes.map(|hash| {
+                repository
+                    .read_object(hash)
+                    .map(move |object| (hash, object.unwrap()))
+            }))
+        };
+
+        object_stream
+            .for_each(|(hash, object)| {
+                let real_hash = hasher::hash(&object);
+
+                if hash != real_hash {
+                    mismatches.push(FsckMismatch {
+                        expected_hash: hash,
+                        actual_hash: real_hash,
+                    });
+                } else {
+                    match object {
+                        Object::Data(DataObject::Large(ref large_object))
+                            if depth >= FsckDepth::Data =>
+                        {
+                            hashes.extend(large_object.children.iter().map(|&(_, hash)| hash));
+                        }
+                        Object::Subtree(ref subtree_object) if depth >= FsckDepth::Subtree => {
+                            hashes.extend(subtree_object.entries.iter().filter_map(
+                                |(_, entry)| match *entry {
+                                    SubtreeEntry::File(hash, _) if depth >= FsckDepth::Data => {
+                                        Some(hash)
+                                    }
+                                    SubtreeEntry::Subtree(hash) => Some(hash),
+                                    _ => None,
+                                },
+                            ));
+                        }
+                        Object::Commit(commit_object) => {
+                            hashes.extend(commit_object.parents);
+                            if depth >= FsckDepth::Subtree {
+                                hashes.push(commit_object.subtree);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+
+                Ok(())
+            })
+            .wait()?;
+    }
+
+    if mismatches.len() > 0 {
+        Err(Error::from(FsckError {
+            root_hash,
+            mismatches,
+        }))
+    } else {
+        Ok(())
+    }
 }
 
-pub fn deep_copy<B, S, T>(object_hash: ObjectHash, source: &S, target: &T) -> Result<(), Error>
+pub fn copy<B, S, T>(object_hash: ObjectHash, source: &S, target: &T) -> Result<(), Error>
 where
     B: AsRef<str>,
     S: Repository,
