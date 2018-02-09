@@ -1,6 +1,17 @@
 [package]
+authors = ["Sean Leffler <sean@errno.com>"]
 name = "attaca-leveldb"
 version = "0.1.0"
-authors = ["Sean Leffler <sean@errno.com>"]
 
 [dependencies]
+chashmap = "2.2.0"
+db-key = "0.0.5"
+failure = "0.1.1"
+futures-await = "0.1.0"
+leb128 = "0.2.2"
+leveldb = "0.8.4"
+owning_ref = "0.3.3"
+parking_lot = "0.5.3"
+
+[dependencies.attaca]
+path = ".."
