@@ -1,298 +1,221 @@
-//! # `split` - split extremely large files into consistently-sized deterministic chunks.
-//!
-//! Key functionality of this module includes:
-//!
-//! * Splitting large files into chunks, via memory-mapped files.
-//! * Splitting slices of bytes into chunks, for use with lazily-downloaded files.
-//!
-//! The main functions of this module are `arc_slice::chunk` and `arc_slice::chunk_with_trace`.
+use std::{mem, io::{Read, Write}, ops::Range};
 
+use failure::Error;
 
-use std::cmp;
-use std::hash::{Hash, Hasher};
-use std::marker::PhantomData;
-use std::mem;
-use std::ops::Deref;
+#[derive(Debug, Clone, Copy)]
+pub struct Parameters {
+    pub stride: usize,
+    pub strides_per_window: usize,
 
-use generic_array::ArrayLength;
-use seahash::SeaHasher;
-use typenum::Unsigned;
-
-use arc_slice::{self, ArcSlice};
-
-
-pub struct GenericSplitter<Win, Min, Mod, Cst, T, F, H, I, S>
-where
-    Win: ArrayLength<u8>,
-    Min: Unsigned,
-    Mod: Unsigned,
-    Cst: Unsigned,
-    F: Fn(T) -> (H, I),
-    H: Deref<Target = [u8]>,
-    S: Iterator<Item = T>,
-{
-    acc: u64,
-    buf: Vec<u8>,
-    group: Vec<I>,
-    hash: F,
-    iterator: Option<S>,
-    _consts: PhantomData<(Win, Min, Mod, Cst)>,
+    pub split_marker: u64,
+    pub log2_modulus: u32,
 }
 
+impl Default for Parameters {
+    fn default() -> Self {
+        Self {
+            stride: 1,
+            strides_per_window: 8192,
 
-impl<Win, Min, Mod, Cst, T, F, H, I, S> GenericSplitter<Win, Min, Mod, Cst, T, F, H, I, S>
-where
-    Win: ArrayLength<u8>,
-    Min: Unsigned,
-    Mod: Unsigned,
-    Cst: Unsigned,
-    F: Fn(T) -> (H, I),
-    H: Deref<Target = [u8]>,
-    S: Iterator<Item = T>,
-{
-    pub fn new(stream: S, hash: F) -> Self {
-        GenericSplitter {
-            acc: 0,
-            buf: Vec::new(),
-            group: Vec::new(),
-            hash,
-            iterator: Some(stream),
-            _consts: PhantomData,
+            split_marker: 1,
+            log2_modulus: 14,
         }
     }
 }
 
+struct State<R: Read> {
+    parameters: Parameters,
+    buffer: Box<[u8]>,
+    buffer_idx: usize,
+    source: R,
 
-impl<Win, Min, Mod, Cst, T, F, H, I, S> Iterator
-    for GenericSplitter<Win, Min, Mod, Cst, T, F, H, I, S>
-where
-    Win: ArrayLength<u8>,
-    Min: Unsigned,
-    Mod: Unsigned,
-    Cst: Unsigned,
-    F: Fn(T) -> (H, I),
-    H: Deref<Target = [u8]>,
-    S: Iterator<Item = T>,
-{
-    type Item = (Vec<u8>, Vec<I>);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            match self.iterator.as_mut().map(Iterator::next) {
-                Some(Some(input)) => {
-                    let (hashed, item) = (self.hash)(input);
-                    let buf_len = self.buf.len();
-                    self.buf.extend_from_slice(&*hashed);
-                    self.group.push(item);
-
-                    for (i, &b) in (buf_len..).zip(&self.buf[buf_len..]) {
-                        self.acc = self.acc.wrapping_add(b as u64);
-
-                        if i >= Win::to_usize() {
-                            self.acc = self.acc.wrapping_sub(self.buf[i - Win::to_usize()] as u64);
-                        }
-                    }
-
-                    self.acc &= (1 << Mod::to_u32()) - 1;
-
-                    if self.buf.len() >= Win::to_usize() {
-                        let new_buf_len = self.buf.len();
-                        self.buf.drain(..new_buf_len - Win::to_usize());
-                    }
-
-                    if self.group.len() >= Min::to_usize() && self.acc == Cst::to_u64() {
-                        let split_zone = mem::replace(&mut self.buf, Vec::new());
-                        let group = mem::replace(&mut self.group, Vec::new());
-
-                        self.acc = 0;
-
-                        return Some((split_zone, group));
-                    }
-                }
-
-                Some(None) => {
-                    let split_zone = mem::replace(&mut self.buf, Vec::new());
-                    let group = mem::replace(&mut self.group, Vec::new());
-
-                    mem::drop(self.iterator.take());
-
-                    return Some((split_zone, group));
-                }
-
-                None => return None,
-            }
-        }
-    }
+    // Total strides read so far.
+    total: usize,
 }
 
-
-/// A "splitter" over a slice, which functions as an iterator producing ~10 kb [citation needed]
-/// chunks.
-pub struct SliceSplitter {
-    slice: ArcSlice,
-}
-
-
-impl SliceSplitter {
-    pub fn new(slice: ArcSlice) -> SliceSplitter {
-        SliceSplitter { slice }
-    }
-}
-
-
-/// The minimum chunk size. Chosen to reduce the number of extremely small (1-4 byte) chunks by
-/// reducing the likelihood of finding chunks which instantly satisfy the chunking criteria (within
-/// only a few bytes - e.g. a `0x01` byte followed by a whole bunch of zeroes, or a whole bunch of
-/// zeroes with a `0x01` byte embedded inside.)
-const SPLIT_MINIMUM: usize = SPLIT_WINDOW;
-
-// 1 << 12 = 4096
-// 1 << 13 = 8192
-// 1 << 14 = 16384
-/// The bitmask of the power-of-two modulus we use to cap the rolling sum.
-const SPLIT_MODULUS_MASK: u16 = (1 << 14) - 1;
-
-/// We sum all the bytes in a window, mask them off, and then check whether or not the result is
-/// equal to the `SPLIT` constant. If it is, this is a chunk split.
-const SPLIT_CONSTANT: u16 = 1;
-
-// 1 << 13 = 8192
-/// The size of the window of bytes to "hash".
-const SPLIT_WINDOW: usize = 1 << 13;
-
-
-impl Iterator for SliceSplitter {
-    type Item = ArcSlice;
-
-    fn next(&mut self) -> Option<ArcSlice> {
-        if self.slice.len() == 0 {
-            return None;
-        }
-
-        let mut acc = 0u16;
-
-        for i in 0..self.slice.len() {
-            if i >= SPLIT_WINDOW {
-                acc = acc.wrapping_sub(self.slice[i - SPLIT_WINDOW] as u16);
-            }
-
-            acc = acc.wrapping_add(self.slice[i] as u16);
-            acc &= SPLIT_MODULUS_MASK;
-
-            if acc == SPLIT_CONSTANT && i >= SPLIT_MINIMUM {
-                let split = self.slice.clone().map(|slice| slice.split_at(i).0);
-                let rest = self.slice.clone().map(|slice| slice.split_at(i).1);
-
-                self.slice = rest;
-
-                return Some(split);
-            }
-        }
-
-        return Some(mem::replace(&mut self.slice, arc_slice::empty()));
-    }
-}
-
-
-/// A ring buffer used to implement the rolling rsync-style checksum.
-pub struct Ring {
-    buf: [u8; CHUNK_WINDOW],
-    loc: usize,
-}
-
-
-impl Ring {
-    fn new() -> Ring {
-        Ring {
-            buf: [0u8; CHUNK_WINDOW],
-            loc: 0,
+impl<R: Read> State<R> {
+    fn new(source: R, parameters: Parameters) -> Self {
+        Self {
+            parameters,
+            buffer: vec![0; parameters.stride * (parameters.strides_per_window + 1)]
+                .into_boxed_slice(),
+            buffer_idx: 0,
+            source,
+            total: 0,
         }
     }
 
-
-    /// Push a new byte into the ring buffer, ignoring the last byte.
-    fn push(&mut self, byte: u8) {
-        self.push_pop(byte);
+    #[inline]
+    fn next_buffer(&mut self) {
+        self.buffer_idx = (self.buffer_idx + 1) % (self.parameters.strides_per_window + 1);
     }
 
+    #[inline]
+    fn fill_buffer(&mut self) -> Result<(&[u8], &[u8]), Error> {
+        let (old, new) = {
+            let stride = self.parameters.stride;
+            let strides_per_window = self.parameters.strides_per_window;
 
-    /// Remove the last byte from the ring buffer, replacing it.
-    fn push_pop(&mut self, byte: u8) -> u8 {
-        let popped = mem::replace(&mut self.buf[self.loc], byte);
-        self.loc = (self.loc + 1) % CHUNK_WINDOW;
-
-        popped
-    }
-}
-
-
-/// "Chunk" a slice, producing ~3 MB chunks.
-pub struct SliceChunker {
-    rest: ArcSlice,
-    splitter: SliceSplitter,
-}
-
-
-impl SliceChunker {
-    pub fn new(slice: ArcSlice) -> SliceChunker {
-        SliceChunker {
-            rest: slice.clone(),
-            splitter: SliceSplitter::new(slice),
-        }
-    }
-}
-
-
-const CHUNK_MINIMUM: usize = 32;
-const CHUNK_MODULUS_MASK: u16 = (1 << 7) - 1;
-const CHUNK_CONSTANT: u16 = 1;
-const CHUNK_WINDOW: usize = 4;
-
-
-fn seahash(slice: &[u8]) -> u8 {
-    let mut hasher = SeaHasher::default();
-    slice.hash(&mut hasher);
-    hasher.finish() as u8
-}
-
-
-impl Iterator for SliceChunker {
-    type Item = ArcSlice;
-
-    fn next(&mut self) -> Option<ArcSlice> {
-        if self.rest.len() == 0 {
-            return None;
-        }
-
-        let mut ring = Ring::new();
-
-        let mut offset = 0;
-        let mut acc = 0u16;
-
-        for (i, slice) in self.splitter.by_ref().enumerate() {
-            let sig = seahash(&slice[slice.len() - cmp::min(SPLIT_WINDOW, slice.len())..]);
-
-            if i >= CHUNK_WINDOW {
-                acc = acc.wrapping_sub(ring.push_pop(sig) as u16);
+            let (new, old) = if self.buffer_idx == strides_per_window {
+                let (old, new) = self.buffer.split_at_mut(strides_per_window * stride);
+                (new, old)
             } else {
-                ring.push(sig);
+                self.buffer[self.buffer_idx * stride..][..(stride * 2)].split_at_mut(stride)
+            };
+
+            (&old[..stride], &mut new[..stride])
+        };
+
+        let mut n = 0;
+        loop {
+            let dn = self.source.read(&mut new[n..])?;
+            if dn == 0 {
+                break;
             }
-
-            acc = acc.wrapping_add(sig as u16);
-            acc &= CHUNK_MODULUS_MASK;
-
-            offset += slice.len();
-
-            if acc == CHUNK_CONSTANT && i >= CHUNK_MINIMUM {
-                let split = self.rest.clone().map(|slice| slice.split_at(offset).0);
-                let rest = self.rest.clone().map(|slice| slice.split_at(offset).1);
-
-                self.rest = rest;
-
-                return Some(split);
-            }
+            n += dn;
         }
 
-        return Some(mem::replace(&mut self.rest, arc_slice::empty()));
+        Ok((old, &new[..n]))
+    }
+
+    /// Write all bytes up to the next split marker into the "sink".
+    fn find<W: Write>(mut self, sink: &mut W) -> Result<(Option<Self>, Range<usize>), Error> {
+        let p = self.parameters;
+
+        let mut chunk_strides = 0; // The number of strides we've read.
+        let mut acc = 0u64;
+
+        loop {
+            let (old, new) = self.fill_buffer()?; // Fill the buffer with new bytes from the source.
+            sink.write_all(new)?; // Write the newly filled buffer into the sink.
+
+            let read_bytes = new.len();
+            if read_bytes < p.stride {
+                let pre_chunk_bytes = self.total * p.stride;
+                let total_bytes = pre_chunk_bytes + chunk_strides * p.stride + read_bytes;
+
+                return Ok((None, pre_chunk_bytes..total_bytes)); // If the buffer *isn't* full, we've hit EOF. Write and finish up.
+            }
+
+            chunk_strides += 1; // At this point, we've read a full stride.
+
+            for &b in new {
+                acc = acc.wrapping_add(b as u64); // Insert new values into the rolling hash.
+            }
+
+            if chunk_strides > p.strides_per_window {
+                // If we've read enough bytes to fill the split window, we may begin removing old bytes
+                // from the rolling hash and checking for splits.
+                for &b in old {
+                    acc = acc.wrapping_sub(b as u64);
+                }
+            }
+
+            // Truncate the accumulator, treating it as modulo some power of two.
+            acc &= (1 << p.log2_modulus) - 1;
+
+            if chunk_strides >= p.strides_per_window && acc == p.split_marker {
+                let pre_chunk_bytes = self.total * p.stride;
+                let post_chunk_bytes = pre_chunk_bytes + chunk_strides * p.stride;
+
+                self.total += chunk_strides;
+
+                return Ok((Some(self), pre_chunk_bytes..post_chunk_bytes));
+            }
+
+            self.next_buffer();
+        }
+    }
+}
+
+/// A hashsplitter over a given bytestream.
+pub struct Splitter<R: Read> {
+    inner: Option<State<R>>,
+}
+
+impl<R: Read> Splitter<R> {
+    /// Create a new splitter with a given byte stream and parameters.
+    pub fn new(reader: R, params: Parameters) -> Self {
+        Self {
+            inner: Some(State::new(reader, params)),
+        }
+    }
+
+    /// Find the next split marker in the byte stream.
+    pub fn find<W: Write>(&mut self, sink: &mut W) -> Result<Option<Range<usize>>, Error> {
+        match self.inner.take() {
+            Some(state) => {
+                let (new_state, split) = state.find(sink)?;
+                self.inner = new_state;
+                Ok(Some(split))
+            }
+            None => Ok(None),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io;
+
+    #[test]
+    fn split_1() {
+        let data = vec![
+            0, 1, 2, 3, 255, 5, 6, 7, 255, 255, 255, 11, 12, 13, 14, 15, 16, 17, 18, 19, 255, 21,
+            22, 23, 24, 25, 26, 255, 28, 29, 30, 31,
+        ];
+        let mut data_slice = data.as_slice();
+        let mut splitter = Splitter::new(
+            &mut data_slice,
+            Parameters {
+                stride: 1,
+                strides_per_window: 1,
+
+                log2_modulus: 8,
+                split_marker: 255,
+            },
+        );
+
+        let mut split = Vec::new();
+        assert_eq!(splitter.find(&mut split).unwrap(), Some(0..5));
+        assert_eq!(splitter.find(&mut split).unwrap(), Some(5..9));
+        assert_eq!(splitter.find(&mut split).unwrap(), Some(9..10));
+        assert_eq!(splitter.find(&mut split).unwrap(), Some(10..11));
+        assert_eq!(splitter.find(&mut split).unwrap(), Some(11..21));
+        assert_eq!(splitter.find(&mut split).unwrap(), Some(21..28));
+        assert_eq!(splitter.find(&mut split).unwrap(), Some(28..32));
+        assert_eq!(splitter.find(&mut split).unwrap(), None);
+
+        assert_eq!(data, split);
+    }
+
+    #[test]
+    fn split_2() {
+        let data = vec![
+            0, 1, 2, 128, 127, 5, 6, 7, 248, 127, 128, 11, 12, 13, 14, 15, 16, 17, 18, 19, 236, 21,
+            22, 23, 24, 25, 26, 255, 28, 29, 30, 31,
+        ];
+        let mut data_slice = data.as_slice();
+        let mut splitter = Splitter::new(
+            &mut data_slice,
+            Parameters {
+                stride: 1,
+                strides_per_window: 2,
+
+                log2_modulus: 8,
+                split_marker: 255,
+            },
+        );
+
+        let mut split = Vec::new();
+        assert_eq!(splitter.find(&mut split).unwrap(), Some(0..5));
+        assert_eq!(splitter.find(&mut split).unwrap(), Some(5..9));
+        assert_eq!(splitter.find(&mut split).unwrap(), Some(9..11));
+        assert_eq!(splitter.find(&mut split).unwrap(), Some(11..21));
+        assert_eq!(splitter.find(&mut split).unwrap(), Some(21..32));
+        assert_eq!(splitter.find(&mut split).unwrap(), None);
+
+        assert_eq!(data, split);
     }
 }

@@ -4,36 +4,41 @@ description = "A resilient, distributed version control system based on Git and 
 name = "attaca"
 version = "0.1.0"
 
-[[bin]]
-doc = false
-name = "attaca"
-path = "src/bin/main.rs"
-required-features = ["binaries"]
-
 [dependencies]
+atom = "0.3.4"
 bincode = "0.8.0"
-digest = "0.6.2"
+chashmap = "2.2.0"
+copy_arena = "0.1.1"
+digest = "0.7.2"
 digest-writer = "0.2.0"
 error-chain = "0.11.0"
+etcd = "0.8.0"
+failure = "0.1.1"
 futures = "0.1.16"
 futures-await = "0.1.0"
 futures-bufio = "0.2.0"
 futures-cpupool = "0.1.6"
 globset = "0.2.0"
-histogram = "0.6.7"
+hex = "0.3.1"
+histogram = "0.6.8"
+hyper = "0.11.18"
 itertools = "0.6.3"
 lazy_static = "0.2.8"
+leb128 = "0.2.2"
 libc = "0.2.29"
+memchr = "2.0.1"
 memmap = "0.5.2"
-quickcheck = "0.4.1"
+nom = "3.2.1"
 rad = "0.5.0"
 seahash = "3.0.5"
 serde = "1.0.11"
 serde_derive = "1.0.11"
-sha3 = "0.6.0"
-slog = "2.0.6"
+sha3 = "0.7.2"
+smallvec = "0.6.0"
 ssh2 = "0.3.2"
 stable_deref_trait = "1.0.0"
+tokio-core = "0.1.12"
+tokio-io = "0.1.4"
 toml = "0.4.4"
 typenum = "1.9.0"
 
@@ -43,7 +48,7 @@ version = "0.4.0"
 
 [dependencies.clap]
 optional = true
-version = "2.26.0"
+version = "~2.29.0"
 
 [dependencies.generic-array]
 features = ["serde"]
@@ -64,14 +69,12 @@ version = "0.7.1"
 git = "https://github.com/sdleffler/rust_sequence_trie"
 
 [dev-dependencies]
+quickcheck = "0.4.1"
 rand = "0.3.17"
-
-[features]
-binaries = ["clap"]
-default = ["dev"]
-dev = ["binaries"]
-max_level_trace = ["slog/max_level_trace"]
 
 [lib]
 name = "attaca"
 path = "src/lib.rs"
+
+[workspace]
+members = ["attaca-client", "attaca-rados", "attaca-leveldb"]
