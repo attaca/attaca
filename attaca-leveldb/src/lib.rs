@@ -11,8 +11,8 @@ extern crate leveldb;
 extern crate owning_ref;
 extern crate parking_lot;
 
-use std::{fmt, cell::RefCell, cmp::Ordering, hash::{Hash, Hasher},
-          io::{self, Cursor, Read, Write}, sync::{Arc, Weak}};
+use std::{fmt, str, cell::RefCell, cmp::Ordering, hash::{Hash, Hasher},
+          io::{self, Cursor, Read, Write}, sync::{self, Arc, Weak}};
 
 use attaca::{canonical, digest::{Digest, DigestWriter, Sha3Digest},
              store::{Handle, HandleBuilder, HandleDigest, Store}};
@@ -23,6 +23,19 @@ use futures::{future::{self, FutureResult}, prelude::*};
 use leveldb::{database::Database, kv::KV, options::{ReadOptions, WriteOptions}};
 use owning_ref::ArcRef;
 use parking_lot::Mutex;
+
+#[derive(Debug, Clone)]
+struct StringKey(String);
+
+impl Key for StringKey {
+    fn from_u8(key: &[u8]) -> Self {
+        StringKey(String::from(str::from_utf8(key).unwrap()))
+    }
+
+    fn as_slice<T, F: Fn(&[u8]) -> T>(&self, f: F) -> T {
+        f(self.0.as_bytes())
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 struct DigestKey<D: Digest>(D);
@@ -56,18 +69,60 @@ impl Store for LevelStore {
     }
 
     type FutureLoadBranch = FutureResult<Option<Self::Handle>, Error>;
-    fn load_branch(&self, _branch: String) -> Self::FutureLoadBranch {
-        unimplemented!();
+    fn load_branch(&self, branch: String) -> Self::FutureLoadBranch {
+        let db = self.inner.branch_db.lock().unwrap();
+
+        match db.get(ReadOptions::new(), StringKey(branch)) {
+            Ok(opt) => future::ok(opt.map(|bytes| {
+                Self::handle_from_digest(&self.inner, &Sha3Digest::from_bytes(&bytes))
+            })),
+            Err(err) => future::err(err.into()),
+        }
     }
 
     type FutureSwapBranch = FutureResult<(), Error>;
     fn swap_branch(
         &self,
-        _branch: String,
-        _previous: Option<Self::Handle>,
-        _new: Self::Handle,
+        branch: String,
+        previous: Option<Self::Handle>,
+        new: Self::Handle,
     ) -> Self::FutureSwapBranch {
-        unimplemented!();
+        let db = self.inner.branch_db.lock().unwrap();
+
+        match db.get(ReadOptions::new(), StringKey(branch.clone())) {
+            Ok(Some(bytes)) => {
+                let previous_handle = match previous {
+                    Some(ph) => ph,
+                    None => {
+                        return future::err(format_err!(
+                            "Branch compare-and-swap mismatch: expected empty branch, but found nonempty!!"
+                        ))
+                    }
+                };
+
+                let current_digest = Sha3Digest::from_bytes(&bytes);
+                let expected_digest = previous_handle.inner.digest;
+
+                if current_digest != expected_digest {
+                    return future::err(format_err!("Branch compare-and-swap mismatch: current branch digest does not match expected digest!"));
+                }
+            }
+            Ok(None) => {
+                if previous.is_some() {
+                    return future::err(format_err!("Branch compare-and-swap mismatch: expected nonempty branch, but found empty!"));
+                }
+            }
+            Err(err) => return future::err(err.into()),
+        }
+
+        match db.put(
+            WriteOptions::new(),
+            StringKey(branch),
+            new.inner.digest.as_bytes(),
+        ) {
+            Ok(()) => future::ok(()),
+            Err(err) => future::err(err.into()),
+        }
     }
 
     type FutureResolve = FutureResult<Option<Self::Handle>, Error>;
@@ -121,7 +176,8 @@ impl Store for LevelStore {
 }
 
 struct StoreInner {
-    db: Database<DigestKey<Sha3Digest>>,
+    branch_db: sync::Mutex<Database<StringKey>>,
+    object_db: Database<DigestKey<Sha3Digest>>,
 
     handles: CHashMap<Sha3Digest, LevelHandle>,
     objects: CHashMap<Sha3Digest, Arc<Object>>,
@@ -199,7 +255,8 @@ impl LevelStore {
             buf
         };
 
-        this.db.put(WriteOptions::new(), DigestKey(digest), &data)?;
+        this.object_db
+            .put(WriteOptions::new(), DigestKey(digest), &data)?;
         this.objects.insert(digest, arc_obj);
 
         Ok(handle)
@@ -208,7 +265,7 @@ impl LevelStore {
     fn object(this: &Arc<StoreInner>, digest: &Sha3Digest) -> Result<Option<Arc<Object>>, Error> {
         match this.objects.get(&digest).map(|g| (*g).clone()) {
             Some(arc_object) => Ok(Some(arc_object)),
-            None => match this.db.get(ReadOptions::new(), DigestKey(*digest))? {
+            None => match this.object_db.get(ReadOptions::new(), DigestKey(*digest))? {
                 Some(bytes) => {
                     let arc_obj = Arc::new(Object::decode(&mut &bytes[..])?);
                     this.objects.insert(*digest, arc_obj.clone());
