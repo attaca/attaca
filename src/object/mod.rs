@@ -1,12 +1,9 @@
 pub mod decode;
 pub mod encode;
 
-use std::collections::{BTreeMap, HashMap};
-use std::io::{Read, Write};
+use std::collections::BTreeMap;
 
-use failure::Error;
-
-use store::{Handle, HandleBuilder, Store};
+use store::Handle;
 
 #[derive(Debug, Clone)]
 pub enum Object<H: Handle> {

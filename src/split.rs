@@ -1,4 +1,4 @@
-use std::{mem, io::{Read, Write}, ops::Range};
+use std::{io::{Read, Write}, ops::Range};
 
 use failure::Error;
 
@@ -157,7 +157,6 @@ impl<R: Read> Splitter<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io;
 
     #[test]
     fn split_1() {

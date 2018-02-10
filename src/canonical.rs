@@ -4,7 +4,7 @@ use failure::Error;
 use leb128;
 use memchr;
 
-use digest::{Digest, DigestWriter};
+use digest::Digest;
 
 pub fn encode<W: Write, D: Digest>(w: &mut W, blob: &[u8], refs: &[D]) -> Result<(), Error> {
     let hash_name_bytes = D::NAME.as_bytes();
@@ -83,7 +83,7 @@ impl PartialItem {
 
         let (blob_digest_bytes, ref_bytes) = self.digests.split_at(D::SIZE);
         let blob_digest = D::from_bytes(blob_digest_bytes);
-        assert!(ref_bytes.len() % D::SIZE == 0);
+        assert!(ref_bytes.len() % D::SIZE == 0 && ref_bytes.len() / D::SIZE == self.ref_count);
         let refs = ref_bytes.chunks(D::SIZE).map(D::from_bytes).collect();
 
         Ok(Item {

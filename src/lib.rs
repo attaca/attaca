@@ -1,6 +1,6 @@
 //! # `attaca` - distributed, resilient version control with a git-like interface
 
-#![feature(proc_macro, conservative_impl_trait, generators, offset_to, use_nested_groups, nll, fnbox)]
+#![feature(proc_macro, conservative_impl_trait, generators, use_nested_groups, nll)]
 #![recursion_limit = "256"]
 
 #[cfg(not(target_pointer_width = "64"))]
@@ -9,124 +9,58 @@ compile_error!(
 );
 
 #[cfg(test)]
-extern crate histogram;
-
-#[cfg(test)]
 extern crate rand;
 
-#[cfg(test)]
-#[macro_use]
-extern crate quickcheck;
-
-extern crate atom;
-extern crate bincode;
-extern crate chashmap;
 extern crate chrono;
-#[macro_use]
-extern crate error_chain;
 extern crate etcd;
 #[macro_use]
 extern crate failure;
 extern crate futures_await as futures;
-extern crate futures_bufio;
-extern crate futures_cpupool;
-extern crate generic_array;
-extern crate globset;
 extern crate hex;
-extern crate hyper;
-extern crate itertools;
-#[macro_use]
-extern crate lazy_static;
 extern crate leb128;
-extern crate libc;
 extern crate memchr;
-extern crate memmap;
 #[macro_use]
 extern crate nom;
-extern crate owning_ref;
-extern crate qp_trie;
-extern crate rad;
-extern crate seahash;
-extern crate sequence_trie;
-#[macro_use]
-extern crate serde_derive;
 extern crate sha3;
-extern crate smallvec;
-extern crate ssh2;
-extern crate stable_deref_trait;
-extern crate tokio_core;
-extern crate tokio_io;
-extern crate toml;
 extern crate typenum;
 
-// pub mod api;
-pub mod arc_slice;
-pub mod b10;
 pub mod canonical;
 pub mod digest;
-// pub mod catalog;
-// pub mod context;
-// pub mod errors;
-// pub mod index;
-// pub mod marshal;
-pub mod memo;
-pub mod netstring;
 pub mod object;
-// pub mod repository;
 pub mod split;
 pub mod store;
-// pub mod trace;
+pub mod workspace;
 
-// pub use errors::*;
-// pub use repository::Repository;
-// pub use store::ObjectStore;
+use failure::Error;
 
-// use std::collections::HashSet;
-// use std::path::{Path, PathBuf};
-// 
-// /// Controls the size of the MPSC queue between marshal tasks and write tasks.
-// const BATCH_FUTURE_BUFFER_SIZE: usize = 64;
-// 
-// /// Controls the size of buffers over buffered streams created when writing to remotes.
-// const WRITE_FUTURE_BUFFER_SIZE: usize = 64;
-// 
-// lazy_static! {
-//     /// Controls the name of the "hidden" `.attaca` repository metadata directory.
-//     static ref METADATA_PATH: &'static Path = Path::new(".attaca");
-// 
-// 
-//     /// The relative path of the repository config file.
-//     static ref CONFIG_PATH: PathBuf = METADATA_PATH.join("config.toml");
-// 
-// 
-//     /// The relative path of the blob directory within a repository.
-//     static ref BLOBS_PATH: PathBuf = METADATA_PATH.join("blobs");
-// 
-// 
-//     /// The relative path of the remote catalog directory.
-//     static ref REMOTE_CATALOGS_PATH: PathBuf = METADATA_PATH.join("remote-catalogs");
-// 
-// 
-//     /// The location of the local catalog file.
-//     static ref LOCAL_CATALOG_PATH: PathBuf = METADATA_PATH.join("local.catalog");
-// 
-// 
-//     /// The location of the index file.
-//     static ref INDEX_PATH: PathBuf = METADATA_PATH.join("index.bin");
-// 
-// 
-//     /// The location of the HEAD file.
-//     static ref REFS_PATH: PathBuf = METADATA_PATH.join("refs.bin");
-// 
-// 
-//     /// Default paths to ignore.
-//     static ref DEFAULT_IGNORES: HashSet<PathBuf> = {
-//         let mut set = HashSet::new();
-// 
-//         set.insert(METADATA_PATH.to_owned());
-//         set.insert(PathBuf::from(".git"));
-//         set.insert(PathBuf::from("insta-rados")); // HACK HACK HACK!
-// 
-//         set
-//     };
-// }
+pub use store::*;
+pub use workspace::*;
+
+/// Trait for types representing resources which must be "opened" for use from URLs, and/or searched
+/// for locally; e.g. local filesystem workspaces and remote servers/clusters.
+pub trait Open: Sized {
+    /// The URL scheme for this resource.
+    const SCHEME: &'static str;
+
+    /// Attempt to open a connection to an instance of this type at the provided URL. This will
+    /// usually not be called unless the URL scheme matches `Self::SCHEME`; however, it is possible
+    /// that the scheme may not be checked beforehand, so it should not be assumed that it matches.
+    /// In the case of a scheme mismatch, parse error, or other error connecting, an `Error` should
+    /// be returned rather than, say, a panic.
+    fn open(s: &str) -> Result<Self, Error>;
+
+    /// Attempt to discover a local instance without any URL information. In the case that an
+    /// instance is discovered but connecting results in an error, an `Error` should be returned;
+    /// in the case that no instance is discovered, `Ok(None)` should be returned. If multiple
+    /// ambiguous instances are discovered, they should either be resolved in a reasonable,
+    /// type-defined fashion or result in an error (multiple satisfactory instances found.)
+    ///
+    /// For example, for a filesystem-based workspace type, `Open::search` might recursively search
+    /// directories, checking each directory for repository files; if none are found in the current
+    /// directory, the search moves to the parent directory. If no repositories are found after
+    /// searching all the way to the root directory, `Ok(None)` would be returned; if a repository
+    /// is found, but is malformed in some way, `Err(...)` would be returned; if multiple
+    /// repositories are found, then the innermost might be opened (unless the repositories are
+    /// configured in a nested manner, a la Git submodules.)
+    fn search() -> Result<Option<Self>, Error>;
+}

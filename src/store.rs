@@ -1,6 +1,5 @@
-use std::{collections::HashMap, hash::Hash, io::{Read, Write}};
+use std::{hash::Hash, io::{Read, Write}};
 
-use chrono::prelude::*;
 use failure::Error;
 use futures::prelude::*;
 
