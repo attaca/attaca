@@ -12,6 +12,8 @@ leb128 = "0.2.2"
 leveldb = "0.8.4"
 owning_ref = "0.3.3"
 parking_lot = "0.5.3"
+smallvec = "0.6.0"
+url = "1.6.0"
 
 [dependencies.attaca]
 path = ".."

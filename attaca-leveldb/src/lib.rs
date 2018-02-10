@@ -10,43 +10,57 @@ extern crate leb128;
 extern crate leveldb;
 extern crate owning_ref;
 extern crate parking_lot;
+extern crate smallvec;
+extern crate url;
 
 use std::{fmt, str, cell::RefCell, cmp::Ordering, hash::{Hash, Hasher},
-          io::{self, Cursor, Read, Write}, sync::{self, Arc, Weak}};
+          io::{self, Cursor, Read, Write}, sync::{Arc, RwLock, Weak}};
 
-use attaca::{canonical, digest::{Digest, DigestWriter, Sha3Digest},
+use attaca::{canonical, Open, digest::{Digest, DigestWriter, Sha3Digest},
              store::{Handle, HandleBuilder, HandleDigest, Store}};
 use chashmap::CHashMap;
 use db_key::Key;
 use failure::Error;
 use futures::{future::{self, FutureResult}, prelude::*};
-use leveldb::{database::Database, kv::KV, options::{ReadOptions, WriteOptions}};
+use leveldb::{database::Database, kv::KV, options::{Options, ReadOptions, WriteOptions}};
 use owning_ref::ArcRef;
 use parking_lot::Mutex;
+use smallvec::SmallVec;
+use url::Url;
 
-#[derive(Debug, Clone)]
-struct StringKey(String);
+impl Open for LevelStore {
+    const SCHEMES: &'static [&'static str] = &["attaca+leveldb+file"];
 
-impl Key for StringKey {
-    fn from_u8(key: &[u8]) -> Self {
-        StringKey(String::from(str::from_utf8(key).unwrap()))
-    }
+    fn open(url_str: &str) -> Result<Self, Error> {
+        let url = Url::parse(url_str)?;
+        ensure!(
+            Self::SCHEMES.contains(&url.scheme()),
+            "Unsupported URL scheme!"
+        );
+        let path = url.to_file_path()
+            .map_err(|_| format_err!("URL is not a path!"))?;
+        let db = Database::open(&path, Options::new())?;
+        Ok(Self {
+            inner: Arc::new(StoreInner {
+                db: RwLock::new(db),
 
-    fn as_slice<T, F: Fn(&[u8]) -> T>(&self, f: F) -> T {
-        f(self.0.as_bytes())
+                handles: CHashMap::new(),
+                objects: CHashMap::new(),
+            }),
+        })
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-struct DigestKey<D: Digest>(D);
+#[derive(Debug, Clone)]
+struct DbKey(SmallVec<[u8; 32]>);
 
-impl<D: Digest> Key for DigestKey<D> {
+impl Key for DbKey {
     fn from_u8(key: &[u8]) -> Self {
-        DigestKey(D::from_bytes(key))
+        DbKey(SmallVec::from(key))
     }
 
     fn as_slice<T, F: Fn(&[u8]) -> T>(&self, f: F) -> T {
-        f(self.0.as_bytes())
+        f(self.0.as_slice())
     }
 }
 
@@ -70,9 +84,13 @@ impl Store for LevelStore {
 
     type FutureLoadBranch = FutureResult<Option<Self::Handle>, Error>;
     fn load_branch(&self, branch: String) -> Self::FutureLoadBranch {
-        let db = self.inner.branch_db.lock().unwrap();
+        let db_lock = self.inner.db.write().unwrap();
+        let key = branch + " (branch)";
 
-        match db.get(ReadOptions::new(), StringKey(branch)) {
+        match db_lock.get(
+            ReadOptions::new(),
+            DbKey(SmallVec::from_vec(key.into_bytes())),
+        ) {
             Ok(opt) => future::ok(opt.map(|bytes| {
                 Self::handle_from_digest(&self.inner, &Sha3Digest::from_bytes(&bytes))
             })),
@@ -87,9 +105,10 @@ impl Store for LevelStore {
         previous: Option<Self::Handle>,
         new: Self::Handle,
     ) -> Self::FutureSwapBranch {
-        let db = self.inner.branch_db.lock().unwrap();
+        let db_lock = self.inner.db.write().unwrap();
+        let key = branch + " (branch)";
 
-        match db.get(ReadOptions::new(), StringKey(branch.clone())) {
+        match db_lock.get(ReadOptions::new(), DbKey(SmallVec::from(key.as_bytes()))) {
             Ok(Some(bytes)) => {
                 let previous_handle = match previous {
                     Some(ph) => ph,
@@ -115,9 +134,9 @@ impl Store for LevelStore {
             Err(err) => return future::err(err.into()),
         }
 
-        match db.put(
+        match db_lock.put(
             WriteOptions::new(),
-            StringKey(branch),
+            DbKey(SmallVec::from_vec(key.into_bytes())),
             new.inner.digest.as_bytes(),
         ) {
             Ok(()) => future::ok(()),
@@ -176,8 +195,7 @@ impl Store for LevelStore {
 }
 
 struct StoreInner {
-    branch_db: sync::Mutex<Database<StringKey>>,
-    object_db: Database<DigestKey<Sha3Digest>>,
+    db: RwLock<Database<DbKey>>,
 
     handles: CHashMap<Sha3Digest, LevelHandle>,
     objects: CHashMap<Sha3Digest, Arc<Object>>,
@@ -255,8 +273,11 @@ impl LevelStore {
             buf
         };
 
-        this.object_db
-            .put(WriteOptions::new(), DigestKey(digest), &data)?;
+        this.db.read().unwrap().put(
+            WriteOptions::new(),
+            DbKey(SmallVec::from(digest.as_bytes())),
+            &data,
+        )?;
         this.objects.insert(digest, arc_obj);
 
         Ok(handle)
@@ -265,7 +286,11 @@ impl LevelStore {
     fn object(this: &Arc<StoreInner>, digest: &Sha3Digest) -> Result<Option<Arc<Object>>, Error> {
         match this.objects.get(&digest).map(|g| (*g).clone()) {
             Some(arc_object) => Ok(Some(arc_object)),
-            None => match this.object_db.get(ReadOptions::new(), DigestKey(*digest))? {
+            None => match this.db
+                .read()
+                .unwrap()
+                .get(ReadOptions::new(), DbKey(SmallVec::from(digest.as_bytes())))?
+            {
                 Some(bytes) => {
                     let arc_obj = Arc::new(Object::decode(&mut &bytes[..])?);
                     this.objects.insert(*digest, arc_obj.clone());
