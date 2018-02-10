@@ -1,8 +1,9 @@
 use failure::Error;
 
+use Search;
 use store::Store;
 
-pub trait Workspace {
+pub trait Workspace: Search {
     type Backend: Store;
 
     fn head(&self) -> Result<<Self::Backend as Store>::Handle, Error>;

@@ -36,19 +36,33 @@ use failure::Error;
 pub use store::*;
 pub use workspace::*;
 
-/// Trait for types representing resources which must be "opened" for use from URLs, and/or searched
-/// for locally; e.g. local filesystem workspaces and remote servers/clusters.
+/// Trait for types representing resources which must be "opened" for use from URLs; e.g. local
+/// filesystem workspaces and remote servers/clusters.
 pub trait Open: Sized {
-    /// The URL scheme for this resource.
-    const SCHEME: &'static str;
+    /// The valid URL schemes for this resource. `SCHEMES` is presented as a slice rather than a
+    /// single string because one resource might be openable through multiple different URL
+    /// schemes. For example, one might want to connect to a Ceph/RADOS cluster by reading a
+    /// configuration from, say, nodes of an etcd cluster running on the same hardware; or, one
+    /// might want to provide a path to a `ceph.conf` file local to their machine. `SCHEMES` as a
+    /// list of valid schemes allows one to write:
+    ///
+    /// ```
+    /// const SCHEMES: &'static [&'static str] = &["attaca+ceph", "attaca+ceph+local", "attaca+ceph+etcd"];
+    /// ```
+    const SCHEMES: &'static [&'static str];
 
     /// Attempt to open a connection to an instance of this type at the provided URL. This will
-    /// usually not be called unless the URL scheme matches `Self::SCHEME`; however, it is possible
-    /// that the scheme may not be checked beforehand, so it should not be assumed that it matches.
-    /// In the case of a scheme mismatch, parse error, or other error connecting, an `Error` should
-    /// be returned rather than, say, a panic.
+    /// usually not be called unless the URL scheme matches a member of `Self::SCHEMES`; however,
+    /// it is possible that the scheme may not be checked beforehand, so it should not be assumed
+    /// that it matches.  In the case of a scheme mismatch, parse error, or other error connecting,
+    /// an `Error` should be returned rather than, say, a panic.
     fn open(s: &str) -> Result<Self, Error>;
+}
 
+/// Trait for `Open`-able resources which may be discoverable without any URL information; for
+/// example, filesystem workspaces, which can often be discovered by recursively searching
+/// directories.
+pub trait Search: Open {
     /// Attempt to discover a local instance without any URL information. In the case that an
     /// instance is discovered but connecting results in an error, an `Error` should be returned;
     /// in the case that no instance is discovered, `Ok(None)` should be returned. If multiple

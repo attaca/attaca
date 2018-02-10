@@ -3,9 +3,10 @@ use std::{hash::Hash, io::{Read, Write}};
 use failure::Error;
 use futures::prelude::*;
 
+use Open;
 use digest::Digest;
 
-pub trait Store: Clone + Send + Sync + Sized + 'static {
+pub trait Store: Open + Clone + Send + Sync + Sized + 'static {
     type Handle: Handle;
 
     type HandleBuilder: HandleBuilder<Self::Handle>;
