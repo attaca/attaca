@@ -1,0 +1,18 @@
+[package]
+authors = ["Sean Leffler <sean@errno.com>"]
+build = "build.rs"
+name = "subito"
+version = "0.1.0"
+
+[build-dependencies]
+capnpc = "0.8.8"
+
+[dependencies]
+db-key = "0.0.5"
+failure = "0.1.1"
+leveldb = "0.8.4"
+libc = "0.2.36"
+smallvec = "0.6.0"
+
+[dependencies.attaca]
+path = ".."
