@@ -1,10 +1,9 @@
 use std::{collections::BTreeMap, io::Read, str::{self, FromStr}};
 
 use failure::{self, Error};
-use futures::prelude::*;
 use nom::{digit, rest, IResult};
 
-use object::{LargeObject, ObjectKind, SmallObject, TreeObject};
+use object::{Large, ObjectKind, ObjectRef, Small, Tree};
 use store::Handle;
 
 #[cfg_attr(rustfmt, rustfmt_skip)]
@@ -51,12 +50,10 @@ named!(
   )
 );
 
-#[async]
-pub fn small<H: Handle>(handle: H) -> Result<SmallObject, Error> {
-    let (mut content, _) = await!(handle.load())?;
+pub fn small<H: Handle>(mut content: H::Content) -> Result<Small, Error> {
     let mut data = Vec::new();
     content.read_to_end(&mut data)?;
-    Ok(SmallObject { data })
+    Ok(Small { data })
 }
 
 #[cfg_attr(rustfmt, rustfmt_skip)]
@@ -76,14 +73,11 @@ named!(large_entry<(u64, ObjectKind, usize)>,
   )
 );
 
-#[async]
-pub fn large<H: Handle>(handle: H) -> Result<LargeObject<H>, Error> {
-    let (mut content, refs_iter) = await!(handle.load())?;
+pub fn large<H: Handle>(mut content: H::Content, refs_iter: H::Refs) -> Result<Large<H>, Error> {
     let mut data = Vec::new();
     content.read_to_end(&mut data)?;
     let refs = refs_iter.collect::<Vec<_>>();
 
-    #[cfg_attr(rustfmt, rustfmt_skip)]
     let ir: IResult<_, _> = fold_many0!(
         data.as_slice(),
         large_entry,
@@ -93,12 +87,19 @@ pub fn large<H: Handle>(handle: H) -> Result<LargeObject<H>, Error> {
             let reference = refs.get(handle_idx)
                 .cloned()
                 .ok_or_else(|| failure::err_msg("Bad handle index!"))?;
-            acc.push((sz, kind, reference));
+            acc.push((
+                sz,
+                match kind {
+                    ObjectKind::Small => ObjectRef::Small(reference),
+                    ObjectKind::Large => ObjectRef::Large(reference),
+                    other => bail!("Malformed tree: object kind {:?} not supported!", other),
+                },
+            ));
             Ok(acc)
         }
     );
 
-    Ok(LargeObject {
+    Ok(Large {
         children: ir.to_result()??,
     })
 }
@@ -116,9 +117,7 @@ named!(tree_entry<(ObjectKind, usize, &str)>,
   )
 );
 
-#[async]
-pub fn tree<H: Handle>(handle: H) -> Result<TreeObject<H>, Error> {
-    let (mut content, refs_iter) = await!(handle.load())?;
+pub fn tree<H: Handle>(mut content: H::Content, refs_iter: H::Refs) -> Result<Tree<H>, Error> {
     let mut data = Vec::new();
     content.read_to_end(&mut data)?;
     let refs = refs_iter.collect::<Vec<_>>();
@@ -133,12 +132,20 @@ pub fn tree<H: Handle>(handle: H) -> Result<TreeObject<H>, Error> {
             let reference = refs.get(handle_idx)
                 .cloned()
                 .ok_or_else(|| failure::err_msg("Bad handle index!"))?;
-            acc.insert(name.to_owned(), (kind, reference));
+            acc.insert(
+                name.to_owned(),
+                match kind {
+                    ObjectKind::Small => ObjectRef::Small(reference),
+                    ObjectKind::Large => ObjectRef::Large(reference),
+                    ObjectKind::Tree => ObjectRef::Tree(reference),
+                    other => bail!("Malformed tree: object kind {:?} not supported!", other),
+                },
+            );
             Ok(acc)
         }
     );
 
-    Ok(TreeObject {
+    Ok(Tree {
         entries: ir.to_result()??,
     })
 }

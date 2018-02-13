@@ -2,38 +2,36 @@ use std::{collections::HashMap, io::Write};
 
 use failure::Error;
 
-use object::{LargeObject, ObjectKind, SmallObject, TreeObject};
+use object::{Large, ObjectRef, Small, Tree};
 use store::{Handle, HandleBuilder};
 
-pub fn small<H, HB>(builder: &mut HB, object: SmallObject) -> Result<(), Error>
+pub fn small<HB>(builder: &mut HB, object: &Small) -> Result<(), Error>
 where
-    H: Handle,
-    HB: HandleBuilder<H>,
+    HB: HandleBuilder,
 {
     builder.write_all(&object.data)?;
     Ok(())
 }
 
-pub fn large<H, HB>(builder: &mut HB, object: LargeObject<H>) -> Result<(), Error>
+pub fn large<HB>(builder: &mut HB, object: &Large<HB::Handle>) -> Result<(), Error>
 where
-    H: Handle,
-    HB: HandleBuilder<H>,
+    HB: HandleBuilder,
 {
     let mut handles = HashMap::new();
 
-    for &(size, kind, ref handle) in &object.children {
-        let ks = match kind {
-            ObjectKind::Small => "small",
-            ObjectKind::Large => "large",
+    for &(size, ref reference) in &object.children {
+        let (ks, handle) = match *reference {
+            ObjectRef::Small(ref handle) => ("small", handle.clone()),
+            ObjectRef::Large(ref handle) => ("large", handle.clone()),
             _ => bail!("Bad large object: child with bad kind (not small or large)"),
         };
 
-        let id = match handles.get(handle) {
+        let id = match handles.get(&handle) {
             Some(&id) => id,
             None => {
                 let new_id = handles.len();
-                handles.insert(handle, new_id);
-                builder.add_reference(handle.clone());
+                handles.insert(handle.clone(), new_id);
+                builder.add_reference(handle);
                 new_id
             }
         };
@@ -44,26 +42,26 @@ where
     Ok(())
 }
 
-pub fn tree<H, HB>(builder: &mut HB, object: TreeObject<H>) -> Result<(), Error>
+pub fn tree<HB>(builder: &mut HB, object: &Tree<HB::Handle>) -> Result<(), Error>
 where
-    H: Handle,
-    HB: HandleBuilder<H>,
+    HB: HandleBuilder,
 {
     let mut handles = HashMap::new();
 
-    for (name, &(kind, ref handle)) in &object.entries {
-        let ks = match kind {
-            ObjectKind::Small => "small",
-            ObjectKind::Large => "large",
-            _ => bail!("Bad large object: child with bad kind (not small or large)"),
+    for (name, reference) in &object.entries {
+        let (ks, handle) = match *reference {
+            ObjectRef::Small(ref handle) => ("small", handle.clone()),
+            ObjectRef::Large(ref handle) => ("large", handle.clone()),
+            ObjectRef::Tree(ref handle) => ("tree", handle.clone()),
+            _ => bail!("Bad tree object: child with bad kind (not small, large or tree)"),
         };
 
-        let id = match handles.get(handle) {
+        let id = match handles.get(&handle) {
             Some(&id) => id,
             None => {
                 let new_id = handles.len();
-                handles.insert(handle, new_id);
-                builder.add_reference(handle.clone());
+                handles.insert(handle.clone(), new_id);
+                builder.add_reference(handle);
                 new_id
             }
         };

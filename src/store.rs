@@ -9,7 +9,7 @@ use digest::Digest;
 pub trait Store: Open + Clone + Send + Sync + Sized + 'static {
     type Handle: Handle;
 
-    type HandleBuilder: HandleBuilder<Self::Handle>;
+    type HandleBuilder: HandleBuilder<Handle = Self::Handle>;
     fn handle_builder(&self) -> Self::HandleBuilder;
 
     type FutureLoadBranch: Future<Item = Option<Self::Handle>, Error = Error>;
@@ -42,9 +42,11 @@ pub trait HandleDigest<D: Digest>: Handle {
     fn digest(&self) -> Self::FutureDigest;
 }
 
-pub trait HandleBuilder<H: Handle>: Write {
-    fn add_reference(&mut self, handle: H);
+pub trait HandleBuilder: Write {
+    type Handle: Handle;
 
-    type FutureHandle: Future<Item = H, Error = Error>;
+    fn add_reference(&mut self, handle: Self::Handle);
+
+    type FutureHandle: Future<Item = Self::Handle, Error = Error>;
     fn finish(self) -> Self::FutureHandle;
 }

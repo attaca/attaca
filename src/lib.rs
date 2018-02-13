@@ -17,6 +17,8 @@ extern crate etcd;
 extern crate failure;
 extern crate futures_await as futures;
 extern crate hex;
+#[macro_use]
+extern crate im;
 extern crate leb128;
 extern crate memchr;
 #[macro_use]
@@ -26,15 +28,14 @@ extern crate typenum;
 
 pub mod canonical;
 pub mod digest;
+pub mod merge;
 pub mod object;
 pub mod split;
 pub mod store;
-pub mod workspace;
 
 use failure::Error;
 
 pub use store::*;
-pub use workspace::*;
 
 /// Trait for types representing resources which must be "opened" for use from URLs; e.g. local
 /// filesystem workspaces and remote servers/clusters.
