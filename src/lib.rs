@@ -30,6 +30,7 @@ pub mod canonical;
 pub mod digest;
 pub mod merge;
 pub mod object;
+pub mod path;
 pub mod split;
 pub mod store;
 
