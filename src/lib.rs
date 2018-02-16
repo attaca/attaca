@@ -34,6 +34,8 @@ pub mod path;
 pub mod split;
 pub mod store;
 
+use std::path::Path;
+
 use failure::Error;
 
 pub use store::*;
@@ -59,6 +61,10 @@ pub trait Open: Sized {
     /// that it matches.  In the case of a scheme mismatch, parse error, or other error connecting,
     /// an `Error` should be returned rather than, say, a panic.
     fn open(s: &str) -> Result<Self, Error>;
+
+    /// Attempt to open from a given file path instead of a URL. Not all `Open` types may support
+    /// this operation.
+    fn open_path(path: &Path) -> Result<Self, Error>;
 }
 
 /// Trait for `Open`-able resources which may be discoverable without any URL information; for
