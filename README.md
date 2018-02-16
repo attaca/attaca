@@ -11,22 +11,30 @@ the local Rust version for building this crate; installation and override will
 look something like this:
 
 ```
+# Currently tested nightly build is nightly-2018-02-14. First, grab the rustup
+# Rust install management tool.
 curl https://sh.rustup.rs -sSf | sh
-rustup install nightly
-rustup override set nightly
+rustup install nightly-2018-02-14
+
+# Run this command inside the repository to tell rustup that all cargo commands
+# run inside should be using our particular nightly.
+rustup override set nightly-2018-02-14
 ```
 
-Other dependencies are an installation of the librados-2 library, specifically
-the development files. *Make sure to install Ceph Kraken or later!* These can
-be installed with:
+Other dependencies are:
+
+- librados-2. *Make sure to install Ceph Kraken or later!*
+- Cap'n Proto.
+
+Installation might look something like this:
 
 ```
 # Ubuntu (tested on 14.04 LTS)
 sudo apt-add-repository "deb https://download.ceph.com/debian-luminous/ `lsb_release -sc` main"
-sudo apt-get librados-dev
+sudo apt-get install librados-dev capnproto
 
 # Fedora (tested on Fedora 24)
-dnf install librados2-devel
+dnf install librados2-devel capnproto
 ```
 
 Testing requires an installation of Docker. Once Rust, Cargo, and other
