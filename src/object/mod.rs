@@ -83,7 +83,16 @@ pub enum ObjectRef<H: Handle> {
 }
 
 impl<H: Handle> ObjectRef<H> {
-    pub fn handle(&self) -> &H {
+    pub fn into_handle(self) -> H {
+        match self {
+            ObjectRef::Small(h)
+            | ObjectRef::Large(h)
+            | ObjectRef::Tree(h)
+            | ObjectRef::Commit(h) => h,
+        }
+    }
+
+    pub fn as_handle(&self) -> &H {
         match *self {
             ObjectRef::Small(ref h)
             | ObjectRef::Large(ref h)
@@ -104,7 +113,7 @@ impl<H: Handle> ObjectRef<H> {
     pub fn fetch(&self) -> FetchFuture<H> {
         FetchFuture {
             kind: self.kind(),
-            blocking: self.handle().load(),
+            blocking: self.as_handle().load(),
         }
     }
 }
