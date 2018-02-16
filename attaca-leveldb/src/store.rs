@@ -1,5 +1,5 @@
 use std::{fmt, str, cell::RefCell, cmp::Ordering, hash::{Hash, Hasher},
-          io::{self, Cursor, Read, Write}, sync::{Arc, RwLock, Weak}};
+          io::{self, Cursor, Read, Write}, path::Path, sync::{Arc, RwLock, Weak}};
 
 use attaca::{canonical, Open, digest::{Digest, DigestWriter, Sha3Digest},
              store::{Handle, HandleBuilder, HandleDigest, Store}};
@@ -27,6 +27,10 @@ impl Open for LevelStore {
         );
         let path = url.to_file_path()
             .map_err(|_| format_err!("URL is not a path!"))?;
+        Self::open_path(&path)
+    }
+
+    fn open_path(path: &Path) -> Result<Self, Error> {
         let db = Database::open(&path, Options::new())?;
         Ok(Self::new(Arc::new(RwLock::new(db))))
     }

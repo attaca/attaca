@@ -27,6 +27,10 @@ impl Open for LevelWorkspace {
         );
         let path = url.to_file_path()
             .map_err(|_| format_err!("URL is not a path!"))?;
+        Self::open_path(&path)
+    }
+
+    fn open_path(path: &Path) -> Result<Self, Error> {
         let db = Database::open(&path, Options::new())?;
         Ok(Self::new(Arc::new(RwLock::new(db))))
     }
