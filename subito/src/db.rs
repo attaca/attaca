@@ -1,9 +1,11 @@
 use std::borrow::Cow;
 
+use attaca::path::ObjectPath;
 use failure::Error;
 use smallvec::SmallVec;
 
-const CHANGESET_PREFIX: &'static [u8] = b"CH";
+const CACHE_PREFIX: &'static [u8] = b"CH";
+const STATE_KEY: &'static [u8] = b"STATE";
 
 #[derive(Debug, Clone)]
 pub struct Key(SmallVec<[u8; 32]>);
@@ -19,9 +21,17 @@ impl ::db_key::Key for Key {
 }
 
 impl Key {
-    pub fn changeset(path: &ObjectPath) -> Self {
-        let mut buf = SmallVec::from(CHANGESET_PREFIX);
+    pub fn state() -> Self {
+        Key(SmallVec::from(STATE_KEY))
+    }
+
+    pub fn cache(path: &ObjectPath) -> Self {
+        let mut buf = SmallVec::from(CACHE_PREFIX);
         path.encode(&mut buf).unwrap();
         Key(buf)
+    }
+
+    pub fn is_from_cache(&self) -> bool {
+        &self.0[..2] == CACHE_PREFIX
     }
 }
