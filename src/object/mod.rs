@@ -140,9 +140,45 @@ pub struct Small {
     data: Vec<u8>,
 }
 
+impl Small {
+    pub fn send<S>(&self, store: &S) -> SendFuture<S>
+    where
+        S: Store,
+    {
+        let mut builder = store.handle_builder();
+        let blocking = encode::small(&mut builder, self)
+            .map(|()| builder.finish())
+            .into_future()
+            .flatten();
+
+        SendFuture {
+            kind: ObjectKind::Small,
+            blocking,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Large<H: Handle> {
     children: Vec<(u64, ObjectRef<H>)>,
+}
+
+impl<H: Handle> Large<H> {
+    pub fn send<S>(&self, store: &S) -> SendFuture<S>
+    where
+        S: Store<Handle = H>,
+    {
+        let mut builder = store.handle_builder();
+        let blocking = encode::large(&mut builder, self)
+            .map(|()| builder.finish())
+            .into_future()
+            .flatten();
+
+        SendFuture {
+            kind: ObjectKind::Large,
+            blocking,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -161,6 +197,22 @@ impl<H: Handle> Deref for Tree<H> {
 impl<H: Handle> Tree<H> {
     pub fn diverge(self) -> TreeBuilder<H> {
         TreeBuilder(self)
+    }
+
+    pub fn send<S>(&self, store: &S) -> SendFuture<S>
+    where
+        S: Store<Handle = H>,
+    {
+        let mut builder = store.handle_builder();
+        let blocking = encode::tree(&mut builder, self)
+            .map(|()| builder.finish())
+            .into_future()
+            .flatten();
+
+        SendFuture {
+            kind: ObjectKind::Tree,
+            blocking,
+        }
     }
 }
 
@@ -182,6 +234,12 @@ impl<H: Handle> DerefMut for TreeBuilder<H> {
 }
 
 impl<H: Handle> TreeBuilder<H> {
+    pub fn new() -> Self {
+        TreeBuilder(Tree {
+            entries: BTreeMap::new(),
+        })
+    }
+
     pub fn as_tree(&self) -> &Tree<H> {
         &self.0
     }
