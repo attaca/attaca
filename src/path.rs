@@ -1,11 +1,11 @@
-use std::{fmt, io::Write, path::{Path, PathBuf}};
+use std::{fmt, io::Write, ops::Add, path::{Path, PathBuf}};
 
 use failure::Error;
-use im::List;
+use im::{List, shared::Shared};
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ObjectPath {
-    inner: List<String>,
+    pub(crate) inner: List<String>,
 }
 
 impl fmt::Debug for ObjectPath {
@@ -19,8 +19,25 @@ impl ObjectPath {
         Self { inner: List::new() }
     }
 
-    pub fn from_path(path: &Path) -> Result<Self, Error> {
-        let inner_opt = path.iter()
+    pub fn depth(&self) -> usize {
+        self.inner.len()
+    }
+
+    pub fn push_front<S: Shared<String>>(&self, component: S) -> Self {
+        Self {
+            inner: self.inner.push_front(component),
+        }
+    }
+
+    pub fn push_back<S: Shared<String>>(&self, component: S) -> Self {
+        Self {
+            inner: self.inner.push_back(component),
+        }
+    }
+
+    pub fn from_path<P: AsRef<Path>>(path: &P) -> Result<Self, Error> {
+        let inner_opt = path.as_ref()
+            .iter()
             .map(|os_str| os_str.to_str().map(str::to_owned))
             .collect::<Option<List<String>>>();
 
@@ -51,3 +68,22 @@ impl ObjectPath {
         Ok(())
     }
 }
+
+macro_rules! add_impl {
+    ([$($quant:tt)*] $rhs:ty , $lhs:ty) => {
+        impl $($quant)* Add<$rhs> for $lhs {
+            type Output = ObjectPath;
+
+            fn add(self, rhs: $rhs) -> Self::Output {
+                ObjectPath {
+                    inner: self.inner.append(&rhs.inner),
+                }
+            }
+        }
+    };
+}
+
+add_impl!([] ObjectPath, ObjectPath);
+add_impl!([<'a>] ObjectPath, &'a ObjectPath);
+add_impl!([<'a>] &'a ObjectPath, ObjectPath);
+add_impl!([<'a>] &'a ObjectPath, &'a ObjectPath);

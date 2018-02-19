@@ -1,6 +1,6 @@
 //! # `attaca` - distributed, resilient version control with a git-like interface
 
-#![feature(proc_macro, conservative_impl_trait, generators, use_nested_groups, nll)]
+#![feature(proc_macro, conservative_impl_trait, generators, nll)]
 #![recursion_limit = "256"]
 
 #[cfg(not(target_pointer_width = "64"))]
@@ -26,6 +26,7 @@ extern crate nom;
 extern crate sha3;
 extern crate typenum;
 
+pub mod batch;
 pub mod canonical;
 pub mod digest;
 pub mod merge;
