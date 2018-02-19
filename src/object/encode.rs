@@ -2,8 +2,8 @@ use std::{collections::HashMap, io::Write};
 
 use failure::Error;
 
-use object::{Large, ObjectRef, Small, Tree};
-use store::{Handle, HandleBuilder};
+use object::{Commit, Large, ObjectRef, Small, Tree};
+use store::HandleBuilder;
 
 pub fn small<HB>(builder: &mut HB, object: &Small) -> Result<(), Error>
 where
@@ -21,8 +21,8 @@ where
 
     for &(size, ref reference) in &object.children {
         let (ks, handle) = match *reference {
-            ObjectRef::Small(ref handle) => ("small", handle.clone()),
-            ObjectRef::Large(ref handle) => ("large", handle.clone()),
+            ObjectRef::Small(ref small) => ("small", small.as_handle().clone()),
+            ObjectRef::Large(ref large) => ("large", large.as_handle().clone()),
             _ => bail!("Bad large object: child with bad kind (not small or large)"),
         };
 
@@ -50,9 +50,9 @@ where
 
     for (name, reference) in &object.entries {
         let (ks, handle) = match *reference {
-            ObjectRef::Small(ref handle) => ("small", handle.clone()),
-            ObjectRef::Large(ref handle) => ("large", handle.clone()),
-            ObjectRef::Tree(ref handle) => ("tree", handle.clone()),
+            ObjectRef::Small(ref small) => ("small", small.as_handle()),
+            ObjectRef::Large(ref large) => ("large", large.as_handle()),
+            ObjectRef::Tree(ref tree) => ("tree", tree.as_handle()),
             _ => bail!("Bad tree object: child with bad kind (not small, large or tree)"),
         };
 
@@ -60,8 +60,8 @@ where
             Some(&id) => id,
             None => {
                 let new_id = handles.len();
-                handles.insert(handle.clone(), new_id);
-                builder.add_reference(handle);
+                handles.insert(handle, new_id);
+                builder.add_reference(handle.clone());
                 new_id
             }
         };
@@ -73,6 +73,30 @@ where
         builder.write_all(&buf)?;
         write!(builder, ",")?;
     }
+
+    Ok(())
+}
+
+pub fn commit<HB>(builder: &mut HB, object: &Commit<HB::Handle>) -> Result<(), Error>
+where
+    HB: HandleBuilder,
+{
+    builder.add_reference(object.subtree.as_handle().clone());
+    for parent in &object.parents {
+        builder.add_reference(parent.as_handle().clone());
+    }
+    for handle in object.metadata.as_handles() {
+        builder.add_reference(handle.clone());
+    }
+
+    write!(
+        builder,
+        "{} {}\n",
+        object.parents.len(),
+        object.metadata.as_handles().len()
+    )?;
+
+    builder.write_all(object.metadata.as_str().as_bytes())?;
 
     Ok(())
 }
