@@ -2,7 +2,7 @@ use std::ops::Range;
 
 use failure::Error;
 
-use object::{Commit, Object, ObjectRef, Tree};
+use object::{Commit, Object, Tree};
 use store::Handle;
 
 // Suppose we allow paths to go *into* large objects.
@@ -13,6 +13,7 @@ use store::Handle;
 // 2. Straightforward correspondence between conflicts and conflicting data trees... *if* we
 //    enforce that the "pending" iterator output at most one conflict per unique data tree.
 
+#[allow(dead_code)]
 pub struct Chunk<H: Handle> {
     root: Commit<H>,
 
