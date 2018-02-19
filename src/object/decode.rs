@@ -1,9 +1,10 @@
-use std::{collections::BTreeMap, io::Read, str::{self, FromStr}};
+use std::{collections::BTreeMap, io::{BufRead, Read}, str::{self, FromStr}};
 
 use failure::{self, Error};
 use nom::{digit, rest, IResult};
 
-use object::{Large, ObjectKind, ObjectRef, Small, Tree};
+use object::{Commit, CommitRef, Large, LargeRef, ObjectKind, ObjectRef, Small, SmallRef, Tree,
+             TreeRef, metadata::Metadata};
 use store::Handle;
 
 #[cfg_attr(rustfmt, rustfmt_skip)]
@@ -36,17 +37,23 @@ named!(
 
 #[cfg_attr(rustfmt, rustfmt_skip)]
 named!(
+  handle<usize>,
+  map_res!(
+    map_res!(
+      digit,
+      str::from_utf8
+    ),
+    usize::from_str
+  )
+);
+
+#[cfg_attr(rustfmt, rustfmt_skip)]
+named!(
   tagged_handle<(ObjectKind, usize)>,
   separated_pair!(
     object_kind,
     tag!(b" "),
-    map_res!(
-      map_res!(
-        digit,
-        str::from_utf8
-      ),
-      usize::from_str
-    )
+    handle
   )
 );
 
@@ -90,8 +97,8 @@ pub fn large<H: Handle>(mut content: H::Content, refs_iter: H::Refs) -> Result<L
             acc.push((
                 sz,
                 match kind {
-                    ObjectKind::Small => ObjectRef::Small(reference),
-                    ObjectKind::Large => ObjectRef::Large(reference),
+                    ObjectKind::Small => ObjectRef::Small(SmallRef::from_handle(reference)),
+                    ObjectKind::Large => ObjectRef::Large(LargeRef::from_handle(reference)),
                     other => bail!("Malformed tree: object kind {:?} not supported!", other),
                 },
             ));
@@ -135,9 +142,9 @@ pub fn tree<H: Handle>(mut content: H::Content, refs_iter: H::Refs) -> Result<Tr
             acc.insert(
                 name.to_owned(),
                 match kind {
-                    ObjectKind::Small => ObjectRef::Small(reference),
-                    ObjectKind::Large => ObjectRef::Large(reference),
-                    ObjectKind::Tree => ObjectRef::Tree(reference),
+                    ObjectKind::Small => ObjectRef::Small(SmallRef::from_handle(reference)),
+                    ObjectKind::Large => ObjectRef::Large(LargeRef::from_handle(reference)),
+                    ObjectKind::Tree => ObjectRef::Tree(TreeRef::from_handle(reference)),
                     other => bail!("Malformed tree: object kind {:?} not supported!", other),
                 },
             );
@@ -147,5 +154,44 @@ pub fn tree<H: Handle>(mut content: H::Content, refs_iter: H::Refs) -> Result<Tr
 
     Ok(Tree {
         entries: ir.to_result()??,
+    })
+}
+
+#[cfg_attr(rustfmt, rustfmt_skip)]
+named!(commit_header<(usize, usize)>,
+  do_parse!(
+    n_parents: handle >>
+    tag!(b" ") >>
+    n_meta: handle >>
+    tag!(b"\n") >>
+    (n_parents, n_meta)
+  )
+);
+
+pub fn commit<H: Handle>(
+    mut content: H::Content,
+    mut refs_iter: H::Refs,
+) -> Result<Commit<H>, Error> {
+    let mut data = Vec::new();
+    content.read_until(b'\n', &mut data)?;
+    let (n_parents, n_meta) = commit_header(data.as_slice()).to_result()?;
+
+    let subtree = TreeRef::from_handle(refs_iter
+        .next()
+        .ok_or_else(|| format_err!("Malformed commit: no subtree handle!"))?);
+    let parents = refs_iter
+        .by_ref()
+        .take(n_parents)
+        .map(CommitRef::from_handle)
+        .collect();
+    let meta_handles = refs_iter.by_ref().take(n_meta).collect();
+
+    let mut meta_string = String::new();
+    content.read_to_string(&mut meta_string)?;
+
+    Ok(Commit {
+        subtree,
+        parents,
+        metadata: Metadata::new(meta_string, meta_handles),
     })
 }
