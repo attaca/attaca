@@ -1,5 +1,5 @@
 use std::{fmt, str, cell::RefCell, cmp::Ordering, hash::{Hash, Hasher},
-          io::{self, Cursor, Read, Write}, path::Path, sync::{Arc, RwLock, Weak}};
+          io::{self, BufRead, Cursor, Read, Write}, path::Path, sync::{Arc, RwLock, Weak}};
 
 use attaca::{canonical, Open, digest::{Digest, DigestWriter, Sha3Digest},
              store::{Handle, HandleBuilder, HandleDigest, Store}};
@@ -323,6 +323,16 @@ impl From<Arc<Object>> for LevelHandleContent {
 impl Read for LevelHandleContent {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, io::Error> {
         self.0.read(buf)
+    }
+}
+
+impl BufRead for LevelHandleContent {
+    fn fill_buf(&mut self) -> Result<&[u8], io::Error> {
+        self.0.fill_buf()
+    }
+
+    fn consume(&mut self, amt: usize) {
+        self.0.consume(amt);
     }
 }
 

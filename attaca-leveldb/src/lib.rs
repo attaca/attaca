@@ -1,5 +1,3 @@
-#![feature(use_nested_groups)]
-
 extern crate attaca;
 extern crate chashmap;
 extern crate db_key;
