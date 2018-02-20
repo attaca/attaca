@@ -108,6 +108,7 @@ name = "attaca-test"
 version = "0.1.0"
 dependencies = [
  "attaca 0.1.0",
+ "failure 0.1.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "proptest 0.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
