@@ -30,6 +30,7 @@ libc = "0.2.29"
 memchr = "2.0.1"
 memmap = "0.5.2"
 nom = "3.2.1"
+parking_lot = "0.5.3"
 rad = "0.5.0"
 seahash = "3.0.5"
 serde = "1.0.11"
@@ -82,4 +83,5 @@ members = [
     "subito",
     "attaca-rados",
     "attaca-leveldb",
+    "attaca-test",
 ]

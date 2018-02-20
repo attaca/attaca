@@ -4,7 +4,7 @@ use failure::Error;
 use futures::prelude::*;
 use im::List;
 
-use object::{ObjectRef, TreeBuilder, TreeRef};
+use object::{ObjectRef, TreeBuilder};
 use path::ObjectPath;
 use store::{Handle, Store};
 
@@ -145,11 +145,10 @@ impl<H: Handle> Batch<H> {
     }
 
     #[async]
-    pub fn run<S>(self, store: S, tree_ref: TreeRef<H>) -> Result<TreeRef<H>, Error>
+    pub fn run<S>(self, store: S, tree_builder: TreeBuilder<H>) -> Result<TreeBuilder<H>, Error>
     where
         S: Store<Handle = H>,
     {
-        let tree_builder = await!(tree_ref.fetch())?.diverge();
         Ok(await!(self.into_iter().run(store, tree_builder))?)
     }
 }
@@ -190,7 +189,7 @@ impl<H: Handle> BatchIter<H> {
         self,
         store: S,
         tree_builder: TreeBuilder<H>,
-    ) -> Result<TreeRef<H>, Error> {
+    ) -> Result<TreeBuilder<H>, Error> {
         for (name, batched_op) in self {
             match batched_op {
                 BatchedOp::Add(objref) => {
@@ -208,15 +207,19 @@ impl<H: Handle> BatchIter<H> {
                         _ => TreeBuilder::new(),
                     };
 
-                    let child_ref = await!(batch_iter.run(store.clone(), child_builder))?;
-                    tree_builder.insert(
-                        Arc::try_unwrap(name).unwrap_or_else(|arcd| (*arcd).clone()),
-                        ObjectRef::Tree(child_ref),
-                    );
+                    let child_built = await!(batch_iter.run(store.clone(), child_builder))?;
+
+                    if !child_built.is_empty() {
+                        let child_ref = await!(child_built.as_tree().send(&store))?;
+                        tree_builder.insert(
+                            Arc::try_unwrap(name).unwrap_or_else(|arcd| (*arcd).clone()),
+                            ObjectRef::Tree(child_ref),
+                        );
+                    }
                 }
             }
         }
 
-        Ok(await!(tree_builder.as_tree().send(&store))?)
+        Ok(tree_builder)
     }
 }

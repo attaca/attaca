@@ -108,33 +108,33 @@ impl<H: Handle> ObjectRef<H> {
         }
     }
 
-    pub fn fetch(&self) -> FetchFuture<H> {
+    pub fn fetch(&self) -> FutureObject<H> {
         match *self {
-            ObjectRef::Small(ref small_ref) => FetchFuture::Small(small_ref.fetch()),
-            ObjectRef::Large(ref large_ref) => FetchFuture::Large(large_ref.fetch()),
-            ObjectRef::Tree(ref tree_ref) => FetchFuture::Tree(tree_ref.fetch()),
-            ObjectRef::Commit(ref commit_ref) => FetchFuture::Commit(commit_ref.fetch()),
+            ObjectRef::Small(ref small_ref) => FutureObject::Small(small_ref.fetch()),
+            ObjectRef::Large(ref large_ref) => FutureObject::Large(large_ref.fetch()),
+            ObjectRef::Tree(ref tree_ref) => FutureObject::Tree(tree_ref.fetch()),
+            ObjectRef::Commit(ref commit_ref) => FutureObject::Commit(commit_ref.fetch()),
         }
     }
 }
 
-pub enum FetchFuture<H: Handle> {
+pub enum FutureObject<H: Handle> {
     Small(FutureSmall<H>),
     Large(FutureLarge<H>),
     Tree(FutureTree<H>),
     Commit(FutureCommit<H>),
 }
 
-impl<H: Handle> Future for FetchFuture<H> {
+impl<H: Handle> Future for FutureObject<H> {
     type Item = Object<H>;
     type Error = Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         match *self {
-            FetchFuture::Small(ref mut small) => Ok(small.poll()?.map(Object::Small)),
-            FetchFuture::Large(ref mut large) => Ok(large.poll()?.map(Object::Large)),
-            FetchFuture::Tree(ref mut tree) => Ok(tree.poll()?.map(Object::Tree)),
-            FetchFuture::Commit(ref mut commit) => Ok(commit.poll()?.map(Object::Commit)),
+            FutureObject::Small(ref mut small) => Ok(small.poll()?.map(Object::Small)),
+            FutureObject::Large(ref mut large) => Ok(large.poll()?.map(Object::Large)),
+            FutureObject::Tree(ref mut tree) => Ok(tree.poll()?.map(Object::Tree)),
+            FutureObject::Commit(ref mut commit) => Ok(commit.poll()?.map(Object::Commit)),
         }
     }
 }

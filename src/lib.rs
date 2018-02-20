@@ -23,12 +23,15 @@ extern crate leb128;
 extern crate memchr;
 #[macro_use]
 extern crate nom;
+extern crate parking_lot;
+extern crate sequence_trie;
 extern crate sha3;
 extern crate typenum;
 
 pub mod batch;
 pub mod canonical;
 pub mod digest;
+pub mod hierarchy;
 pub mod merge;
 pub mod object;
 pub mod path;
