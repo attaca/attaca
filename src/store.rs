@@ -20,7 +20,7 @@ pub trait Store: Open + Clone + Send + Sync + Sized + 'static {
         &self,
         branch: String,
         previous: Option<Self::Handle>,
-        new: Self::Handle,
+        new: Option<Self::Handle>,
     ) -> Self::FutureSwapBranch;
 
     type FutureResolve: Future<Item = Option<Self::Handle>, Error = Error>;
