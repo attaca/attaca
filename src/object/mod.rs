@@ -2,7 +2,7 @@ pub mod decode;
 pub mod encode;
 pub mod metadata;
 
-use std::{collections::{BTreeMap, VecDeque}, ops::{Deref, DerefMut}};
+use std::{collections::{BTreeMap, VecDeque}, io::{self, Write}, ops::{Deref, DerefMut}};
 
 use failure::Error;
 use futures::{future::{Flatten, FutureResult}, prelude::*};
@@ -192,6 +192,14 @@ pub struct Small {
     data: Vec<u8>,
 }
 
+impl Deref for Small {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        &self.data
+    }
+}
+
 impl Small {
     pub fn send<S>(&self, store: &S) -> FutureSmallRef<S>
     where
@@ -204,6 +212,49 @@ impl Small {
                 .into_future()
                 .flatten(),
         )
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SmallBuilder(Small);
+
+impl Default for SmallBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Deref for SmallBuilder {
+    type Target = Vec<u8>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0.data
+    }
+}
+
+impl DerefMut for SmallBuilder {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0.data
+    }
+}
+
+impl Write for SmallBuilder {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0.data.write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Write::flush(&mut self.0.data)
+    }
+}
+
+impl SmallBuilder {
+    pub fn new() -> Self {
+        SmallBuilder(Small { data: Vec::new() })
+    }
+
+    pub fn as_small(&self) -> &Small {
+        &self.0
     }
 }
 
@@ -410,6 +461,12 @@ impl<H: Handle> Tree<H> {
 
 #[derive(Debug, Clone)]
 pub struct TreeBuilder<H: Handle>(Tree<H>);
+
+impl<H: Handle> Default for TreeBuilder<H> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl<H: Handle> Deref for TreeBuilder<H> {
     type Target = BTreeMap<String, ObjectRef<H>>;
