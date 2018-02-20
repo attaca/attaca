@@ -8,16 +8,22 @@ use object::{Commit, CommitRef, Large, LargeRef, ObjectKind, ObjectRef, Small, S
 use store::Handle;
 
 #[cfg_attr(rustfmt, rustfmt_skip)]
+named!(
+  byte_offset<u64>,
+  map_res!(
+    map_res!(
+      digit,
+      str::from_utf8
+    ),
+    u64::from_str
+  )
+);
+
+#[cfg_attr(rustfmt, rustfmt_skip)]
 macro_rules! netstring {
   ($i:expr, $submac:ident!( $($args:tt)* )) => (
     length_value!($i,
-      map_res!(
-        map_res!(
-          digit,
-          str::from_utf8
-        ),
-        u64::from_str
-      ),
+      byte_offset,
       delimited!(tag!(b":"), $submac!($($args)*), tag!(b","))
     )
   );
@@ -64,19 +70,15 @@ pub fn small<H: Handle>(mut content: H::Content) -> Result<Small, Error> {
 }
 
 #[cfg_attr(rustfmt, rustfmt_skip)]
-named!(large_entry<(u64, ObjectKind, usize)>,
+named!(large_entry<(u64, u64, ObjectKind, usize)>,
   do_parse!(
-    size: map_res!(
-      map_res!(
-        digit,
-        str::from_utf8
-      ),
-      u64::from_str
-    ) >>
+    start: byte_offset >>
+    tag!(b" ") >>
+    end: byte_offset >>
     tag!(b" ") >>
     th: tagged_handle >>
     tag!(b"\n") >>
-    (size, th.0, th.1)
+    (start, end, th.0, th.1)
   )
 );
 
@@ -88,26 +90,24 @@ pub fn large<H: Handle>(mut content: H::Content, refs_iter: H::Refs) -> Result<L
     let ir: IResult<_, _> = fold_many0!(
         data.as_slice(),
         large_entry,
-        Ok(Vec::new()),
-        |acc_res: Result<Vec<_>, Error>, (sz, kind, handle_idx): (u64, ObjectKind, usize)| {
+        Ok(BTreeMap::new()),
+        |acc_res: Result<BTreeMap<_, _>, _>, (start, end, kind, handle_idx)| {
             let mut acc = acc_res?;
             let reference = refs.get(handle_idx)
                 .cloned()
                 .ok_or_else(|| failure::err_msg("Bad handle index!"))?;
-            acc.push((
-                sz,
-                match kind {
-                    ObjectKind::Small => ObjectRef::Small(SmallRef::from_handle(reference)),
-                    ObjectKind::Large => ObjectRef::Large(LargeRef::from_handle(reference)),
-                    other => bail!("Malformed tree: object kind {:?} not supported!", other),
-                },
-            ));
+            let objref = match kind {
+                ObjectKind::Small => ObjectRef::Small(SmallRef::from_handle(reference)),
+                ObjectKind::Large => ObjectRef::Large(LargeRef::from_handle(reference)),
+                other => bail!("Malformed tree: object kind {:?} not supported!", other),
+            };
+            acc.insert(start, (end, objref));
             Ok(acc)
         }
     );
 
     Ok(Large {
-        children: ir.to_result()??,
+        entries: ir.to_result()??,
     })
 }
 

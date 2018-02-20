@@ -2,7 +2,8 @@ pub mod decode;
 pub mod encode;
 pub mod metadata;
 
-use std::{collections::{BTreeMap, VecDeque}, io::{self, Write}, ops::{Deref, DerefMut}};
+use std::{collections::{btree_map, BTreeMap, Bound, VecDeque}, io::{self, Write},
+          ops::{Deref, DerefMut, Range}};
 
 use failure::Error;
 use futures::{future::{Flatten, FutureResult}, prelude::*};
@@ -187,7 +188,7 @@ impl<S: Store> Future for FutureSmallRef<S> {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Small {
     data: Vec<u8>,
 }
@@ -215,7 +216,7 @@ impl Small {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SmallBuilder(Small);
 
 impl Default for SmallBuilder {
@@ -308,12 +309,48 @@ impl<S: Store> Future for FutureLargeRef<S> {
     }
 }
 
+#[derive(Debug)]
+pub struct LargeRangeIter<'a, H: Handle> {
+    range: btree_map::Range<'a, u64, (u64, ObjectRef<H>)>,
+}
+
+impl<'a, H: Handle> Iterator for LargeRangeIter<'a, H> {
+    type Item = (Range<u64>, ObjectRef<H>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.range
+            .next()
+            .map(|(&start, &(end, ref objref))| (start..end, objref.clone()))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Large<H: Handle> {
-    children: Vec<(u64, ObjectRef<H>)>,
+    entries: BTreeMap<u64, (u64, ObjectRef<H>)>,
 }
 
 impl<H: Handle> Large<H> {
+    pub fn size(&self) -> u64 {
+        match self.entries.range(..).rev().next() {
+            Some((&end, _)) => end,
+            None => 0,
+        }
+    }
+
+    pub fn range(&self, range: Range<u64>) -> LargeRangeIter<H> {
+        let start = match self.entries.range(..range.start).rev().next() {
+            // If there's an overlapping entry which comes before range.start, include it.
+            Some((end, _)) if end > &range.start => Bound::Included(end),
+            // Otherwise, it's just a standard inclusive bound on range.start.
+            Some((_, _)) => Bound::Included(&range.start),
+            None => Bound::Unbounded,
+        };
+
+        LargeRangeIter {
+            range: self.entries.range((start, Bound::Excluded(&range.end))),
+        }
+    }
+
     pub fn send<S>(&self, store: &S) -> FutureLargeRef<S>
     where
         S: Store<Handle = H>,
@@ -326,6 +363,13 @@ impl<H: Handle> Large<H> {
                 .flatten(),
         )
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct LargeBuilder<H: Handle>(Large<H>);
+
+impl<H: Handle> LargeBuilder<H> {
+    
 }
 
 pub struct FutureTree<H: Handle>(H::FutureLoad);

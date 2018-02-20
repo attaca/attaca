@@ -19,7 +19,7 @@ where
 {
     let mut handles = HashMap::new();
 
-    for &(size, ref reference) in &object.children {
+    for (&start, &(end, ref reference)) in &object.entries {
         let (ks, handle) = match *reference {
             ObjectRef::Small(ref small) => ("small", small.as_handle().clone()),
             ObjectRef::Large(ref large) => ("large", large.as_handle().clone()),
@@ -36,7 +36,7 @@ where
             }
         };
 
-        write!(builder, "{} {} {}\n", size, ks, id)?;
+        write!(builder, "{} {} {} {}\n", start, end, ks, id)?;
     }
 
     Ok(())
