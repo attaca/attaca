@@ -1,4 +1,4 @@
-#![feature(proc_macro, conservative_impl_trait, generators, use_nested_groups)]
+#![feature(proc_macro, conservative_impl_trait, generators)]
 
 extern crate attaca;
 extern crate attaca_leveldb;
@@ -10,10 +10,12 @@ extern crate enum_primitive_derive;
 extern crate failure;
 extern crate futures_await as futures;
 extern crate ignore;
+extern crate itertools;
 extern crate leveldb;
 #[macro_use]
 extern crate nix;
 extern crate num_traits;
+extern crate sequence_trie;
 extern crate smallvec;
 
 mod cache_capnp {
@@ -29,11 +31,14 @@ mod state_capnp {
 }
 
 mod cache;
+mod candidate;
 mod db;
+mod status;
 
 use std::{io::{BufRead, Write}, marker::PhantomData, path::{Path, PathBuf}, sync::{Arc, RwLock}};
 
-use attaca::{Handle, HandleDigest, Open, Store, digest::{Digest, Sha3Digest}, object::TreeBuilder};
+use attaca::{Handle, HandleDigest, Open, Store, digest::{Digest, Sha3Digest},
+             object::{CommitRef, TreeBuilder, TreeRef}};
 use capnp::{serialize_packed, Word, message::{self, ScratchSpace, ScratchSpaceHeapAllocator}};
 use failure::Error;
 use futures::{future::{self, Either}, prelude::*};
@@ -43,48 +48,20 @@ use leveldb::{database::Database, kv::KV, options::{Options, ReadOptions, WriteO
 use cache::Cache;
 use db::Key;
 
-#[derive(Default)]
 struct State<H: Handle> {
-    candidate: H,
-    head: Option<H>,
+    candidate: Option<TreeRef<H>>,
+    head: Option<CommitRef<H>>,
     active_branch: Option<String>,
 }
 
-impl<H: Handle> State<H> {
-    //     fn encode<W: Write>(&self, writer: &mut W) -> Result<(), Error> {
-    //         use state_capnp::state;
-    //
-    //         let mut scratch_bytes = [0u8; 1024];
-    //         let mut scratch_space = ScratchSpace::new(Word::bytes_to_words_mut(&mut scratch_bytes));
-    //         let mut message = message::Builder::new(ScratchSpaceHeapAllocator::new(&mut scratch_space));
-    //
-    //         {
-    //             let mut state = message.init_root::<state::Builder>();
-    //             {
-    //                 let mut digest = state.borrow().get_digest()?;
-    //                 digest.set_name(D::NAME);
-    //                 digest.set_size(D::SIZE as u32);
-    //             }
-    //             {
-    //                 let mut head = state.borrow().get_head();
-    //                 match self.head {
-    //                     Some(ref digest) => head.set_some(digest.as_bytes()),
-    //                     None => head.set_none(()),
-    //                 }
-    //             }
-    //             {
-    //                 let mut active_branch = state.borrow().get_active_branch();
-    //                 match self.active_branch {
-    //                     Some(ref name) => active_branch.set_some(name),
-    //                     None => active_branch.set_none(()),
-    //                 }
-    //             }
-    //         }
-    //
-    //         serialize_packed::write_message(writer, &message)?;
-    //
-    //         Ok(())
-    //     }
+impl<H: Handle> Default for State<H> {
+    fn default() -> Self {
+        Self {
+            candidate: None,
+            head: None,
+            active_branch: None,
+        }
+    }
 }
 
 pub struct Repository<S: Store, D: Digest>
@@ -92,6 +69,7 @@ where
     S::Handle: HandleDigest<D>,
 {
     _digest: PhantomData<D>,
+
     store: S,
     db: Arc<RwLock<Database<Key>>>,
 
@@ -130,17 +108,31 @@ where
 
         let (candidate_digest, head_digest) = state
             .candidate
-            .digest()
-            .join(state.head.as_ref().map(HandleDigest::digest))
+            .as_ref()
+            .map(TreeRef::as_handle)
+            .map(HandleDigest::digest)
+            .join(
+                state
+                    .head
+                    .as_ref()
+                    .map(CommitRef::as_handle)
+                    .map(HandleDigest::digest),
+            )
             .wait()?;
 
         {
             let mut state_builder = message.init_root::<state::Builder>();
-            state_builder.set_candidate(candidate_digest.as_bytes());
             {
                 let mut digest = state_builder.borrow().get_digest()?;
                 digest.set_name(D::NAME);
                 digest.set_size(D::SIZE as u32);
+            }
+            {
+                let mut candidate = state_builder.borrow().get_head();
+                match candidate_digest {
+                    Some(ref digest) => candidate.set_some(digest.as_bytes()),
+                    None => candidate.set_none(()),
+                }
             }
             {
                 let mut head = state_builder.borrow().get_head();
@@ -171,7 +163,7 @@ where
             .get(ReadOptions::new(), &Key::state())?
         {
             Some(bytes) => {
-                use state_capnp::state::{self, active_branch, head};
+                use state_capnp::state::{self, active_branch, candidate, head};
 
                 let message_reader =
                     serialize_packed::read_message(&mut &bytes[..], message::ReaderOptions::new())?;
@@ -191,12 +183,18 @@ where
                     self.store
                         .resolve(&dg)
                         .and_then(|rs| rs.ok_or_else(|| format_err!("Head does not exist!")))
+                        .map(CommitRef::from_handle)
                 });
-                let future_candidate = self.store
-                    .resolve(&D::from_bytes(state.get_candidate()?))
-                    .and_then(|resolved| {
-                        resolved.ok_or_else(|| format_err!("Candidate does not exist!"))
-                    });
+                let candidate_digest = match state.get_candidate().which()? {
+                    candidate::Some(bytes) => Some(D::from_bytes(&bytes?)),
+                    candidate::None(()) => None,
+                };
+                let future_candidate = candidate_digest.map(|dg| {
+                    self.store
+                        .resolve(&dg)
+                        .and_then(|rs| rs.ok_or_else(|| format_err!("Candidate does not exist!")))
+                        .map(TreeRef::from_handle)
+                });
                 let active_branch = match state.get_active_branch().which()? {
                     active_branch::Some(name) => Some(String::from(name?)),
                     active_branch::None(()) => None,
@@ -210,30 +208,10 @@ where
                 })
             }
             None => {
-                let candidate = TreeBuilder::new()
-                    .as_tree()
-                    .send(&self.store)
-                    .wait()?
-                    .into_handle();
-                let state = State {
-                    candidate,
-                    head: None,
-                    active_branch: None,
-                };
+                let state = State::default();
                 self.set_state(&state)?;
                 Ok(state)
             }
         }
-    }
-
-    // Status. We have:
-    //
-    // 1. The changeset (the current "candidate" tree.)
-    // 2. The cache.
-    //
-    // The candidate tree tells us the tree which will be committed upon running the "commit"
-    // command. The cache tells us what objects have and have not been changed.
-    pub fn status(&mut self) -> Result<Self, Error> {
-        unimplemented!()
     }
 }

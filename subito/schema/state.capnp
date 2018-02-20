@@ -5,7 +5,10 @@ using import "digest.capnp".Digest;
 struct State {
     digest @0 :Digest;
 
-    candidate @5 :Data;
+    candidate :union {
+        some @5 :Data;
+        none @6 :Void;
+    }
 
     head :union {
         some @1 :Data;

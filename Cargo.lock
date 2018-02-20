@@ -104,7 +104,7 @@ name = "attaca-rados"
 version = "0.1.0"
 
 [[package]]
-name = "attaca-test-store"
+name = "attaca-test"
 version = "0.1.0"
 dependencies = [
  "attaca 0.1.0",
