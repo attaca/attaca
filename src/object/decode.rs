@@ -225,7 +225,7 @@ pub fn commit<H: Handle>(
     let parents = refs_iter
         .by_ref()
         .take(n_parents)
-        .map(CommitRef::from_handle)
+        .map(CommitRef::new)
         .collect();
     let meta_handles = refs_iter.by_ref().take(n_meta).collect();
 

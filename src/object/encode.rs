@@ -26,11 +26,11 @@ where
         let handle = match *reference {
             ObjectRef::Small(ref small) => {
                 assert!(object.depth == 1 && sz <= usize::MAX as u64 && sz == small.size());
-                small.as_handle().clone()
+                small.as_inner().clone()
             }
             ObjectRef::Large(ref large) => {
                 assert!(object.depth > 1 && object.depth == large.depth + 1 && sz == large.size());
-                large.as_handle().clone()
+                large.as_inner().clone()
             }
             _ => unreachable!("Bad large object!"),
         };
@@ -59,9 +59,9 @@ where
 
     for (name, reference) in &object.entries {
         let (ks, handle) = match *reference {
-            ObjectRef::Small(ref small) => ("small", small.as_handle()),
-            ObjectRef::Large(ref large) => ("large", large.as_handle()),
-            ObjectRef::Tree(ref tree) => ("tree", tree.as_handle()),
+            ObjectRef::Small(ref small) => ("small", small.as_inner()),
+            ObjectRef::Large(ref large) => ("large", large.as_inner()),
+            ObjectRef::Tree(ref tree) => ("tree", tree.as_inner()),
             _ => bail!("Bad tree object: child with bad kind (not small, large or tree)"),
         };
 
@@ -90,9 +90,9 @@ pub fn commit<HB>(builder: &mut HB, object: &Commit<HB::Handle>) -> Result<(), E
 where
     HB: HandleBuilder,
 {
-    builder.add_reference(object.subtree.as_handle().clone());
+    builder.add_reference(object.subtree.as_inner().clone());
     for parent in &object.parents {
-        builder.add_reference(parent.as_handle().clone());
+        builder.add_reference(parent.as_inner().clone());
     }
     for handle in object.metadata.as_handles() {
         builder.add_reference(handle.clone());
