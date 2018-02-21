@@ -1,7 +1,7 @@
 use std::{fmt, collections::HashMap, sync::Arc};
 
 use failure::{Compat, Error, ResultExt};
-use futures::{future::{Either, Shared, SharedItem}, prelude::*};
+use futures::{future::Shared, prelude::*};
 use im::List;
 use parking_lot::RwLock;
 
