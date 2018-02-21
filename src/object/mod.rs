@@ -140,6 +140,18 @@ impl<H: Handle> ObjectRef<H> {
             ObjectRef::Commit(ref commit_ref) => FutureObject::Commit(commit_ref.fetch()),
         }
     }
+
+    pub fn digest<D: Digest>(&self) -> FutureObjectDigest<D, H>
+    where
+        H: HandleDigest<D>,
+    {
+        match *self {
+            ObjectRef::Small(ref small_ref) => FutureObjectDigest::Small(small_ref.digest()),
+            ObjectRef::Large(ref large_ref) => FutureObjectDigest::Large(large_ref.digest()),
+            ObjectRef::Tree(ref tree_ref) => FutureObjectDigest::Tree(tree_ref.digest()),
+            ObjectRef::Commit(ref commit_ref) => FutureObjectDigest::Commit(commit_ref.digest()),
+        }
+    }
 }
 
 pub enum FutureObject<H: Handle> {
