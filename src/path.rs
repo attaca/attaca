@@ -35,7 +35,7 @@ impl ObjectPath {
         }
     }
 
-    pub fn from_path<P: AsRef<Path>>(path: &P) -> Result<Self, Error> {
+    pub fn from_path<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
         let inner_opt = path.as_ref()
             .iter()
             .map(|os_str| os_str.to_str().map(str::to_owned))
