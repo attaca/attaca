@@ -1,4 +1,4 @@
-use std::{collections::HashMap, io::Write};
+use std::{usize, collections::HashMap, io::Write};
 
 use failure::Error;
 
@@ -20,10 +20,19 @@ where
     let mut handles = HashMap::new();
 
     for (&start, &(end, ref reference)) in &object.entries {
-        let (ks, handle) = match *reference {
-            ObjectRef::Small(ref small) => ("small", small.as_handle().clone()),
-            ObjectRef::Large(ref large) => ("large", large.as_handle().clone()),
-            _ => bail!("Bad large object: child with bad kind (not small or large)"),
+        assert!(end > start);
+        let sz = end - start;
+
+        let handle = match *reference {
+            ObjectRef::Small(ref small) => {
+                assert!(object.depth == 1 && sz <= usize::MAX as u64 && sz == small.size());
+                small.as_handle().clone()
+            }
+            ObjectRef::Large(ref large) => {
+                assert!(object.depth > 1 && object.depth == large.depth + 1 && sz == large.size());
+                large.as_handle().clone()
+            }
+            _ => unreachable!("Bad large object!"),
         };
 
         let id = match handles.get(&handle) {
@@ -36,7 +45,7 @@ where
             }
         };
 
-        write!(builder, "{} {} {} {}\n", start, end, ks, id)?;
+        write!(builder, "{} {} {}\n", start, end, id)?;
     }
 
     Ok(())

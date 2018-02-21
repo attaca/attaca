@@ -2,13 +2,14 @@ pub mod decode;
 pub mod encode;
 pub mod metadata;
 
-use std::{collections::{btree_map, BTreeMap, Bound, VecDeque}, io::{self, Write},
+use std::{collections::{btree_map, BTreeMap, Bound, VecDeque}, io::{self, Read, Write},
           ops::{Deref, DerefMut, Range}};
 
 use failure::Error;
-use futures::{future::{Flatten, FutureResult}, prelude::*};
+use futures::{future::{Flatten, FutureResult}, prelude::*, stream::FuturesOrdered};
 
 use path::ObjectPath;
+use split::{Parameters, Splitter};
 use store::{Handle, HandleBuilder, Store};
 
 use self::metadata::Metadata;
@@ -155,11 +156,15 @@ impl<H: Handle> Future for FutureSmall<H> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct SmallRef<H: Handle>(H);
+pub struct SmallRef<H: Handle>(H, u64);
 
 impl<H: Handle> SmallRef<H> {
-    pub fn from_handle(handle: H) -> Self {
-        SmallRef(handle)
+    pub fn size(&self) -> u64 {
+        self.1
+    }
+
+    pub fn new(size: u64, handle: H) -> Self {
+        SmallRef(handle, size)
     }
 
     pub fn into_handle(self) -> H {
@@ -177,6 +182,7 @@ impl<H: Handle> SmallRef<H> {
 
 pub struct FutureSmallRef<S: Store>(
     Flatten<FutureResult<<S::HandleBuilder as HandleBuilder>::FutureHandle, Error>>,
+    u64,
 );
 
 impl<S: Store> Future for FutureSmallRef<S> {
@@ -184,7 +190,7 @@ impl<S: Store> Future for FutureSmallRef<S> {
     type Error = Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        Ok(self.0.poll()?.map(SmallRef))
+        Ok(self.0.poll()?.map(|handle| SmallRef(handle, self.1)))
     }
 }
 
@@ -202,6 +208,10 @@ impl Deref for Small {
 }
 
 impl Small {
+    pub fn size(&self) -> u64 {
+        self.data.len() as u64
+    }
+
     pub fn send<S>(&self, store: &S) -> FutureSmallRef<S>
     where
         S: Store,
@@ -212,6 +222,7 @@ impl Small {
                 .map(|()| builder.finish())
                 .into_future()
                 .flatten(),
+            self.size(),
         )
     }
 }
@@ -259,53 +270,116 @@ impl SmallBuilder {
     }
 }
 
-pub struct FutureLarge<H: Handle>(H::FutureLoad);
+pub struct FutureLarge<H: Handle> {
+    blocking: H::FutureLoad,
+    size: u64,
+    depth: u8,
+}
 
 impl<H: Handle> Future for FutureLarge<H> {
     type Item = Large<H>;
     type Error = Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        match self.0.poll()? {
-            Async::Ready((content, refs_iter)) => {
-                Ok(Async::Ready(decode::large::<H>(content, refs_iter)?))
-            }
+        match self.blocking.poll()? {
+            Async::Ready((content, refs_iter)) => Ok(Async::Ready(decode::large::<H>(
+                content,
+                refs_iter,
+                self.size,
+                self.depth,
+            )?)),
             Async::NotReady => Ok(Async::NotReady),
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct LargeRef<H: Handle>(H);
+pub struct LargeRef<H: Handle> {
+    handle: H,
+    size: u64,
+    depth: u8,
+}
 
 impl<H: Handle> LargeRef<H> {
-    pub fn from_handle(handle: H) -> Self {
-        LargeRef(handle)
+    pub fn new(size: u64, depth: u8, handle: H) -> Self {
+        assert!(depth > 0, "All large blobs must have depth > 0!");
+
+        Self {
+            handle,
+            size,
+            depth,
+        }
+    }
+
+    pub fn size(&self) -> u64 {
+        self.size
+    }
+
+    pub fn depth(&self) -> u8 {
+        self.depth
     }
 
     pub fn into_handle(self) -> H {
-        self.0
+        self.handle
     }
 
     pub fn as_handle(&self) -> &H {
-        &self.0
+        &self.handle
     }
 
     pub fn fetch(&self) -> FutureLarge<H> {
-        FutureLarge(self.0.load())
+        FutureLarge {
+            blocking: self.handle.load(),
+            size: self.size,
+            depth: self.depth,
+        }
     }
 }
 
-pub struct FutureLargeRef<S: Store>(
-    Flatten<FutureResult<<S::HandleBuilder as HandleBuilder>::FutureHandle, Error>>,
-);
+pub struct FutureLargeRef<S: Store> {
+    blocking: Flatten<FutureResult<<S::HandleBuilder as HandleBuilder>::FutureHandle, Error>>,
+    size: u64,
+    depth: u8,
+}
 
 impl<S: Store> Future for FutureLargeRef<S> {
     type Item = LargeRef<S::Handle>;
     type Error = Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        Ok(self.0.poll()?.map(LargeRef))
+        Ok(self.blocking
+            .poll()?
+            .map(|handle| LargeRef::new(self.size, self.depth, handle)))
+    }
+}
+
+#[derive(Debug)]
+pub struct LargeIntoIter<H: Handle> {
+    iter: btree_map::IntoIter<u64, (u64, ObjectRef<H>)>,
+}
+
+impl<H: Handle> Iterator for LargeIntoIter<H> {
+    type Item = (Range<u64>, ObjectRef<H>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.iter
+            .next()
+            .map(|(start, (end, objref))| (start..end, objref))
+    }
+}
+
+#[derive(Debug)]
+pub struct LargeIter<'a, H: Handle> {
+    iter: btree_map::Iter<'a, u64, (u64, ObjectRef<H>)>,
+}
+
+impl<'a, H: Handle> Iterator for LargeIter<'a, H> {
+    type Item = (Range<u64>, &'a ObjectRef<H>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.iter
+            .next()
+            .map(|(&start, &(end, ref objref))| (start..end, objref))
     }
 }
 
@@ -315,26 +389,44 @@ pub struct LargeRangeIter<'a, H: Handle> {
 }
 
 impl<'a, H: Handle> Iterator for LargeRangeIter<'a, H> {
-    type Item = (Range<u64>, ObjectRef<H>);
+    type Item = (Range<u64>, &'a ObjectRef<H>);
 
     fn next(&mut self) -> Option<Self::Item> {
         self.range
             .next()
-            .map(|(&start, &(end, ref objref))| (start..end, objref.clone()))
+            .map(|(&start, &(end, ref objref))| (start..end, objref))
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Large<H: Handle> {
+    size: u64,
+    depth: u8,
     entries: BTreeMap<u64, (u64, ObjectRef<H>)>,
 }
 
-impl<H: Handle> Large<H> {
-    pub fn size(&self) -> u64 {
-        match self.entries.range(..).rev().next() {
-            Some((&end, _)) => end,
-            None => 0,
+impl<H: Handle> IntoIterator for Large<H> {
+    type Item = (Range<u64>, ObjectRef<H>);
+    type IntoIter = LargeIntoIter<H>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        LargeIntoIter {
+            iter: self.entries.into_iter(),
         }
+    }
+}
+
+impl<H: Handle> Large<H> {
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn depth(&self) -> u8 {
+        self.depth
+    }
+
+    pub fn size(&self) -> u64 {
+        self.size
     }
 
     pub fn range(&self, range: Range<u64>) -> LargeRangeIter<H> {
@@ -356,12 +448,20 @@ impl<H: Handle> Large<H> {
         S: Store<Handle = H>,
     {
         let mut builder = store.handle_builder();
-        FutureLargeRef(
-            encode::large(&mut builder, self)
+        FutureLargeRef {
+            blocking: encode::large(&mut builder, self)
                 .map(|()| builder.finish())
                 .into_future()
                 .flatten(),
-        )
+            size: self.size,
+            depth: self.depth,
+        }
+    }
+
+    pub fn iter(&self) -> LargeIter<H> {
+        LargeIter {
+            iter: self.entries.iter(),
+        }
     }
 }
 
@@ -369,7 +469,35 @@ impl<H: Handle> Large<H> {
 pub struct LargeBuilder<H: Handle>(Large<H>);
 
 impl<H: Handle> LargeBuilder<H> {
-    
+    pub fn new(depth: u8) -> Self {
+        LargeBuilder(Large {
+            size: 0,
+            depth,
+            entries: BTreeMap::new(),
+        })
+    }
+
+    pub fn as_large(&self) -> &Large<H> {
+        &self.0
+    }
+
+    pub fn push(&mut self, objref: ObjectRef<H>) {
+        match objref {
+            ObjectRef::Small(ref small_ref) => {
+                assert!(self.0.depth == 1);
+                let start = self.0.size;
+                let end = self.0.size + small_ref.size();
+                self.0.entries.insert(start, (end, objref));
+            }
+            ObjectRef::Large(ref large_ref) => {
+                assert!(self.0.depth == large_ref.depth() + 1);
+                let start = self.0.size;
+                let end = self.0.size + large_ref.size();
+                self.0.entries.insert(start, (end, objref));
+            }
+            _ => unreachable!(),
+        }
+    }
 }
 
 pub struct FutureTree<H: Handle>(H::FutureLoad);
@@ -392,7 +520,7 @@ impl<H: Handle> Future for FutureTree<H> {
 pub struct TreeRef<H: Handle>(H);
 
 impl<H: Handle> TreeRef<H> {
-    pub fn from_handle(handle: H) -> Self {
+    pub fn new(handle: H) -> Self {
         TreeRef(handle)
     }
 
@@ -615,5 +743,46 @@ impl<H: Handle> Commit<H> {
                 .into_future()
                 .flatten(),
         )
+    }
+}
+
+pub fn share<R: Read, S: Store>(
+    reader: R,
+    store: S,
+) -> impl Future<Item = ObjectRef<S::Handle>, Error = Error> {
+    async_block! {
+        let mut splitter = Splitter::new(reader, Parameters::default());
+
+        let mut small_builder = SmallBuilder::new();
+        let mut chunks = FuturesOrdered::new();
+        while let Some(_) = splitter.find(&mut small_builder)? {
+            chunks.push(small_builder.as_small().send(&store));
+            small_builder.clear();
+        }
+
+        match chunks.len() {
+            0 => {
+                // No chunks means the reader was empty.
+                let small_ref = await!(SmallBuilder::new().as_small().send(&store))?;
+                Ok(ObjectRef::Small(small_ref))
+            }
+            1 => {
+                // If we have a single chunk, no need to put it into a "large" chunk.
+                let small_ref = await!(chunks.into_future()).map_err(|t| t.0)?.0.unwrap();
+                Ok(ObjectRef::Small(small_ref))
+            }
+            _ => {
+                // TODO: "deep" hashsplitting. This is why the "depth" of the `LargeBuilder` is `1`.
+                let mut large_builder = LargeBuilder::new(1);
+
+                #[async]
+                for chunk in chunks {
+                    large_builder.push(ObjectRef::Small(chunk));
+                }
+                let large_ref = await!(large_builder.as_large().send(&store))?;
+
+                Ok(ObjectRef::Large(large_ref))
+            }
+        }
     }
 }

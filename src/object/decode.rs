@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, io::{BufRead, Read}, str::{self, FromStr}};
+use std::{usize, collections::BTreeMap, io::{BufRead, Read}, str::{self, FromStr}};
 
 use failure::{self, Error};
 use nom::{digit, rest, IResult};
@@ -9,7 +9,7 @@ use store::Handle;
 
 #[cfg_attr(rustfmt, rustfmt_skip)]
 named!(
-  byte_offset<u64>,
+  parse_u64<u64>,
   map_res!(
     map_res!(
       digit,
@@ -20,10 +20,22 @@ named!(
 );
 
 #[cfg_attr(rustfmt, rustfmt_skip)]
+named!(
+  parse_u8<u8>,
+  map_res!(
+    map_res!(
+      digit,
+      str::from_utf8
+    ),
+    u8::from_str
+  )
+);
+
+#[cfg_attr(rustfmt, rustfmt_skip)]
 macro_rules! netstring {
   ($i:expr, $submac:ident!( $($args:tt)* )) => (
     length_value!($i,
-      byte_offset,
+      parse_u64,
       delimited!(tag!(b":"), $submac!($($args)*), tag!(b","))
     )
   );
@@ -70,19 +82,26 @@ pub fn small<H: Handle>(mut content: H::Content) -> Result<Small, Error> {
 }
 
 #[cfg_attr(rustfmt, rustfmt_skip)]
-named!(large_entry<(u64, u64, ObjectKind, usize)>,
+named!(large_entry<(u64, u64, usize)>,
   do_parse!(
-    start: byte_offset >>
+    start: parse_u64 >>
     tag!(b" ") >>
-    end: byte_offset >>
+    end: parse_u64 >>
     tag!(b" ") >>
-    th: tagged_handle >>
+    hd: handle >>
     tag!(b"\n") >>
-    (start, end, th.0, th.1)
+    (start, end, hd)
   )
 );
 
-pub fn large<H: Handle>(mut content: H::Content, refs_iter: H::Refs) -> Result<Large<H>, Error> {
+pub fn large<H: Handle>(
+    mut content: H::Content,
+    refs_iter: H::Refs,
+    size: u64,
+    depth: u8,
+) -> Result<Large<H>, Error> {
+    assert!(depth > 0);
+
     let mut data = Vec::new();
     content.read_to_end(&mut data)?;
     let refs = refs_iter.collect::<Vec<_>>();
@@ -91,15 +110,19 @@ pub fn large<H: Handle>(mut content: H::Content, refs_iter: H::Refs) -> Result<L
         data.as_slice(),
         large_entry,
         Ok(BTreeMap::new()),
-        |acc_res: Result<BTreeMap<_, _>, _>, (start, end, kind, handle_idx)| {
+        |acc_res: Result<BTreeMap<_, _>, Error>, (start, end, handle_idx)| {
             let mut acc = acc_res?;
             let reference = refs.get(handle_idx)
                 .cloned()
                 .ok_or_else(|| failure::err_msg("Bad handle index!"))?;
-            let objref = match kind {
-                ObjectKind::Small => ObjectRef::Small(SmallRef::from_handle(reference)),
-                ObjectKind::Large => ObjectRef::Large(LargeRef::from_handle(reference)),
-                other => bail!("Malformed tree: object kind {:?} not supported!", other),
+            assert!(end > start);
+            let child_size = end - start;
+            let child_depth = depth - 1;
+            let objref = if child_depth == 0 {
+                assert!(size <= usize::MAX as u64, "Unable to keep Small in memory!");
+                ObjectRef::Small(SmallRef::new(child_size, reference))
+            } else {
+                ObjectRef::Large(LargeRef::new(child_size, child_depth - 1, reference))
             };
             acc.insert(start, (end, objref));
             Ok(acc)
@@ -107,20 +130,42 @@ pub fn large<H: Handle>(mut content: H::Content, refs_iter: H::Refs) -> Result<L
     );
 
     Ok(Large {
+        size,
+        depth,
         entries: ir.to_result()??,
     })
 }
 
+enum TreeEntry {
+    Tree,
+    Data(u64, u8),
+}
+
 #[cfg_attr(rustfmt, rustfmt_skip)]
-named!(tree_entry<(ObjectKind, usize, &str)>,
-  netstring!(
-    do_parse!(
-      th: tagged_handle >>
-      tag!(b" ") >>
-      name: map_res!(rest, str::from_utf8) >>
-      tag!(b"\n") >>
-      (th.0, th.1, name)
-    )
+named!(tree_entry<(&str, usize, TreeEntry)>,
+  terminated!(
+    netstring!(
+      do_parse!(
+        hd: handle >>
+        entry: alt!(
+          do_parse!(
+            tag!(b" data ") >>
+            size: parse_u64 >>
+            tag!(b" ") >>
+            depth: parse_u8 >>
+            tag!(b" ") >>
+            (TreeEntry::Data(size, depth))
+          ) |
+          do_parse!(
+            tag!(b" tree ") >>
+            (TreeEntry::Tree)
+          )
+        ) >>
+        name: map_res!(rest, str::from_utf8) >>
+        (name, hd, entry)
+      )
+    ),
+    tag!(b"\n")
   )
 );
 
@@ -133,19 +178,17 @@ pub fn tree<H: Handle>(mut content: H::Content, refs_iter: H::Refs) -> Result<Tr
         data.as_slice(),
         tree_entry,
         Ok(BTreeMap::new()),
-        |acc_res: Result<BTreeMap<_, _>, Error>,
-         (kind, handle_idx, name): (ObjectKind, usize, &str)| {
+        |acc_res: Result<BTreeMap<_, _>, Error>, (name, hd, entry)| {
             let mut acc = acc_res?;
-            let reference = refs.get(handle_idx)
+            let reference = refs.get(hd)
                 .cloned()
                 .ok_or_else(|| failure::err_msg("Bad handle index!"))?;
             acc.insert(
-                name.to_owned(),
-                match kind {
-                    ObjectKind::Small => ObjectRef::Small(SmallRef::from_handle(reference)),
-                    ObjectKind::Large => ObjectRef::Large(LargeRef::from_handle(reference)),
-                    ObjectKind::Tree => ObjectRef::Tree(TreeRef::from_handle(reference)),
-                    other => bail!("Malformed tree: object kind {:?} not supported!", other),
+                String::from(name),
+                match entry {
+                    TreeEntry::Data(sz, 0) => ObjectRef::Small(SmallRef::new(sz, reference)),
+                    TreeEntry::Data(sz, d) => ObjectRef::Large(LargeRef::new(sz, d, reference)),
+                    TreeEntry::Tree => ObjectRef::Tree(TreeRef::new(reference)),
                 },
             );
             Ok(acc)
@@ -176,7 +219,7 @@ pub fn commit<H: Handle>(
     content.read_until(b'\n', &mut data)?;
     let (n_parents, n_meta) = commit_header(data.as_slice()).to_result()?;
 
-    let subtree = TreeRef::from_handle(refs_iter
+    let subtree = TreeRef::new(refs_iter
         .next()
         .ok_or_else(|| format_err!("Malformed commit: no subtree handle!"))?);
     let parents = refs_iter
