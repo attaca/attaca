@@ -1,8 +1,10 @@
 @0x95a7e74e9af84091;
 
+using import "object_ref.capnp".ObjectRef;
+
 struct Entry {
-    maybeHash :union {
-        some @0 :Data;
+    maybeRef :union {
+        some @0 :ObjectRef;
         none @1 :Void;
     }
 

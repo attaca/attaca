@@ -26,6 +26,10 @@ mod digest_capnp {
     include!(concat!(env!("OUT_DIR"), "/digest_capnp.rs"));
 }
 
+mod object_ref_capnp {
+    include!(concat!(env!("OUT_DIR"), "/object_ref_capnp.rs"));
+}
+
 mod state_capnp {
     include!(concat!(env!("OUT_DIR"), "/state_capnp.rs"));
 }
@@ -42,7 +46,6 @@ use attaca::{Handle, HandleDigest, Open, Store, digest::{Digest, Sha3Digest},
 use capnp::{serialize_packed, Word, message::{self, ScratchSpace, ScratchSpaceHeapAllocator}};
 use failure::Error;
 use futures::{future::{self, Either}, prelude::*};
-use ignore::WalkBuilder;
 use leveldb::{database::Database, kv::KV, options::{Options, ReadOptions, WriteOptions}};
 
 use cache::Cache;
@@ -73,7 +76,7 @@ where
     store: S,
     db: Arc<RwLock<Database<Key>>>,
 
-    cache: Cache,
+    cache: Cache<D>,
     path: PathBuf,
 }
 
@@ -109,13 +112,13 @@ where
         let (candidate_digest, head_digest) = state
             .candidate
             .as_ref()
-            .map(TreeRef::as_handle)
+            .map(TreeRef::as_inner)
             .map(HandleDigest::digest)
             .join(
                 state
                     .head
                     .as_ref()
-                    .map(CommitRef::as_handle)
+                    .map(CommitRef::as_inner)
                     .map(HandleDigest::digest),
             )
             .wait()?;
@@ -183,7 +186,7 @@ where
                     self.store
                         .resolve(&dg)
                         .and_then(|rs| rs.ok_or_else(|| format_err!("Head does not exist!")))
-                        .map(CommitRef::from_handle)
+                        .map(CommitRef::new)
                 });
                 let candidate_digest = match state.get_candidate().which()? {
                     candidate::Some(bytes) => Some(D::from_bytes(&bytes?)),
@@ -193,7 +196,7 @@ where
                     self.store
                         .resolve(&dg)
                         .and_then(|rs| rs.ok_or_else(|| format_err!("Candidate does not exist!")))
-                        .map(TreeRef::from_handle)
+                        .map(TreeRef::new)
                 });
                 let active_branch = match state.get_active_branch().which()? {
                     active_branch::Some(name) => Some(String::from(name?)),

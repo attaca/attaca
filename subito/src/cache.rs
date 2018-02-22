@@ -1,7 +1,8 @@
-use std::{fs::File, io::{BufRead, Write}, ops::{BitAnd, BitOr, Not}, os::unix::io::AsRawFd,
-          path::{Path, PathBuf}, sync::{Arc, RwLock}, time::{SystemTime, UNIX_EPOCH}};
+use std::{fmt, fs::File, io::{BufRead, Write}, marker::PhantomData, ops::{BitAnd, BitOr, Not},
+          os::unix::io::AsRawFd, path::{Path, PathBuf}, sync::{Arc, RwLock},
+          time::{SystemTime, UNIX_EPOCH}};
 
-use attaca::{digest::{Digest, Sha3Digest}, path::ObjectPath};
+use attaca::{digest::Digest, object::{LargeRef, ObjectRef, SmallRef}, path::ObjectPath};
 use capnp::{serialize_packed, Word, message::{self, ScratchSpace, ScratchSpaceHeapAllocator}};
 use failure::Error;
 use leveldb::{database::Database, kv::KV, options::{ReadOptions, WriteOptions}};
@@ -10,6 +11,8 @@ use num_traits::FromPrimitive;
 use smallvec::SmallVec;
 
 use cache_capnp::*;
+use object_ref_capnp::*;
+
 use db::Key;
 
 // Although FS_IOC_GETVERSION in linux/fs.h is noted as taking a long, it actually deals with ints:
@@ -121,26 +124,54 @@ impl Inode {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct Entry {
-    maybe_hash: Option<Sha3Digest>,
+struct Entry<D: Digest> {
+    maybe_ref: Option<ObjectRef<D>>,
 
     inode: Inode,
 }
 
-impl Entry {
+impl<D: Digest> Entry<D> {
     fn decode<R: BufRead>(reader: &mut R) -> Result<Self, Error> {
-        use self::entry::{self, inode, maybe_hash};
+        use self::entry::{self, inode, maybe_ref};
+        use self::object_ref::kind;
 
         let message_reader = serialize_packed::read_message(reader, message::ReaderOptions::new())?;
         let entry = message_reader.get_root::<entry::Reader>()?;
 
-        let maybe_hash = match entry.get_maybe_hash().which()? {
-            maybe_hash::Some(data) => {
-                let bytes = data?;
-                ensure!(bytes.len() == Sha3Digest::SIZE, "Bad hash data!");
-                Some(Sha3Digest::from_bytes(bytes))
+        let maybe_ref = match entry.get_maybe_ref().which()? {
+            maybe_ref::Some(object_ref_reader_res) => {
+                let object_ref_reader = object_ref_reader_res?;
+                let digest_info = object_ref_reader.get_digest()?;
+                ensure!(digest_info.get_name()? == D::NAME, "Digest name mismatch!");
+                ensure!(
+                    digest_info.get_size() == D::SIZE as u32,
+                    "Digest size mismatch!"
+                );
+
+                let bytes = object_ref_reader.get_bytes()?;
+                ensure!(
+                    bytes.len() == D::SIZE,
+                    "Bad digest: length does not match digest metadata!"
+                );
+                let digest = D::from_bytes(bytes);
+
+                let object_digest = match object_ref_reader.get_kind().which()? {
+                    kind::Small(small_kind) => {
+                        ObjectRef::Small(SmallRef::new(small_kind.get_size(), digest))
+                    }
+                    kind::Large(large_kind) => ObjectRef::Large(LargeRef::new(
+                        large_kind.get_size(),
+                        large_kind.get_depth(),
+                        digest,
+                    )),
+                    kind::Tree(_) | kind::Commit(_) => {
+                        bail!("Bad cache entry: object reference should be small or large only!");
+                    }
+                };
+
+                Some(object_digest)
             }
-            maybe_hash::None(()) => None,
+            maybe_ref::None(()) => None,
         };
 
         let inode = {
@@ -166,7 +197,7 @@ impl Entry {
             }
         };
 
-        Ok(Self { maybe_hash, inode })
+        Ok(Self { maybe_ref, inode })
     }
 
     fn encode<W: Write>(&self, writer: &mut W) -> Result<(), Error> {
@@ -177,10 +208,31 @@ impl Entry {
         {
             let mut entry = message.init_root::<entry::Builder>();
             {
-                let mut maybe_hash = entry.borrow().get_maybe_hash();
-                match self.maybe_hash {
-                    Some(hash) => maybe_hash.set_some(hash.as_bytes()),
-                    None => maybe_hash.set_none(()),
+                let mut maybe_ref = entry.borrow().get_maybe_ref();
+                match self.maybe_ref {
+                    Some(ref object_digest) => {
+                        let mut object_digest_writer = maybe_ref.init_some();
+                        {
+                            let mut digest_writer = object_digest_writer.borrow().get_digest()?;
+                            digest_writer.set_name(D::NAME);
+                            digest_writer.set_size(D::SIZE as u32);
+                        }
+                        object_digest_writer.set_bytes(object_digest.as_inner().as_bytes());
+                        let mut kind_writer = object_digest_writer.borrow().get_kind();
+                        match *object_digest {
+                            ObjectRef::Small(ref small) => {
+                                let mut small_writer = kind_writer.init_small();
+                                small_writer.set_size(small.size());
+                            }
+                            ObjectRef::Large(ref large) => {
+                                let mut large_writer = kind_writer.init_large();
+                                large_writer.set_size(large.size());
+                                large_writer.set_depth(large.depth());
+                            }
+                            _ => bail!("Bad cache entry: digest should either be for a small or large object!"),
+                        }
+                    }
+                    None => maybe_ref.set_none(()),
                 }
             }
             {
@@ -273,33 +325,63 @@ impl Certainty {
 }
 
 #[derive(Debug, Clone)]
-pub struct Snapshot {
+pub struct Snapshot<D: Digest> {
     path_buf: PathBuf,
     object_path: ObjectPath,
 
     inode: Inode,
+    maybe_ref: Option<ObjectRef<D>>,
+}
+
+impl<D: Digest> Snapshot<D> {
+    pub fn path(&self) -> &Path {
+        &self.path_buf
+    }
+
+    pub fn as_object_ref(&self) -> Option<&ObjectRef<D>> {
+        self.maybe_ref.as_ref()
+    }
 }
 
 #[derive(Debug, Clone)]
-pub enum Status {
-    Extant(Certainty, Snapshot),
-    New(Snapshot),
+pub enum Status<D: Digest> {
+    Extant(Certainty, Snapshot<D>),
+    New(Snapshot<D>),
     Removed,
     Extinct,
 }
 
-pub struct Cache {
+pub struct Cache<D: Digest> {
+    _phantom: PhantomData<D>,
     db: Arc<RwLock<Database<Key>>>,
 }
 
-impl From<Arc<RwLock<Database<Key>>>> for Cache {
-    fn from(db: Arc<RwLock<Database<Key>>>) -> Self {
-        Self { db }
+impl<D: Digest> fmt::Debug for Cache<D> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("Cache").field("db", &"OPAQUE").finish()
     }
 }
 
-impl Cache {
-    pub fn status(&self, path: &ObjectPath) -> Result<Status, Error> {
+impl<D: Digest> Clone for Cache<D> {
+    fn clone(&self) -> Self {
+        Self {
+            db: self.db.clone(),
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<D: Digest> From<Arc<RwLock<Database<Key>>>> for Cache<D> {
+    fn from(db: Arc<RwLock<Database<Key>>>) -> Self {
+        Self {
+            db,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<D: Digest> Cache<D> {
+    pub fn status(&self, path: &ObjectPath) -> Result<Status<D>, Error> {
         let db_lock = self.db.read().unwrap();
         let key = Key::cache(path);
         let path_buf = path.to_path();
@@ -316,6 +398,7 @@ impl Cache {
                         path_buf,
                         object_path: path.clone(),
                         inode: newest,
+                        maybe_ref: entry.maybe_ref,
                     },
                 ))
             }
@@ -324,19 +407,20 @@ impl Cache {
                 path_buf,
                 object_path: path.clone(),
                 inode,
+                maybe_ref: None,
             })),
             (None, None) => Ok(Status::Extinct),
         }
     }
 
-    pub fn resolve(&self, snapshot: Snapshot, digest: Sha3Digest) -> Result<(), Error> {
+    pub fn resolve(&self, snapshot: Snapshot<D>, object_digest: ObjectRef<D>) -> Result<(), Error> {
         let newest =
             Inode::open(&snapshot.path_buf)?.ok_or_else(|| format_err!("File has been removed!"))?;
 
         match Inode::is_unchanged(&snapshot.inode, &newest) {
             Certainty::Positive => {
                 let mut entry = Entry {
-                    maybe_hash: Some(digest),
+                    maybe_ref: Some(object_digest),
                     inode: newest,
                 };
                 let mut buf = SmallVec::<[u8; 1024]>::new();
@@ -367,7 +451,7 @@ impl Cache {
     //                 match is_unchanged {
     //                     Certainty::Positive => {}
     //                     Certainty::Unknown | Certainty::Negative => {
-    //                         entry.maybe_hash = None;
+    //                         entry.maybe_ref = None;
     //                         let mut buf = SmallVec::<[u8; 1024]>::new();
     //                         entry.encode(&mut buf)?;
     //                         db_lock.put(WriteOptions::new(), &key, &buf)?;
@@ -379,7 +463,7 @@ impl Cache {
     //             (Some(_), None) => Ok(Status::Removed),
     //             (None, Some(inode)) => {
     //                 let entry = Entry {
-    //                     maybe_hash: None,
+    //                     maybe_ref: None,
     //                     inode,
     //                 };
     //                 let mut buf = SmallVec::<[u8; 1024]>::new();

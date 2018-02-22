@@ -5,6 +5,7 @@ fn main() {
         .src_prefix("schema")
         .file("schema/cache.capnp")
         .file("schema/digest.capnp")
+        .file("schema/object_ref.capnp")
         .file("schema/state.capnp")
         .run().expect("schema compiler command");
 }

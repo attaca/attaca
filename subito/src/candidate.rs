@@ -1,25 +1,41 @@
-use std::{cmp::Ordering, collections::{BTreeMap, BTreeSet}, path::{Path, PathBuf}, sync::Arc};
+use std::{cmp::Ordering, collections::{BTreeMap, BTreeSet}, fs::File, path::{Path, PathBuf},
+          sync::Arc};
 
 use attaca::{Handle, HandleDigest, Store,
              batch::{Batch as ObjectBatch, Operation as ObjectOperation}, digest::Digest,
-             hierarchy::Hierarchy, object::{ObjectRef, TreeBuilder, TreeRef}, path::ObjectPath};
-use failure::Error;
+             hierarchy::Hierarchy, object::{self, ObjectRef, TreeBuilder, TreeRef},
+             path::ObjectPath};
+use failure::{self, Error};
 use futures::{stream, future::Either, prelude::*};
+use ignore::WalkBuilder;
 use itertools::Itertools;
 use sequence_trie::SequenceTrie;
 
 use {Repository, State};
+use cache::{Cache, Certainty, Status};
 
+/// Type for the two kinds of possible operations on the candidate tree.
 #[derive(Debug, Clone, Copy)]
 pub enum OpKind {
+    /// Synchronize a child object of the candidate tree to its workspace counterpart.
     Stage,
+
+    /// Reset a child object of the candidate tree to its HEAD counterpart.
     Unstage,
 }
 
+/// Type for staging/unstaging operations.
 #[derive(Debug, Clone)]
 pub struct BatchOp {
-    path: PathBuf,
-    op: OpKind,
+    /// An absolute or relative path to an object in the repository to stage or unstage. It does
+    /// not necessarily need to resolve to an actual file; `Stage` operations on nonexistent files
+    /// become `Delete` operations on the candidate while paths for `Unstage` operations do not
+    /// refer to the local filesystem at all, only the HEAD tree.
+    pub path: PathBuf,
+
+    /// The operation type (stage operation, for adding local files to the candidate tree, or
+    /// unstage operation, for resetting objects to the state of the HEAD tree.)
+    pub op: OpKind,
 }
 
 #[derive(Debug, Clone)]
@@ -31,13 +47,105 @@ impl<S: Store, D: Digest> Repository<S, D>
 where
     S::Handle: HandleDigest<D>,
 {
-    pub fn process<'r, P: AsRef<Path>>(
-        &'r self,
-        path: &P,
-    ) -> impl Future<Item = Option<ObjectRef<S::Handle>>, Error = Error> {
-        async_block! {
-            Ok(unimplemented!())
+    #[async]
+    fn do_process_file(
+        store: S,
+        cache: Cache<D>,
+        absolute_path: PathBuf,
+        object_path: ObjectPath,
+    ) -> Result<ObjectRef<S::Handle>, Error> {
+        let status = cache.status(&object_path)?;
+
+        let pre_resolution = match status {
+            Status::Extant(Certainty::Positive, ref snapshot) => {
+                let resolution = snapshot
+                    .as_object_ref()
+                    .cloned()
+                    .map(|odr| odr.resolve(&store));
+                resolution
+            }
+            _ => None,
+        };
+
+        if let Some(resolved) = await!(pre_resolution)?.and_then(|x| x) {
+            return Ok(resolved);
         }
+
+        match status {
+            // TODO: Respect cache and reuse hash.
+            Status::Extant(_, snapshot) | Status::New(snapshot) => {
+                let mut file = File::open(&absolute_path)?;
+                let objref = await!(object::share(file, store))?;
+                let digest = await!(objref.digest())?;
+                cache.resolve(snapshot, digest)?;
+
+                Ok(objref)
+            }
+            Status::Removed | Status::Extinct => bail!("File removed during processing!"),
+        }
+    }
+
+    #[async]
+    fn do_process(
+        store: S,
+        cache: Cache<D>,
+        absolute_path: PathBuf,
+        object_path: ObjectPath,
+    ) -> Result<Option<ObjectRef<S::Handle>>, Error> {
+        if !absolute_path.exists() {
+            return Ok(None);
+        }
+
+        let file_type = absolute_path.symlink_metadata()?.file_type();
+        if file_type.is_symlink() || file_type.is_file() {
+            let objref = await!(Self::do_process_file(
+                store,
+                cache,
+                absolute_path,
+                object_path
+            ))?;
+            Ok(Some(objref))
+        } else {
+            let mut object_batch = ObjectBatch::<S::Handle>::new();
+            let walk = WalkBuilder::new(&absolute_path).build();
+
+            for direntry_res in walk {
+                let direntry = direntry_res?;
+                let file_type = direntry.file_type().unwrap();
+
+                if file_type.is_dir() {
+                    continue;
+                }
+
+                let object_path =
+                    ObjectPath::from_path(direntry.path().strip_prefix(&absolute_path)?)?;
+                // TODO: Concurrency here? Or more efficient not to?
+                let object_ref = await!(Self::do_process_file(
+                    store.clone(),
+                    cache.clone(),
+                    direntry.path().to_owned(),
+                    object_path.clone(),
+                ))?;
+                object_batch =
+                    await!(object_batch.add(ObjectOperation::Add(object_path, object_ref)))?;
+            }
+
+            let built = await!(object_batch.run(store.clone(), TreeBuilder::new()))?;
+            Ok(Some(ObjectRef::Tree(await!(built.as_tree().send(&store))?)))
+        }
+    }
+
+    pub fn process<'r>(
+        &'r self,
+        absolute_path: PathBuf,
+        object_path: ObjectPath,
+    ) -> impl Future<Item = Option<ObjectRef<S::Handle>>, Error = Error> {
+        Self::do_process(
+            self.store.clone(),
+            self.cache.clone(),
+            absolute_path,
+            object_path,
+        )
     }
 
     fn process_operation<'r>(
@@ -45,11 +153,23 @@ where
         hierarchy: Hierarchy<S::Handle>,
         batch_op: BatchOp,
     ) -> impl Future<Item = ObjectOperation<S::Handle>, Error = Error> {
-        let BatchOp { path, op } = batch_op;
-        let future_res = ObjectPath::from_path(&path).map(|object_path| {
+        let BatchOp { path: raw_path, op } = batch_op;
+
+        let paths_res = if raw_path.is_absolute() {
+            raw_path
+                .strip_prefix(&self.path)
+                .map_err(failure::err_msg)
+                .and_then(|relative_path| ObjectPath::from_path(relative_path))
+                .map(|object_path| (raw_path, object_path))
+        } else {
+            ObjectPath::from_path(&raw_path)
+                .map(|object_path| (self.path.join(&raw_path), object_path))
+        };
+
+        let future_res = paths_res.map(|(absolute_path, object_path)| {
             let future = match op {
                 OpKind::Unstage => Either::A(hierarchy.get(object_path.clone())),
-                OpKind::Stage => Either::B(self.process(&path)),
+                OpKind::Stage => Either::B(self.process(absolute_path, object_path.clone())),
             };
             future.map(|objref_opt| (object_path, objref_opt))
         });
