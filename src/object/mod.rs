@@ -67,6 +67,35 @@ impl<S: Store> Future for FutureObjectHandle<S> {
     }
 }
 
+pub enum FutureResolvedObject<S: Store> {
+    Small(FutureResolvedSmall<S>),
+    Large(FutureResolvedLarge<S>),
+    Tree(FutureResolvedTree<S>),
+    Commit(FutureResolvedCommit<S>),
+}
+
+impl<S: Store> Future for FutureResolvedObject<S> {
+    type Item = Option<ObjectRef<S::Handle>>;
+    type Error = Error;
+
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        match *self {
+            FutureResolvedObject::Small(ref mut small) => {
+                Ok(small.poll()?.map(|opt| opt.map(ObjectRef::Small)))
+            }
+            FutureResolvedObject::Large(ref mut large) => {
+                Ok(large.poll()?.map(|opt| opt.map(ObjectRef::Large)))
+            }
+            FutureResolvedObject::Tree(ref mut tree) => {
+                Ok(tree.poll()?.map(|opt| opt.map(ObjectRef::Tree)))
+            }
+            FutureResolvedObject::Commit(ref mut commit) => {
+                Ok(commit.poll()?.map(|opt| opt.map(ObjectRef::Commit)))
+            }
+        }
+    }
+}
+
 pub enum FutureObjectDigest<D: Digest, H: HandleDigest<D>> {
     Small(FutureSmallDigest<D, H>),
     Large(FutureLargeDigest<D, H>),
@@ -96,7 +125,7 @@ pub enum ObjectKind {
     Commit,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ObjectRef<H> {
     Small(SmallRef<H>),
     Large(LargeRef<H>),
@@ -104,7 +133,7 @@ pub enum ObjectRef<H> {
     Commit(CommitRef<H>),
 }
 
-impl<H: Handle> ObjectRef<H> {
+impl<H> ObjectRef<H> {
     pub fn into_inner(self) -> H {
         match self {
             ObjectRef::Small(small) => small.into_inner(),
@@ -131,7 +160,9 @@ impl<H: Handle> ObjectRef<H> {
             ObjectRef::Commit(_) => ObjectKind::Commit,
         }
     }
+}
 
+impl<H: Handle> ObjectRef<H> {
     pub fn fetch(&self) -> FutureObject<H> {
         match *self {
             ObjectRef::Small(ref small_ref) => FutureObject::Small(small_ref.fetch()),
@@ -150,6 +181,26 @@ impl<H: Handle> ObjectRef<H> {
             ObjectRef::Large(ref large_ref) => FutureObjectDigest::Large(large_ref.digest()),
             ObjectRef::Tree(ref tree_ref) => FutureObjectDigest::Tree(tree_ref.digest()),
             ObjectRef::Commit(ref commit_ref) => FutureObjectDigest::Commit(commit_ref.digest()),
+        }
+    }
+}
+
+impl<D: Digest> ObjectRef<D> {
+    pub fn resolve<S: Store>(&self, store: &S) -> FutureResolvedObject<S>
+    where
+        S::Handle: HandleDigest<D>,
+    {
+        match *self {
+            ObjectRef::Small(ref small_ref) => {
+                FutureResolvedObject::Small(small_ref.resolve(store))
+            }
+            ObjectRef::Large(ref large_ref) => {
+                FutureResolvedObject::Large(large_ref.resolve(store))
+            }
+            ObjectRef::Tree(ref tree_ref) => FutureResolvedObject::Tree(tree_ref.resolve(store)),
+            ObjectRef::Commit(ref commit_ref) => {
+                FutureResolvedObject::Commit(commit_ref.resolve(store))
+            }
         }
     }
 }
@@ -189,10 +240,10 @@ impl<H: Handle> Future for FutureSmall<H> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SmallRef<H>(H, u64);
 
-impl<H: Handle> SmallRef<H> {
+impl<H> SmallRef<H> {
     pub fn size(&self) -> u64 {
         self.1
     }
@@ -208,7 +259,9 @@ impl<H: Handle> SmallRef<H> {
     pub fn as_inner(&self) -> &H {
         &self.0
     }
+}
 
+impl<H: Handle> SmallRef<H> {
     pub fn fetch(&self) -> FutureSmall<H> {
         FutureSmall(self.0.load())
     }
@@ -221,6 +274,34 @@ impl<H: Handle> SmallRef<H> {
             blocking: self.0.digest(),
             size: self.1,
         }
+    }
+}
+
+impl<D: Digest> SmallRef<D> {
+    pub fn resolve<S: Store>(&self, store: &S) -> FutureResolvedSmall<S>
+    where
+        S::Handle: HandleDigest<D>,
+    {
+        FutureResolvedSmall {
+            blocking: store.resolve(self.as_inner()),
+            size: self.size(),
+        }
+    }
+}
+
+pub struct FutureResolvedSmall<S: Store> {
+    blocking: S::FutureResolve,
+    size: u64,
+}
+
+impl<S: Store> Future for FutureResolvedSmall<S> {
+    type Item = Option<SmallRef<S::Handle>>;
+    type Error = Error;
+
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        Ok(self.blocking
+            .poll()?
+            .map(|opt_handle| opt_handle.map(|handle| SmallRef::new(self.size, handle))))
     }
 }
 
@@ -353,7 +434,7 @@ impl<H: Handle> Future for FutureLarge<H> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct LargeRef<H> {
     inner: H,
     size: u64,
@@ -402,6 +483,36 @@ impl<H: Handle> LargeRef<H> {
             size: self.size,
             depth: self.depth,
         }
+    }
+}
+
+impl<D: Digest> LargeRef<D> {
+    pub fn resolve<S: Store>(&self, store: &S) -> FutureResolvedLarge<S>
+    where
+        S::Handle: HandleDigest<D>,
+    {
+        FutureResolvedLarge {
+            blocking: store.resolve(self.as_inner()),
+            size: self.size,
+            depth: self.depth,
+        }
+    }
+}
+
+pub struct FutureResolvedLarge<S: Store> {
+    blocking: S::FutureResolve,
+    size: u64,
+    depth: u8,
+}
+
+impl<S: Store> Future for FutureResolvedLarge<S> {
+    type Item = Option<LargeRef<S::Handle>>;
+    type Error = Error;
+
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        Ok(self.blocking.poll()?.map(|opt_handle| {
+            opt_handle.map(|handle| LargeRef::new(self.size, self.depth, handle))
+        }))
     }
 }
 
@@ -602,7 +713,7 @@ impl<H: Handle> Future for FutureTree<H> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TreeRef<H>(H);
 
 impl<H> TreeRef<H> {
@@ -629,6 +740,32 @@ impl<H: Handle> TreeRef<H> {
         H: HandleDigest<D>,
     {
         FutureTreeDigest(self.0.digest())
+    }
+}
+
+impl<D: Digest> TreeRef<D> {
+    pub fn resolve<S: Store>(&self, store: &S) -> FutureResolvedTree<S>
+    where
+        S::Handle: HandleDigest<D>,
+    {
+        FutureResolvedTree {
+            blocking: store.resolve(self.as_inner()),
+        }
+    }
+}
+
+pub struct FutureResolvedTree<S: Store> {
+    blocking: S::FutureResolve,
+}
+
+impl<S: Store> Future for FutureResolvedTree<S> {
+    type Item = Option<TreeRef<S::Handle>>;
+    type Error = Error;
+
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        Ok(self.blocking
+            .poll()?
+            .map(|opt_handle| opt_handle.map(|handle| TreeRef::new(handle))))
     }
 }
 
@@ -788,7 +925,7 @@ impl<H: Handle> Future for FutureCommit<H> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CommitRef<H>(H);
 
 impl<H> CommitRef<H> {
@@ -815,6 +952,32 @@ impl<H: Handle> CommitRef<H> {
         H: HandleDigest<D>,
     {
         FutureCommitDigest(self.0.digest())
+    }
+}
+
+impl<D: Digest> CommitRef<D> {
+    pub fn resolve<S: Store>(&self, store: &S) -> FutureResolvedCommit<S>
+    where
+        S::Handle: HandleDigest<D>,
+    {
+        FutureResolvedCommit {
+            blocking: store.resolve(self.as_inner()),
+        }
+    }
+}
+
+pub struct FutureResolvedCommit<S: Store> {
+    blocking: S::FutureResolve,
+}
+
+impl<S: Store> Future for FutureResolvedCommit<S> {
+    type Item = Option<CommitRef<S::Handle>>;
+    type Error = Error;
+
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        Ok(self.blocking
+            .poll()?
+            .map(|opt_handle| opt_handle.map(|handle| CommitRef::new(handle))))
     }
 }
 
