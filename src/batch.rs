@@ -1,6 +1,6 @@
 use std::{collections::HashMap, sync::Arc};
 
-use failure::Error;
+use failure::*;
 use futures::prelude::*;
 use im::List;
 
@@ -63,7 +63,7 @@ impl<H: Handle> Node<H> {
     fn insert(self, path: List<String>, value: Option<ObjectRef<H>>) -> Result<Self, Error> {
         match (path.uncons(), self) {
             (Some((head, tail)), Node::Add(ObjectRef::Tree(tree_ref))) => {
-                let tree = await!(tree_ref.fetch())?;
+                let tree = await!(tree_ref.fetch()).context("Error fetching unloaded branch node")?;
                 let mut map = tree.into_iter()
                     .map(|(k, v)| (Arc::new(k), Self::leaf(Some(v))))
                     .collect::<HashMap<_, _>>();
@@ -118,6 +118,15 @@ pub enum Operation<H: Handle> {
     Delete(ObjectPath),
 }
 
+impl<H: Handle> Operation<H> {
+    pub fn as_object_path(&self) -> &ObjectPath {
+        match *self {
+            Operation::Add(ref object_path, _) => object_path,
+            Operation::Delete(ref object_path) => object_path,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Batch<H: Handle> {
     root: HashMap<Arc<String>, Node<H>>,
@@ -139,7 +148,8 @@ impl<H: Handle> Batch<H> {
         let (head, tail) = path.inner
             .uncons()
             .ok_or_else(|| format_err!("Cannot replace or delete the root node!"))?;
-        let root = await!(Node::do_insert(head, tail, value, self.root))?;
+        let root = await!(Node::do_insert(head, tail, value, self.root))
+            .context("Error while inserting operation into batch trie")?;
 
         Ok(Self { root })
     }

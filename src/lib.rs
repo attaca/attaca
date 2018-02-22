@@ -9,7 +9,8 @@ compile_error!(
 );
 
 #[cfg(test)]
-extern crate rand;
+#[macro_use]
+extern crate proptest;
 
 extern crate chrono;
 extern crate etcd;

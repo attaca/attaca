@@ -58,14 +58,8 @@ where
     let mut handles = HashMap::new();
 
     for (name, reference) in &object.entries {
-        let (ks, handle) = match *reference {
-            ObjectRef::Small(ref small) => ("small", small.as_inner()),
-            ObjectRef::Large(ref large) => ("large", large.as_inner()),
-            ObjectRef::Tree(ref tree) => ("tree", tree.as_inner()),
-            _ => bail!("Bad tree object: child with bad kind (not small, large or tree)"),
-        };
-
-        let id = match handles.get(&handle) {
+        let handle = reference.as_inner();
+        let id = match handles.get(handle) {
             Some(&id) => id,
             None => {
                 let new_id = handles.len();
@@ -76,11 +70,22 @@ where
         };
 
         let mut buf = Vec::new();
-        write!(&mut buf, "{} {} {}\n", ks, id, name)?;
+        write!(&mut buf, "{} ", id)?;
+
+        match *reference {
+            ObjectRef::Small(ref small) => write!(&mut buf, "data {} {}", small.size(), 0)?,
+            ObjectRef::Large(ref large) => {
+                write!(&mut buf, "data {} {}", large.size(), large.depth())?
+            }
+            ObjectRef::Tree(_) => write!(&mut buf, "tree")?,
+            _ => bail!("Bad tree object: child with bad kind (not small, large or tree)"),
+        };
+
+        write!(&mut buf, " {}", name)?;
 
         write!(builder, "{}:", buf.len())?;
         builder.write_all(&buf)?;
-        write!(builder, ",")?;
+        write!(builder, ",\n")?;
     }
 
     Ok(())

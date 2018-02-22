@@ -34,9 +34,12 @@ named!(
 #[cfg_attr(rustfmt, rustfmt_skip)]
 macro_rules! netstring {
   ($i:expr, $submac:ident!( $($args:tt)* )) => (
-    length_value!($i,
-      parse_u64,
-      delimited!(tag!(b":"), $submac!($($args)*), tag!(b","))
+    do_parse!($i,
+      length: parse_u64 >>
+      tag!(b":") >>
+      value: flat_map!(take!(length), $submac!($($args)*)) >>
+      tag!(b",") >>
+      (value)
     )
   );
   ($i:expr, $f:expr) => (netstring!($i, call!($f)));
@@ -106,27 +109,30 @@ pub fn large<H: Handle>(
     content.read_to_end(&mut data)?;
     let refs = refs_iter.collect::<Vec<_>>();
 
-    let ir: IResult<_, _> = fold_many0!(
+    let ir: IResult<_, _> = terminated!(
         data.as_slice(),
-        large_entry,
-        Ok(BTreeMap::new()),
-        |acc_res: Result<BTreeMap<_, _>, Error>, (start, end, handle_idx)| {
-            let mut acc = acc_res?;
-            let reference = refs.get(handle_idx)
-                .cloned()
-                .ok_or_else(|| failure::err_msg("Bad handle index!"))?;
-            assert!(end > start);
-            let child_size = end - start;
-            let child_depth = depth - 1;
-            let objref = if child_depth == 0 {
-                assert!(size <= usize::MAX as u64, "Unable to keep Small in memory!");
-                ObjectRef::Small(SmallRef::new(child_size, reference))
-            } else {
-                ObjectRef::Large(LargeRef::new(child_size, child_depth - 1, reference))
-            };
-            acc.insert(start, (end, objref));
-            Ok(acc)
-        }
+        fold_many0!(
+            large_entry,
+            Ok(BTreeMap::new()),
+            |acc_res: Result<BTreeMap<_, _>, Error>, (start, end, handle_idx)| {
+                let mut acc = acc_res?;
+                let reference = refs.get(handle_idx)
+                    .cloned()
+                    .ok_or_else(|| failure::err_msg("Bad handle index!"))?;
+                assert!(end > start);
+                let child_size = end - start;
+                let child_depth = depth - 1;
+                let objref = if child_depth == 0 {
+                    assert!(size <= usize::MAX as u64, "Unable to keep Small in memory!");
+                    ObjectRef::Small(SmallRef::new(child_size, reference))
+                } else {
+                    ObjectRef::Large(LargeRef::new(child_size, child_depth - 1, reference))
+                };
+                acc.insert(start, (end, objref));
+                Ok(acc)
+            }
+        ),
+        eof!()
     );
 
     Ok(Large {
@@ -136,6 +142,7 @@ pub fn large<H: Handle>(
     })
 }
 
+#[derive(Debug)]
 enum TreeEntry {
     Tree,
     Data(u64, u8),
@@ -147,7 +154,7 @@ named!(tree_entry<(&str, usize, TreeEntry)>,
     netstring!(
       do_parse!(
         hd: handle >>
-        entry: alt!(
+        entry: dbg_dmp!(alt_complete!(
           do_parse!(
             tag!(b" data ") >>
             size: parse_u64 >>
@@ -160,7 +167,7 @@ named!(tree_entry<(&str, usize, TreeEntry)>,
             tag!(b" tree ") >>
             (TreeEntry::Tree)
           )
-        ) >>
+        )) >>
         name: map_res!(rest, str::from_utf8) >>
         (name, hd, entry)
       )
@@ -174,25 +181,28 @@ pub fn tree<H: Handle>(mut content: H::Content, refs_iter: H::Refs) -> Result<Tr
     content.read_to_end(&mut data)?;
     let refs = refs_iter.collect::<Vec<_>>();
 
-    let ir: IResult<_, _> = fold_many0!(
+    let ir: IResult<_, _> = terminated!(
         data.as_slice(),
-        tree_entry,
-        Ok(BTreeMap::new()),
-        |acc_res: Result<BTreeMap<_, _>, Error>, (name, hd, entry)| {
-            let mut acc = acc_res?;
-            let reference = refs.get(hd)
-                .cloned()
-                .ok_or_else(|| failure::err_msg("Bad handle index!"))?;
-            acc.insert(
-                String::from(name),
-                match entry {
-                    TreeEntry::Data(sz, 0) => ObjectRef::Small(SmallRef::new(sz, reference)),
-                    TreeEntry::Data(sz, d) => ObjectRef::Large(LargeRef::new(sz, d, reference)),
-                    TreeEntry::Tree => ObjectRef::Tree(TreeRef::new(reference)),
-                },
-            );
-            Ok(acc)
-        }
+        fold_many0!(
+            tree_entry,
+            Ok(BTreeMap::new()),
+            |acc_res: Result<BTreeMap<_, _>, Error>, (name, hd, entry)| {
+                let mut acc = acc_res?;
+                let reference = refs.get(hd)
+                    .cloned()
+                    .ok_or_else(|| failure::err_msg("Bad handle index!"))?;
+                acc.insert(
+                    String::from(name),
+                    match entry {
+                        TreeEntry::Data(sz, 0) => ObjectRef::Small(SmallRef::new(sz, reference)),
+                        TreeEntry::Data(sz, d) => ObjectRef::Large(LargeRef::new(sz, d, reference)),
+                        TreeEntry::Tree => ObjectRef::Tree(TreeRef::new(reference)),
+                    },
+                );
+                Ok(acc)
+            }
+        ),
+        eof!()
     );
 
     Ok(Tree {
@@ -237,4 +247,25 @@ pub fn commit<H: Handle>(
         parents,
         metadata: Metadata::new(meta_string, meta_handles),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::io::Write;
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn roundtrip_netstring(ref bytes in prop::collection::vec(any::<u8>(), 0..4096)) {
+            let mut buf = Vec::new();
+            write!(&mut buf, "{}:", bytes.len()).unwrap();
+            buf.write_all(&bytes).unwrap();
+            write!(&mut buf, ",").unwrap();
+            let battered_bytes = netstring!(buf.as_slice(), rest).to_full_result().unwrap();
+            assert_eq!(battered_bytes, bytes.as_slice());
+        }
+    }
 }

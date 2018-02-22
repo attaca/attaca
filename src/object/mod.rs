@@ -678,6 +678,10 @@ impl<H: Handle> LargeBuilder<H> {
         &self.0
     }
 
+    pub fn into_large(self) -> Large<H> {
+        self.0
+    }
+
     pub fn push(&mut self, objref: ObjectRef<H>) {
         match objref {
             ObjectRef::Small(ref small_ref) => {
@@ -793,7 +797,7 @@ impl<D: Digest, H: HandleDigest<D>> Future for FutureTreeDigest<D, H> {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Tree<H: Handle> {
     entries: BTreeMap<String, ObjectRef<H>>,
 }
@@ -906,6 +910,10 @@ impl<H: Handle> TreeBuilder<H> {
 
     pub fn as_tree(&self) -> &Tree<H> {
         &self.0
+    }
+
+    pub fn into_tree(self) -> Tree<H> {
+        self.0
     }
 }
 
@@ -1072,6 +1080,162 @@ pub fn share<R: Read, S: Store>(
 
                 Ok(ObjectRef::Large(large_ref))
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::io::Cursor;
+
+    use proptest::prelude::*;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    struct TestHandle(u64);
+
+    impl Handle for TestHandle {
+        type Content = Cursor<Vec<u8>>;
+        type Refs = ::std::vec::IntoIter<Self>;
+
+        type FutureLoad = FutureResult<(Self::Content, Self::Refs), Error>;
+        fn load(&self) -> Self::FutureLoad {
+            unimplemented!();
+        }
+    }
+
+    #[derive(Default)]
+    struct TestBuilder {
+        data: Vec<u8>,
+        refs: Vec<TestHandle>,
+    }
+
+    impl Write for TestBuilder {
+        fn write(&mut self, buf: &[u8]) -> Result<usize, io::Error> {
+            self.data.write(buf)
+        }
+
+        fn flush(&mut self) -> Result<(), io::Error> {
+            Write::flush(&mut self.data)
+        }
+    }
+
+    impl HandleBuilder for TestBuilder {
+        type Handle = TestHandle;
+
+        fn add_reference(&mut self, handle: Self::Handle) {
+            self.refs.push(handle);
+        }
+
+        type FutureHandle = FutureResult<TestHandle, Error>;
+        fn finish(self) -> Self::FutureHandle {
+            unimplemented!();
+        }
+    }
+
+    impl TestBuilder {
+        fn destruct(self) -> (Cursor<Vec<u8>>, ::std::vec::IntoIter<TestHandle>) {
+            (Cursor::new(self.data), self.refs.into_iter())
+        }
+    }
+
+    prop_compose! {
+        fn arb_handle()
+                (id in any::<u64>()) -> TestHandle {
+            TestHandle(id)
+        }
+    }
+
+    prop_compose! {
+        fn arb_small()
+                (data in any::<Vec<u8>>()) -> Small {
+            Small { data }
+        }
+    }
+
+    prop_compose! {
+        fn arb_small_ref()
+                (size in any::<u64>(), handle in arb_handle()) -> SmallRef<TestHandle> {
+            SmallRef(handle, size)
+        }
+    }
+
+    prop_compose! {
+        fn arb_large()
+                (refs in prop::collection::vec(arb_small_ref(), 1..1024)) -> Large<TestHandle> {
+            let mut builder = LargeBuilder::new(1);
+            for small_ref in refs {
+                builder.push(ObjectRef::Small(small_ref));
+            }
+            builder.into_large()
+        }
+    }
+
+    prop_compose! {
+        fn arb_large_ref()
+                (size in any::<u64>(), depth in 1u8..255u8, inner in arb_handle()) -> LargeRef<TestHandle> {
+
+            LargeRef { inner, size, depth }
+        }
+    }
+
+    prop_compose! {
+        fn arb_tree()
+                (entries in
+                    prop::collection::vec(
+                        (
+                            ".*",
+                            prop_oneof![
+                               1 => arb_small_ref().prop_map(ObjectRef::Small),
+                               1 => arb_large_ref().prop_map(ObjectRef::Large),
+                               1 => arb_tree_ref().prop_map(ObjectRef::Tree)
+                            ]
+                        ),
+                        0..1024,
+                    )
+                ) -> Tree<TestHandle> {
+            let mut tree_builder = TreeBuilder::new();
+            for (name, handle) in entries {
+                tree_builder.insert(name, handle);
+            }
+            tree_builder.into_tree()
+        }
+    }
+
+    prop_compose! {
+        fn arb_tree_ref()
+                (handle in arb_handle()) -> TreeRef<TestHandle> {
+            TreeRef(handle)
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn roundtrip_small(ref small in arb_small()) {
+            let mut builder = TestBuilder::default();
+            super::encode::small(&mut builder, small).unwrap();
+            let (content, _) = builder.destruct();
+            let battered_small = super::decode::small::<TestHandle>(content).unwrap();
+            assert_eq!(small, &battered_small);
+        }
+
+        #[test]
+        fn roundtrip_large(ref large in arb_large()) {
+            let mut builder = TestBuilder::default();
+            super::encode::large(&mut builder, large).unwrap();
+            let (content, refs) = builder.destruct();
+            let battered_large = super::decode::large::<TestHandle>(content, refs, large.size(), large.depth()).unwrap();
+            assert_eq!(large, &battered_large);
+        }
+
+        #[test]
+        fn roundtrip_tree(ref tree in arb_tree()) {
+            let mut builder = TestBuilder::default();
+            super::encode::tree(&mut builder, tree).unwrap();
+            let (content, refs) = builder.destruct();
+            let battered_tree = super::decode::tree::<TestHandle>(content, refs).unwrap();
+            assert_eq!(tree, &battered_tree);
         }
     }
 }

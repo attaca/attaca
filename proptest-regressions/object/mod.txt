@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 xs 802010895 4244219018 1545780880 2634145753 # shrinks to ref large = Large { size: 0, depth: 1, entries: {0: (0, Small(SmallRef(TestHandle(0), 0)))} }
+xs 1752530164 3066165790 732299767 3436225006 # shrinks to ref tree = Tree { entries: {"": Large(LargeRef { inner: TestHandle(0), size: 0, depth: 0 })} }
