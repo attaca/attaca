@@ -75,7 +75,7 @@ impl Store for LevelStore {
         &self,
         branch: String,
         previous: Option<Self::Handle>,
-        new: Self::Handle,
+        new: Option<Self::Handle>,
     ) -> Self::FutureSwapBranch {
         let db_lock = self.inner.db.write().unwrap();
         let key = branch + " (branch)";
@@ -106,11 +106,19 @@ impl Store for LevelStore {
             Err(err) => return future::err(err.into()),
         }
 
-        match db_lock.put(
-            WriteOptions::new(),
-            DbKey(SmallVec::from_vec(key.into_bytes())),
-            new.inner.digest.as_bytes(),
-        ) {
+        let result = match new {
+            Some(new_handle) => db_lock.put(
+                WriteOptions::new(),
+                DbKey(SmallVec::from_vec(key.into_bytes())),
+                new_handle.inner.digest.as_bytes(),
+            ),
+            None => db_lock.delete(
+                WriteOptions::new(),
+                DbKey(SmallVec::from_vec(key.into_bytes())),
+            ),
+        };
+
+        match result {
             Ok(()) => future::ok(()),
             Err(err) => future::err(err.into()),
         }
@@ -184,7 +192,7 @@ impl fmt::Debug for StoreInner {
 }
 
 impl LevelStore {
-    pub(crate) fn new(db: Arc<RwLock<Database<DbKey>>>) -> Self {
+    pub fn new(db: Arc<RwLock<Database<DbKey>>>) -> Self {
         Self {
             inner: Arc::new(StoreInner {
                 db,

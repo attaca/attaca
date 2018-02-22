@@ -17,3 +17,10 @@ url = "1.6.0"
 
 [dependencies.attaca]
 path = ".."
+
+[dev-dependencies]
+proptest = "0.5.0"
+tempdir = "0.3.6"
+
+[dev-dependencies.attaca-test]
+path = "../attaca-test"

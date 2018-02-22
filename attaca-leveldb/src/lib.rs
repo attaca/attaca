@@ -24,7 +24,7 @@ use failure::Error;
 use smallvec::SmallVec;
 
 #[derive(Debug, Clone)]
-struct DbKey(SmallVec<[u8; 32]>);
+pub struct DbKey(SmallVec<[u8; 32]>);
 
 impl Key for DbKey {
     fn from_u8(key: &[u8]) -> Self {

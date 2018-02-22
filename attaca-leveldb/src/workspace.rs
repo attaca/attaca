@@ -43,7 +43,7 @@ impl Search for LevelWorkspace {
 }
 
 impl LevelWorkspace {
-    pub(crate) fn new(db: Arc<RwLock<Database<DbKey>>>) -> Self {
+    pub fn new(db: Arc<RwLock<Database<DbKey>>>) -> Self {
         let store = LevelStore::new(db.clone());
         Self { store, db }
     }
