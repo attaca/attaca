@@ -28,7 +28,7 @@ pub trait DigestWriter: Write {
     fn finish(self) -> Self::Output;
 }
 
-pub trait Digest: Ord + Hash + Sized + Send + Sync + 'static {
+pub trait Digest: Clone + Ord + Hash + Sized + Send + Sync + 'static {
     const NAME: &'static str;
     const SIZE: usize;
 
