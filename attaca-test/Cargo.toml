@@ -4,7 +4,11 @@ name = "attaca-test"
 version = "0.1.0"
 
 [dependencies]
+chashmap = "2.2.0"
 failure = "0.1.1"
+futures-await = "0.1.0"
+leb128 = "0.2.2"
+owning_ref = "0.3.3"
 proptest = "0.5.0"
 
 [dependencies.attaca]
