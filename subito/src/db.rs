@@ -1,7 +1,4 @@
-use std::borrow::Cow;
-
 use attaca::path::ObjectPath;
-use failure::Error;
 use smallvec::SmallVec;
 
 const CACHE_PREFIX: &'static [u8] = b"CH";

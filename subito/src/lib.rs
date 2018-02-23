@@ -5,7 +5,7 @@ extern crate attaca_leveldb;
 extern crate capnp;
 extern crate db_key;
 #[macro_use]
-extern crate enum_primitive_derive;
+extern crate derive_builder;
 #[macro_use]
 extern crate failure;
 extern crate futures_await as futures;
@@ -15,8 +15,6 @@ extern crate itertools;
 extern crate leveldb;
 #[macro_use]
 extern crate nix;
-extern crate num_traits;
-extern crate sequence_trie;
 extern crate smallvec;
 #[macro_use]
 extern crate structopt;
@@ -43,27 +41,26 @@ mod state_capnp {
 
 mod cache;
 mod db;
-mod status;
 
 pub mod candidate;
+pub mod status;
 
-use std::{env, io::{BufRead, Write}, marker::PhantomData, path::{Path, PathBuf},
-          sync::{Arc, RwLock}};
+use std::{env, marker::PhantomData, path::{Path, PathBuf}, sync::{Arc, RwLock}};
 
-use attaca::{Handle, HandleDigest, Open, Store, digest::{Digest, Sha3Digest},
-             object::{CommitRef, TreeBuilder, TreeRef}};
+use attaca::{Handle, HandleDigest, Store, digest::Digest, object::{CommitRef, TreeRef}};
 use capnp::{serialize_packed, Word, message::{self, ScratchSpace, ScratchSpaceHeapAllocator}};
 use failure::Error;
-use futures::{future::{self, Either}, prelude::*};
+use futures::prelude::*;
 use leveldb::{database::Database, kv::KV, options::{Options, ReadOptions, WriteOptions}};
 
 use cache::Cache;
 use db::Key;
 
-pub struct State<H: Handle> {
-    pub candidate: Option<TreeRef<H>>,
-    pub head: Option<CommitRef<H>>,
-    pub active_branch: Option<String>,
+#[derive(Debug, Clone)]
+struct State<H: Handle> {
+    candidate: Option<TreeRef<H>>,
+    head: Option<CommitRef<H>>,
+    active_branch: Option<String>,
 }
 
 impl<H: Handle> Default for State<H> {
@@ -123,11 +120,7 @@ where
         Ok(Some(Self::open(&wd)?))
     }
 
-    pub fn as_store(&self) -> &S {
-        &self.store
-    }
-
-    pub fn set_state(&self, state: &State<S::Handle>) -> Result<(), Error> {
+    fn set_state(&self, state: &State<S::Handle>) -> Result<(), Error> {
         use state_capnp::state;
 
         let mut scratch_bytes = [0u8; 1024];
@@ -189,7 +182,7 @@ where
         Ok(())
     }
 
-    pub fn get_state(&self) -> Result<State<S::Handle>, Error> {
+    fn get_state(&self) -> Result<State<S::Handle>, Error> {
         match self.db
             .read()
             .unwrap()

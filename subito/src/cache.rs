@@ -1,13 +1,11 @@
 use std::{fmt, fs::File, io::{BufRead, Write}, marker::PhantomData, ops::{BitAnd, BitOr, Not},
-          os::unix::io::AsRawFd, path::{Path, PathBuf}, sync::{Arc, RwLock},
-          time::{SystemTime, UNIX_EPOCH}};
+          path::{Path, PathBuf}, sync::{Arc, RwLock}, time::{SystemTime, UNIX_EPOCH}};
 
 use attaca::{digest::Digest, object::{LargeRef, ObjectRef, SmallRef}, path::ObjectPath};
 use capnp::{serialize_packed, Word, message::{self, ScratchSpace, ScratchSpaceHeapAllocator}};
 use failure::*;
 use leveldb::{database::Database, kv::KV, options::{ReadOptions, WriteOptions}};
 use nix::{self, errno::Errno, libc::c_int, sys::stat::{lstat, FileStat}};
-use num_traits::FromPrimitive;
 use smallvec::SmallVec;
 
 use cache_capnp::*;
@@ -104,8 +102,9 @@ impl Inode {
             },
         };
 
+        // TODO: FS_IOC_GETVERSION/EXT4_IOC_GETVERSION, can they be made to work?
         let generation = {
-            let file = File::open(path)?;
+            // let file = File::open(path)?;
             let mut generation: c_int = 0;
             // unsafe {
             //     fs_ioc_getversion(file.as_raw_fd(), &mut generation)

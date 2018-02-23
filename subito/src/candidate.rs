@@ -1,34 +1,63 @@
-use std::{fmt, cmp::Ordering, collections::{BTreeMap, BTreeSet}, fs::File, path::{Path, PathBuf},
-          sync::Arc};
+use std::{fmt, fs::File, path::PathBuf};
 
-use attaca::{Handle, HandleDigest, Store,
-             batch::{Batch as ObjectBatch, Operation as ObjectOperation}, digest::Digest,
-             hierarchy::Hierarchy, object::{self, ObjectRef, TreeBuilder, TreeRef},
-             path::ObjectPath};
+use attaca::{HandleDigest, Store, batch::{Batch as ObjectBatch, Operation as ObjectOperation},
+             digest::Digest, hierarchy::Hierarchy,
+             object::{self, CommitAuthor, CommitBuilder, ObjectRef, TreeBuilder}, path::ObjectPath};
 use failure::{self, *};
 use futures::{stream, future::Either, prelude::*};
 use ignore::WalkBuilder;
-use itertools::Itertools;
-use sequence_trie::SequenceTrie;
 
 use {Repository, State};
 use cache::{Cache, Certainty, Status};
 
+/// Save the virtual workspace as a child commit of the previous commit.
+#[derive(Debug, StructOpt, Builder)]
+#[structopt(name = "commit")]
+pub struct CommitArgs {
+    /// Add a commit message.
+    #[structopt(short = "m", long = "m")]
+    pub message: Option<String>,
+
+    /// Add a commit author.
+    #[structopt(long = "author")]
+    pub author: Option<String>,
+
+    /// Instead of making a new commit, load the previous commit and update it.
+    #[structopt(long = "amend")]
+    pub amend: bool,
+
+    /// Force a commit regardless of warnings.
+    #[structopt(long = "force")]
+    pub force: bool,
+}
+
+pub struct CommitOut<'r> {
+    pub blocking: Box<Future<Item = (), Error = Error> + 'r>,
+}
+
+impl<'r> fmt::Debug for CommitOut<'r> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("CommitOut")
+            .field("blocking", &"OPAQUE")
+            .finish()
+    }
+}
+
 /// Load files into the virtual workspace.
-#[derive(Debug, StructOpt)]
+#[derive(Debug, StructOpt, Builder)]
 #[structopt(name = "stage")]
 pub struct StageArgs {
     /// Paths of files to load.
     #[structopt(name = "PATH", parse(from_os_str), raw(required = r#"true"#))]
-    paths: Vec<PathBuf>,
+    pub paths: Vec<PathBuf>,
 
     /// Load files from the previous commit into the virtual workspace instead.
     #[structopt(short = "p", long = "previous")]
-    previous: bool,
+    pub previous: bool,
 
-    /// Do not show progress.
+    /// Do not track progress.
     #[structopt(short = "q", long = "quiet")]
-    quiet: bool,
+    pub quiet: bool,
 }
 
 #[derive(Debug)]
@@ -40,14 +69,16 @@ pub struct FileProgress {
     total_bytes: u64,
 }
 
-pub struct StageOut {
-    pub files: Box<Stream<Item = FileProgress, Error = Error>>,
+pub struct StageOut<'r> {
+    pub progress: Box<Stream<Item = FileProgress, Error = Error> + 'r>,
+    pub blocking: Box<Future<Item = (), Error = Error> + 'r>,
 }
 
-impl fmt::Debug for StageOut {
+impl<'r> fmt::Debug for StageOut<'r> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("StageOut")
             .field("files", &"OPAQUE")
+            .field("blocking", &"OPAQUE")
             .finish()
     }
 }
@@ -96,17 +127,82 @@ impl<S: Store, D: Digest> Repository<S, D>
 where
     S::Handle: HandleDigest<D>,
 {
-    pub fn stage<'r>(&'r mut self, args: StageArgs) -> impl Future<Item = (), Error = Error> + 'r {
+    pub fn commit<'r>(&'r mut self, args: CommitArgs) -> CommitOut<'r> {
+        let blocking = async_block! {
+            let state = self.get_state()?;
+            let candidate = state.candidate.clone().ok_or_else(|| {
+                format_err!(
+                    "No virtual workspace to commit. \
+                     Add some files to the virtual workspace first!"
+                )
+            })?;
+
+            let maybe_head = await!(state.head.clone().map(|head_ref| head_ref.fetch()))?;
+
+            if let Some(ref head_commit) = maybe_head {
+                ensure!(
+                    head_commit.as_subtree() != &candidate || args.force,
+                    "Previous commit is identical to virtual workspace! \
+                     No changes will be committed - use --force to override."
+                );
+            }
+
+            let mut commit_builder = if args.amend {
+                match maybe_head {
+                    Some(head_commit) => head_commit.diverge(),
+                    None => bail!("No previous commit to amend!"),
+                }
+            } else {
+                let mut builder = CommitBuilder::new();
+                builder.parents(state.head.clone().into_iter());
+                builder
+            };
+
+            commit_builder.subtree(candidate);
+
+            if let Some(message) = args.message {
+                commit_builder.message(message.to_string());
+            }
+
+            if let Some(author) = args.author {
+                commit_builder.author(CommitAuthor {
+                    name: Some(author.to_string()),
+                    mbox: None,
+                });
+            }
+
+            let commit_ref = await!(commit_builder
+                .into_commit()?
+                .send(&self.store))?;
+            self.set_state(&State {
+                head: Some(commit_ref),
+                ..state
+            })?;
+
+            Ok(())
+        };
+
+        CommitOut {
+            blocking: Box::new(blocking),
+        }
+    }
+
+    pub fn stage<'r>(&'r mut self, args: StageArgs) -> StageOut<'r> {
         let op = if args.previous {
             OpKind::Unstage
         } else {
             OpKind::Stage
         };
         let batch = args.paths.into_iter().map(move |path| BatchOp { path, op });
-
-        async_block! {
+        let progress = stream::empty();
+        let blocking = async_block! {
             await!(self.stage_batch(batch))?;
             Ok(())
+        };
+
+        StageOut {
+            progress: Box::new(progress),
+            blocking: Box::new(blocking),
         }
     }
 
