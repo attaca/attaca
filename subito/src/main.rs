@@ -20,7 +20,7 @@ use clap::App;
 use failure::Error;
 use futures::prelude::*;
 use leveldb::{database::Database, options::Options};
-use subito::{Repository, State, candidate::{Batch, BatchOp, OpKind}};
+use subito::{Repository, State, candidate::{BatchOp, OpKind}};
 
 fn main() {
     match run() {

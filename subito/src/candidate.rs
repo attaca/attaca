@@ -102,7 +102,7 @@ where
         } else {
             OpKind::Stage
         };
-        let batch = args.paths.into_iter().map(|path| BatchOp { path, op });
+        let batch = args.paths.into_iter().map(move |path| BatchOp { path, op });
 
         async_block! {
             await!(self.stage_batch(batch))?;
@@ -277,7 +277,9 @@ where
                 None => Hierarchy::new(),
             };
             let queue = stream::futures_ordered(
-                batch.into_iter().map(|batch_op| self.process_operation(hierarchy.clone(), batch_op)),
+                batch
+                    .into_iter()
+                    .map(|batch_op| self.process_operation(hierarchy.clone(), batch_op)),
             );
             let batch: ObjectBatch<S::Handle> =
                 await!(queue.fold(ObjectBatch::new(), |batch, op| batch.add(op)))
