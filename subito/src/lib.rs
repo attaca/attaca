@@ -18,6 +18,8 @@ extern crate nix;
 extern crate num_traits;
 extern crate sequence_trie;
 extern crate smallvec;
+#[macro_use]
+extern crate structopt;
 
 #[allow(dead_code)]
 mod cache_capnp {
