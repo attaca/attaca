@@ -1,4 +1,4 @@
-use std::{cmp::Ordering, collections::{BTreeMap, BTreeSet}, fs::File, path::{Path, PathBuf},
+use std::{fmt, cmp::Ordering, collections::{BTreeMap, BTreeSet}, fs::File, path::{Path, PathBuf},
           sync::Arc};
 
 use attaca::{Handle, HandleDigest, Store,
@@ -13,6 +13,44 @@ use sequence_trie::SequenceTrie;
 
 use {Repository, State};
 use cache::{Cache, Certainty, Status};
+
+/// Load files into the virtual workspace.
+#[derive(Debug, StructOpt)]
+#[structopt(name = "stage")]
+pub struct StageArgs {
+    /// Paths of files to load.
+    #[structopt(name = "PATH", parse(from_os_str), raw(required = r#"true"#))]
+    paths: Vec<PathBuf>,
+
+    /// Load files from the previous commit into the virtual workspace instead.
+    #[structopt(short = "p", long = "previous")]
+    previous: bool,
+
+    /// Do not show progress.
+    #[structopt(short = "q", long = "quiet")]
+    quiet: bool,
+}
+
+#[derive(Debug)]
+pub struct FileProgress {
+    file_path: PathBuf,
+    object_path: ObjectPath,
+
+    processed_bytes: u64,
+    total_bytes: u64,
+}
+
+pub struct StageOut {
+    pub files: Box<Stream<Item = FileProgress, Error = Error>>,
+}
+
+impl fmt::Debug for StageOut {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("StageOut")
+            .field("files", &"OPAQUE")
+            .finish()
+    }
+}
 
 /// Type for the two kinds of possible operations on the candidate tree.
 #[derive(Debug, Clone, Copy)]
@@ -38,18 +76,19 @@ pub struct BatchOp {
     pub op: OpKind,
 }
 
-#[derive(Debug, Clone)]
-pub struct Batch {
-    ops: Vec<BatchOp>,
-}
-
-impl Batch {
-    pub fn new() -> Self {
-        Self { ops: Vec::new() }
+impl BatchOp {
+    pub fn stage(path: PathBuf) -> Self {
+        Self {
+            path,
+            op: OpKind::Stage,
+        }
     }
 
-    pub fn push(&mut self, batch_op: BatchOp) {
-        self.ops.push(batch_op);
+    pub fn unstage(path: PathBuf) -> Self {
+        Self {
+            path,
+            op: OpKind::Unstage,
+        }
     }
 }
 
@@ -57,6 +96,20 @@ impl<S: Store, D: Digest> Repository<S, D>
 where
     S::Handle: HandleDigest<D>,
 {
+    pub fn stage<'r>(&'r mut self, args: StageArgs) -> impl Future<Item = (), Error = Error> + 'r {
+        let op = if args.previous {
+            OpKind::Unstage
+        } else {
+            OpKind::Stage
+        };
+        let batch = args.paths.into_iter().map(|path| BatchOp { path, op });
+
+        async_block! {
+            await!(self.stage_batch(batch))?;
+            Ok(())
+        }
+    }
+
     #[async]
     fn do_process_file(
         store: S,
@@ -208,7 +261,10 @@ where
         }
     }
 
-    pub fn stage_batch<'r>(&'r mut self, batch: Batch) -> impl Future<Item = (), Error = Error> + 'r {
+    pub fn stage_batch<'r, I>(&'r mut self, batch: I) -> impl Future<Item = (), Error = Error> + 'r
+    where
+        I: IntoIterator<Item = BatchOp> + 'r,
+    {
         async_block! {
             let state = self.get_state()?;
             let hierarchy = match state.head {
@@ -221,10 +277,7 @@ where
                 None => Hierarchy::new(),
             };
             let queue = stream::futures_ordered(
-                batch
-                    .ops
-                    .into_iter()
-                    .map(|batch_op| self.process_operation(hierarchy.clone(), batch_op)),
+                batch.into_iter().map(|batch_op| self.process_operation(hierarchy.clone(), batch_op)),
             );
             let batch: ObjectBatch<S::Handle> =
                 await!(queue.fold(ObjectBatch::new(), |batch, op| batch.add(op)))

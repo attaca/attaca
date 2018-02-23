@@ -1,3 +1,5 @@
+use std::fmt;
+
 use attaca::{Handle, HandleDigest, Store, digest::Digest, object::{ObjectRef, TreeRef},
              path::ObjectPath};
 use failure::*;
@@ -5,6 +7,22 @@ use futures::{future, prelude::*, stream::FuturesUnordered};
 use itertools::{EitherOrBoth, Itertools};
 
 use {Repository, State};
+
+/// Compare the virtual workspace to the previous commit.
+#[derive(Debug, StructOpt)]
+pub struct StatusArgs {}
+
+pub struct StatusOut {
+    pub staged: Box<Stream<Item = Change, Error = Error>>,
+}
+
+impl fmt::Debug for StatusOut {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("StatusOut")
+            .field("staged", &"OPAQUE")
+            .finish()
+    }
+}
 
 #[derive(Debug, Clone)]
 pub enum Change {
@@ -103,6 +121,12 @@ impl<S: Store, D: Digest> Repository<S, D>
 where
     S::Handle: HandleDigest<D>,
 {
+    pub fn status(&self, args: StatusArgs) -> StatusOut {
+        StatusOut {
+            staged: Box::new(self.staged_changes()),
+        }
+    }
+
     pub fn staged_changes(&self) -> impl Stream<Item = Change, Error = Error> {
         let state_res = self.get_state();
 

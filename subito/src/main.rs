@@ -63,29 +63,25 @@ fn run() -> Result<(), Error> {
         ("stage", Some(sub_m)) => {
             let mut repository = Repository::<LevelStore, Sha3Digest>::search()?
                 .ok_or_else(|| format_err!("Repository not found!"))?;
-            let mut batch = Batch::new();
-            sub_m.values_of("PATH").unwrap().for_each(|path| {
-                batch.push(BatchOp {
+
+            repository
+                .stage_batch(sub_m.values_of("PATH").unwrap().map(|path| BatchOp {
                     path: PathBuf::from(path),
                     op: OpKind::Stage,
-                })
-            });
-
-            repository.stage_batch(batch).wait()?;
+                }))
+                .wait()?;
             Ok(())
         }
         ("unstage", Some(sub_m)) => {
             let mut repository = Repository::<LevelStore, Sha3Digest>::search()?
                 .ok_or_else(|| format_err!("Repository not found!"))?;
-            let mut batch = Batch::new();
-            sub_m.values_of("PATH").unwrap().for_each(|path| {
-                batch.push(BatchOp {
+
+            repository
+                .stage_batch(sub_m.values_of("PATH").unwrap().map(|path| BatchOp {
                     path: PathBuf::from(path),
                     op: OpKind::Unstage,
-                })
-            });
-
-            repository.stage_batch(batch).wait()?;
+                }))
+                .wait()?;
             Ok(())
         }
         ("commit", Some(sub_m)) => {
