@@ -208,7 +208,7 @@ where
         }
     }
 
-    pub fn stage<'r>(&'r mut self, batch: Batch) -> impl Future<Item = (), Error = Error> + 'r {
+    pub fn stage_batch<'r>(&'r mut self, batch: Batch) -> impl Future<Item = (), Error = Error> + 'r {
         async_block! {
             let state = self.get_state()?;
             let hierarchy = match state.head {

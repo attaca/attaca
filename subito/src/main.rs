@@ -71,7 +71,7 @@ fn run() -> Result<(), Error> {
                 })
             });
 
-            repository.stage(batch).wait()?;
+            repository.stage_batch(batch).wait()?;
             Ok(())
         }
         ("unstage", Some(sub_m)) => {
@@ -85,7 +85,7 @@ fn run() -> Result<(), Error> {
                 })
             });
 
-            repository.stage(batch).wait()?;
+            repository.stage_batch(batch).wait()?;
             Ok(())
         }
         ("commit", Some(sub_m)) => {
