@@ -151,12 +151,12 @@ fn run() -> Result<(), Error> {
                 .head
                 .map(|head| {
                     head.digest()
-                        .map(|d: CommitRef<Sha3Digest>| hex::encode(d.as_inner().as_bytes()))
+                        .map(|d: CommitRef<Sha3Digest>| String::from("0x") + hex::encode(&d.as_inner().as_bytes()[..5]))
                 })
                 .join(state.candidate.map(|candidate| {
                     candidate
                         .digest()
-                        .map(|d: TreeRef<Sha3Digest>| hex::encode(d.as_inner().as_bytes()))
+                        .map(|d: TreeRef<Sha3Digest>| hex::encode(&d.as_inner().as_bytes()[..5]))
                 }))
                 .wait()?;
 
@@ -173,8 +173,13 @@ fn run() -> Result<(), Error> {
 
             let staged_changes = repository.staged_changes().collect().wait()?;
 
-            for change in staged_changes {
-                println!("{:?}", change);
+            println!();
+            if staged_changes.is_empty() {
+                println!("No changes to be committed. The virtual workspace and previous commit are the same.");
+            } else {
+                for change in staged_changes {
+                    println!("{:?}", change);
+                }
             }
             Ok(())
         }
