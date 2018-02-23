@@ -1,21 +1,4 @@
-use store::Handle;
+pub const ATTACA_COMMIT_MESSAGE: &'static str = "http://attaca.io/ontology/#commitMessage";
 
-#[derive(Debug, Clone)]
-pub struct Metadata<H: Handle> {
-    raw: String,
-    handles: Vec<H>,
-}
-
-impl<H: Handle> Metadata<H> {
-    pub fn new(raw: String, handles: Vec<H>) -> Self {
-        Self { raw, handles }
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.raw
-    }
-
-    pub fn as_handles(&self) -> &[H] {
-        &self.handles
-    }
-}
+pub const FOAF_MBOX: &'static str = "http://xmlns.com/foaf/spec/#term_mbox";
+pub const FOAF_NAME: &'static str = "http://xmlns.com/foaf/spec/#term_name";

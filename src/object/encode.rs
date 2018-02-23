@@ -1,8 +1,9 @@
-use std::{usize, collections::HashMap, io::Write};
+use std::{ascii, usize, collections::{BTreeSet, HashMap}, io::Write};
 
 use failure::Error;
 
-use object::{Commit, Large, ObjectRef, Small, Tree};
+use object::{Commit, Large, ObjectRef, Small, Tree,
+             metadata::{ATTACA_COMMIT_MESSAGE, FOAF_MBOX, FOAF_NAME}};
 use store::HandleBuilder;
 
 pub fn small<HB>(builder: &mut HB, object: &Small) -> Result<(), Error>
@@ -91,26 +92,58 @@ where
     Ok(())
 }
 
+// TODO: Robust RDF formatting - current breaks for non-ASCII strings:
+// https://github.com/sdleffler/attaca/issues/25
 pub fn commit<HB>(builder: &mut HB, object: &Commit<HB::Handle>) -> Result<(), Error>
 where
     HB: HandleBuilder,
 {
+    fn rdf_literal(s: &str) -> Vec<u8> {
+        s.as_bytes()
+            .iter()
+            .cloned()
+            .flat_map(ascii::escape_default)
+            .collect::<Vec<_>>()
+    }
+
     builder.add_reference(object.subtree.as_inner().clone());
     for parent in &object.parents {
         builder.add_reference(parent.as_inner().clone());
     }
-    for handle in object.metadata.as_handles() {
-        builder.add_reference(handle.clone());
+
+    // The `0` is for metadata refs; N-triples metadata does not yet use refs (since it's just
+    // author/message metadata) but it might eventually.
+    write!(builder, "{} {}\n", object.parents.len(), 0)?;
+
+    let mut ntriples = BTreeSet::new();
+
+    if let Some(name) = object.author.name.as_ref() {
+        let mut buf = Vec::new();
+        write!(&mut buf, "_:author <{}> \"", FOAF_NAME)?;
+        buf.write_all(&rdf_literal(name))?;
+        write!(&mut buf, "\" .\n")?;
+        ntriples.insert(buf);
     }
 
-    write!(
-        builder,
-        "{} {}\n",
-        object.parents.len(),
-        object.metadata.as_handles().len()
-    )?;
+    if let Some(mbox) = object.author.mbox.as_ref() {
+        let mut buf = Vec::new();
+        write!(&mut buf, "_:author <{}> \"", FOAF_MBOX)?;
+        buf.write_all(&rdf_literal(mbox))?;
+        write!(&mut buf, "\" .\n")?;
+        ntriples.insert(buf);
+    }
 
-    builder.write_all(object.metadata.as_str().as_bytes())?;
+    if let Some(message) = object.as_message() {
+        let mut buf = Vec::new();
+        write!(&mut buf, "_:this <{}> \"", ATTACA_COMMIT_MESSAGE)?;
+        buf.write_all(&rdf_literal(message))?;
+        write!(&mut buf, "\" .\n")?;
+        ntriples.insert(buf);
+    }
+
+    for triple in ntriples {
+        builder.write_all(&triple)?;
+    }
 
     Ok(())
 }

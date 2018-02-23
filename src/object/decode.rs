@@ -2,9 +2,11 @@ use std::{usize, collections::BTreeMap, io::{BufRead, Read}, str::{self, FromStr
 
 use failure::{self, Error};
 use nom::{digit, rest, IResult};
+use ntriple::{self, Object, Predicate, Subject};
 
-use object::{Commit, CommitRef, Large, LargeRef, ObjectKind, ObjectRef, Small, SmallRef, Tree,
-             TreeRef, metadata::Metadata};
+use object::{Commit, CommitAuthor, CommitBuilder, CommitRef, Large, LargeRef, ObjectKind,
+             ObjectRef, Small, SmallRef, Tree, TreeRef,
+             metadata::{ATTACA_COMMIT_MESSAGE, FOAF_MBOX, FOAF_NAME}};
 use store::Handle;
 
 #[cfg_attr(rustfmt, rustfmt_skip)]
@@ -221,6 +223,8 @@ named!(commit_header<(usize, usize)>,
   )
 );
 
+// TODO: Robust RDF formatting - current breaks for non-ASCII strings:
+// https://github.com/sdleffler/attaca/issues/25
 pub fn commit<H: Handle>(
     mut content: H::Content,
     mut refs_iter: H::Refs,
@@ -229,24 +233,79 @@ pub fn commit<H: Handle>(
     content.read_until(b'\n', &mut data)?;
     let (n_parents, n_meta) = commit_header(data.as_slice()).to_result()?;
 
-    let subtree = TreeRef::new(refs_iter
+    let mut commit_builder = CommitBuilder::new();
+
+    commit_builder.subtree(TreeRef::new(refs_iter
         .next()
-        .ok_or_else(|| format_err!("Malformed commit: no subtree handle!"))?);
-    let parents = refs_iter
-        .by_ref()
-        .take(n_parents)
-        .map(CommitRef::new)
-        .collect();
-    let meta_handles = refs_iter.by_ref().take(n_meta).collect();
+        .ok_or_else(|| format_err!("Malformed commit: no subtree handle!"))?));
+    commit_builder.parents(refs_iter.by_ref().take(n_parents).map(CommitRef::new));
+
+    // We don't have anything to do with these metadata refs yet, but the encoding has them, so we
+    // should at least consume them to be sure they're there.
+    let _meta_handles = refs_iter.by_ref().take(n_meta).for_each(|_| ());
 
     let mut meta_string = String::new();
     content.read_to_string(&mut meta_string)?;
 
-    Ok(Commit {
-        subtree,
-        parents,
-        metadata: Metadata::new(meta_string, meta_handles),
-    })
+    let mut author = CommitAuthor::new();
+
+    for line in meta_string.lines() {
+        let triple = match ntriple::parser::triple_line(line)? {
+            Some(triple) => triple,
+            None => continue,
+        };
+
+        let name = match triple.subject {
+            Subject::BNode(name) => name,
+
+            // No-op if we don't recognize it.
+            _ => continue,
+        };
+
+        match name.as_str() {
+            "this" => {
+                let Predicate::IriRef(iri) = triple.predicate;
+
+                let object = match triple.object {
+                    Object::Lit(literal) => literal.data,
+                    _ => bail!("Malformed commit metadata: expected commit message to have a literal object"),
+                };
+
+                match iri.as_str() {
+                    ATTACA_COMMIT_MESSAGE => commit_builder.message(object),
+                    _ => bail!(
+                        "Malformed commit metadata: invalid commit predicate <{}>",
+                        iri
+                    ),
+                };
+            }
+            "author" => {
+                let Predicate::IriRef(iri) = triple.predicate;
+
+                let object = match triple.object {
+                    Object::Lit(literal) => literal.data,
+                    _ => bail!(
+                        "Malformed commit metadata: expected author subject to be a literal object"
+                    ),
+                };
+
+                match iri.as_str() {
+                    FOAF_MBOX => author.mbox = Some(object),
+                    FOAF_NAME => author.name = Some(object),
+                    _ => bail!(
+                        "Malformed commit metadata: invalid author predicate <{}>",
+                        iri
+                    ),
+                }
+            }
+
+            // No-op if unrecognized subject.
+            _ => {}
+        }
+    }
+
+    commit_builder.author(author);
+    Ok(commit_builder.into_commit()?)
 }
 
 #[cfg(test)]

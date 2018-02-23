@@ -1,6 +1,6 @@
 //! # `attaca` - distributed, resilient version control with a git-like interface
 
-#![feature(proc_macro, conservative_impl_trait, generators, nll)]
+#![feature(proc_macro, conservative_impl_trait, generators, nll, from_utf8_error_as_bytes)]
 #![recursion_limit = "256"]
 
 #[cfg(not(target_pointer_width = "64"))]
@@ -24,6 +24,7 @@ extern crate leb128;
 extern crate memchr;
 #[macro_use]
 extern crate nom;
+extern crate ntriple;
 extern crate parking_lot;
 extern crate sequence_trie;
 extern crate sha3;

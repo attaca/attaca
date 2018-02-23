@@ -2,7 +2,7 @@ pub mod decode;
 pub mod encode;
 pub mod metadata;
 
-use std::{collections::{btree_map, BTreeMap, Bound, VecDeque}, io::{self, Read, Write},
+use std::{mem, collections::{btree_map, BTreeMap, Bound, VecDeque}, io::{self, Read, Write},
           ops::{Deref, DerefMut, Range}};
 
 use failure::Error;
@@ -12,8 +12,6 @@ use digest::Digest;
 use path::ObjectPath;
 use split::{Parameters, Splitter};
 use store::{Handle, HandleBuilder, HandleDigest, Store};
-
-use self::metadata::Metadata;
 
 #[derive(Debug, Clone)]
 pub enum Object<H: Handle> {
@@ -551,11 +549,11 @@ impl<D: Digest, H: HandleDigest<D>> Future for FutureLargeDigest<D, H> {
 }
 
 #[derive(Debug)]
-pub struct LargeIntoIter<H: Handle> {
+pub struct LargeIntoIter<H> {
     iter: btree_map::IntoIter<u64, (u64, ObjectRef<H>)>,
 }
 
-impl<H: Handle> Iterator for LargeIntoIter<H> {
+impl<H> Iterator for LargeIntoIter<H> {
     type Item = (Range<u64>, ObjectRef<H>);
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -566,11 +564,11 @@ impl<H: Handle> Iterator for LargeIntoIter<H> {
 }
 
 #[derive(Debug)]
-pub struct LargeIter<'a, H: Handle> {
+pub struct LargeIter<'a, H: 'a> {
     iter: btree_map::Iter<'a, u64, (u64, ObjectRef<H>)>,
 }
 
-impl<'a, H: Handle> Iterator for LargeIter<'a, H> {
+impl<'a, H> Iterator for LargeIter<'a, H> {
     type Item = (Range<u64>, &'a ObjectRef<H>);
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -581,11 +579,11 @@ impl<'a, H: Handle> Iterator for LargeIter<'a, H> {
 }
 
 #[derive(Debug)]
-pub struct LargeRangeIter<'a, H: Handle> {
+pub struct LargeRangeIter<'a, H: 'a> {
     range: btree_map::Range<'a, u64, (u64, ObjectRef<H>)>,
 }
 
-impl<'a, H: Handle> Iterator for LargeRangeIter<'a, H> {
+impl<'a, H: 'a> Iterator for LargeRangeIter<'a, H> {
     type Item = (Range<u64>, &'a ObjectRef<H>);
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -596,13 +594,13 @@ impl<'a, H: Handle> Iterator for LargeRangeIter<'a, H> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Large<H: Handle> {
+pub struct Large<H> {
     size: u64,
     depth: u8,
     entries: BTreeMap<u64, (u64, ObjectRef<H>)>,
 }
 
-impl<H: Handle> IntoIterator for Large<H> {
+impl<H> IntoIterator for Large<H> {
     type Item = (Range<u64>, ObjectRef<H>);
     type IntoIter = LargeIntoIter<H>;
 
@@ -613,7 +611,7 @@ impl<H: Handle> IntoIterator for Large<H> {
     }
 }
 
-impl<H: Handle> Large<H> {
+impl<H> Large<H> {
     pub fn len(&self) -> usize {
         self.entries.len()
     }
@@ -640,6 +638,14 @@ impl<H: Handle> Large<H> {
         }
     }
 
+    pub fn iter(&self) -> LargeIter<H> {
+        LargeIter {
+            iter: self.entries.iter(),
+        }
+    }
+}
+
+impl<H: Handle> Large<H> {
     pub fn send<S>(&self, store: &S) -> FutureLargeHandle<S>
     where
         S: Store<Handle = H>,
@@ -654,18 +660,12 @@ impl<H: Handle> Large<H> {
             depth: self.depth,
         }
     }
-
-    pub fn iter(&self) -> LargeIter<H> {
-        LargeIter {
-            iter: self.entries.iter(),
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
-pub struct LargeBuilder<H: Handle>(Large<H>);
+pub struct LargeBuilder<H>(Large<H>);
 
-impl<H: Handle> LargeBuilder<H> {
+impl<H> LargeBuilder<H> {
     pub fn new(depth: u8) -> Self {
         LargeBuilder(Large {
             size: 0,
@@ -798,11 +798,11 @@ impl<D: Digest, H: HandleDigest<D>> Future for FutureTreeDigest<D, H> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Tree<H: Handle> {
+pub struct Tree<H> {
     entries: BTreeMap<String, ObjectRef<H>>,
 }
 
-impl<H: Handle> Deref for Tree<H> {
+impl<H> Deref for Tree<H> {
     type Target = BTreeMap<String, ObjectRef<H>>;
 
     fn deref(&self) -> &Self::Target {
@@ -810,7 +810,7 @@ impl<H: Handle> Deref for Tree<H> {
     }
 }
 
-impl<H: Handle> IntoIterator for Tree<H> {
+impl<H> IntoIterator for Tree<H> {
     type Item = (String, ObjectRef<H>);
     type IntoIter = ::std::collections::btree_map::IntoIter<String, ObjectRef<H>>;
 
@@ -819,11 +819,13 @@ impl<H: Handle> IntoIterator for Tree<H> {
     }
 }
 
-impl<H: Handle> Tree<H> {
+impl<H> Tree<H> {
     pub fn diverge(self) -> TreeBuilder<H> {
         TreeBuilder(self)
     }
+}
 
+impl<H: Handle> Tree<H> {
     pub fn files(self) -> Box<Stream<Item = (ObjectPath, ObjectRef<H>), Error = Error>> {
         let stream = async_stream_block! {
             let mut streams = VecDeque::new();
@@ -879,15 +881,15 @@ impl<H: Handle> Tree<H> {
 }
 
 #[derive(Debug, Clone)]
-pub struct TreeBuilder<H: Handle>(Tree<H>);
+pub struct TreeBuilder<H>(Tree<H>);
 
-impl<H: Handle> Default for TreeBuilder<H> {
+impl<H> Default for TreeBuilder<H> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<H: Handle> Deref for TreeBuilder<H> {
+impl<H> Deref for TreeBuilder<H> {
     type Target = BTreeMap<String, ObjectRef<H>>;
 
     fn deref(&self) -> &Self::Target {
@@ -895,13 +897,13 @@ impl<H: Handle> Deref for TreeBuilder<H> {
     }
 }
 
-impl<H: Handle> DerefMut for TreeBuilder<H> {
+impl<H> DerefMut for TreeBuilder<H> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0.entries
     }
 }
 
-impl<H: Handle> TreeBuilder<H> {
+impl<H> TreeBuilder<H> {
     pub fn new() -> Self {
         TreeBuilder(Tree {
             entries: BTreeMap::new(),
@@ -1013,14 +1015,27 @@ impl<D: Digest, H: HandleDigest<D>> Future for FutureCommitDigest<D, H> {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct Commit<H: Handle> {
-    subtree: TreeRef<H>,
-    parents: Vec<CommitRef<H>>,
-    metadata: Metadata<H>,
+#[derive(Default, Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CommitAuthor {
+    pub name: Option<String>,
+    pub mbox: Option<String>,
 }
 
-impl<H: Handle> Commit<H> {
+impl CommitAuthor {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Commit<H> {
+    subtree: TreeRef<H>,
+    parents: Vec<CommitRef<H>>,
+    author: CommitAuthor,
+    message: Option<String>,
+}
+
+impl<H> Commit<H> {
     pub fn as_subtree(&self) -> &TreeRef<H> {
         &self.subtree
     }
@@ -1029,6 +1044,16 @@ impl<H: Handle> Commit<H> {
         &self.parents
     }
 
+    pub fn as_author(&self) -> &CommitAuthor {
+        &self.author
+    }
+
+    pub fn as_message(&self) -> Option<&str> {
+        self.message.as_ref().map(String::as_str)
+    }
+}
+
+impl<H: Handle> Commit<H> {
     pub fn send<S>(&self, store: &S) -> FutureCommitHandle<S>
     where
         S: Store<Handle = H>,
@@ -1040,6 +1065,105 @@ impl<H: Handle> Commit<H> {
                 .into_future()
                 .flatten(),
         )
+    }
+}
+
+pub enum CommitBuilder<H> {
+    Incomplete {
+        parents: Vec<CommitRef<H>>,
+        author: CommitAuthor,
+        message: Option<String>,
+    },
+    Complete(Commit<H>),
+}
+
+impl<H> From<Commit<H>> for CommitBuilder<H> {
+    fn from(commit: Commit<H>) -> Self {
+        CommitBuilder::Complete(commit)
+    }
+}
+
+impl<H> Default for CommitBuilder<H> {
+    fn default() -> Self {
+        CommitBuilder::Incomplete {
+            parents: Default::default(),
+            author: Default::default(),
+            message: Default::default(),
+        }
+    }
+}
+
+impl<H> CommitBuilder<H> {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn as_commit(&self) -> Result<&Commit<H>, Error> {
+        match *self {
+            CommitBuilder::Complete(ref commit) => Ok(commit),
+            CommitBuilder::Incomplete { .. } => bail!("Cannot build commit: no subtree provided!"),
+        }
+    }
+
+    pub fn into_commit(self) -> Result<Commit<H>, Error> {
+        match self {
+            CommitBuilder::Complete(commit) => Ok(commit),
+            CommitBuilder::Incomplete { .. } => bail!("Cannot build commit: no subtree provided!"),
+        }
+    }
+
+    pub fn message(&mut self, new_message: String) -> &mut Self {
+        match *self {
+            CommitBuilder::Complete(ref mut commit) => commit.message = Some(new_message),
+            CommitBuilder::Incomplete {
+                ref mut message, ..
+            } => *message = Some(new_message),
+        }
+        self
+    }
+
+    pub fn parents<I>(&mut self, iterable: I) -> &mut Self
+    where
+        I: IntoIterator<Item = CommitRef<H>>,
+    {
+        let parents = match *self {
+            CommitBuilder::Complete(ref mut commit) => &mut commit.parents,
+            CommitBuilder::Incomplete {
+                ref mut parents, ..
+            } => parents,
+        };
+        parents.clear();
+        parents.extend(iterable);
+        self
+    }
+
+    pub fn author(&mut self, new_author: CommitAuthor) -> &mut Self {
+        match *self {
+            CommitBuilder::Complete(ref mut commit) => commit.author = new_author,
+            CommitBuilder::Incomplete { ref mut author, .. } => *author = new_author,
+        }
+        self
+    }
+
+    pub fn subtree(&mut self, new_subtree: TreeRef<H>) -> &mut Self {
+        let tmp = match mem::replace(self, CommitBuilder::default()) {
+            CommitBuilder::Complete(commit) => Commit {
+                subtree: new_subtree,
+                ..commit
+            },
+            CommitBuilder::Incomplete {
+                parents,
+                author,
+                message,
+            } => Commit {
+                subtree: new_subtree,
+                parents,
+                author,
+                message,
+            },
+        };
+        *self = CommitBuilder::Complete(tmp);
+        self
     }
 }
 
@@ -1210,6 +1334,35 @@ mod tests {
         }
     }
 
+    prop_compose! {
+        /// Worth noting: only testing printable characters here in the metadata because we don't
+        /// have an RDF N-triples parser/formatter which will correctly deal with
+        /// non-printable/non-ASCII characters. TODO: Find or write one.
+        fn arb_commit()
+                (subtree in arb_tree_ref(),
+                 parents in prop::collection::vec(arb_commit_ref(), 0..4),
+                 name in prop::option::of("[ -~]*"),
+                 mbox in prop::option::of("[ -~]*"),
+                 message in prop::option::of("[ -~]*")) -> Commit<TestHandle> {
+            let mut builder = CommitBuilder::new();
+            builder.subtree(subtree).parents(parents);
+
+            if let Some(msg) = message {
+                builder.message(msg);
+            }
+
+            builder.author(CommitAuthor { name, mbox });
+            builder.into_commit().unwrap()
+        }
+    }
+
+    prop_compose! {
+        fn arb_commit_ref()
+                (handle in arb_handle()) -> CommitRef<TestHandle> {
+            CommitRef(handle)
+        }
+    }
+
     proptest! {
         #[test]
         fn roundtrip_small(ref small in arb_small()) {
@@ -1236,6 +1389,16 @@ mod tests {
             let (content, refs) = builder.destruct();
             let battered_tree = super::decode::tree::<TestHandle>(content, refs).unwrap();
             assert_eq!(tree, &battered_tree);
+        }
+
+        #[test]
+        fn roundtrip_commit(ref commit in arb_commit()) {
+            let mut builder = TestBuilder::default();
+            super::encode::commit(&mut builder, commit).unwrap();
+            let (content, refs) = builder.destruct();
+            println!("Content:\n{}", String::from_utf8_lossy(content.get_ref()));
+            let battered_commit = super::decode::commit::<TestHandle>(content, refs).unwrap();
+            assert_eq!(commit, &battered_commit);
         }
     }
 }

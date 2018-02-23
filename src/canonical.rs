@@ -1,20 +1,22 @@
 use std::io::{BufRead, BufReader, Read, Write};
 
-use failure::Error;
+use failure::*;
 use leb128;
 use memchr;
 
 use digest::Digest;
 
+const NUL: u8 = 0;
+
 pub fn encode<W: Write, D: Digest>(w: &mut W, blob: &[u8], refs: &[D]) -> Result<(), Error> {
     let hash_name_bytes = D::NAME.as_bytes();
     ensure!(
-        memchr::memchr(b'\0', hash_name_bytes).is_none(),
-        "Hash name contains a nul byte!"
+        memchr::memchr(NUL, hash_name_bytes).is_none(),
+        "Hash name contains a nul byte: {}"
     );
 
     w.write_all(&hash_name_bytes)?;
-    w.write(&[b'\0'])?;
+    w.write(&[NUL])?;
     leb128::write::unsigned(w, D::SIZE as u64)?;
     leb128::write::unsigned(w, blob.len() as u64)?;
     leb128::write::unsigned(w, refs.len() as u64)?;
@@ -33,8 +35,14 @@ pub fn decode<R: Read>(r: &mut R) -> Result<PartialItem, Error> {
 
     let hash_name = {
         let mut hash_name_buf = Vec::new();
-        buf_reader.read_until(b'0', &mut hash_name_buf)?;
-        String::from_utf8(hash_name_buf)?
+        buf_reader.read_until(NUL, &mut hash_name_buf)?;
+        hash_name_buf.pop(); // Pop the NUL off.
+        String::from_utf8(hash_name_buf).with_context(|e| {
+            format_err!(
+                "Hash name is invalid UTF-8: {}",
+                String::from_utf8_lossy(e.as_bytes())
+            )
+        })?
     };
 
     let hash_size = leb128::read::unsigned(&mut buf_reader)? as usize;
@@ -98,4 +106,35 @@ pub struct Item<D: Digest> {
     pub blob_len: usize,
     pub blob_digest: D,
     pub refs: Vec<D>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use proptest::prelude::*;
+
+    use digest::Sha3Digest;
+
+    prop_compose! {
+        fn arb_sha3()
+                (bytes in prop::collection::vec(any::<u8>(), 32)) -> Sha3Digest {
+            Sha3Digest::from_bytes(&bytes)
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn roundtrip_canonical_sha3(ref bytes in prop::collection::vec(any::<u8>(), 0..1024),
+                                    ref digests in prop::collection::vec(arb_sha3(), 0..1024)) {
+            let mut buf = Vec::new();
+            encode::<_, Sha3Digest>(&mut buf, bytes, digests).unwrap();
+            let partial = decode(&mut &buf[..]).unwrap();
+            assert_eq!(partial.hash_name(), Sha3Digest::NAME);
+            assert_eq!(partial.hash_size(), Sha3Digest::SIZE);
+            let item = partial.finish::<Sha3Digest>().unwrap();
+            assert_eq!(item.blob_len, bytes.len());
+            assert_eq!(&item.refs, digests);
+        }
+    }
 }
