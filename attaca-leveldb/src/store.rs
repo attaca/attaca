@@ -5,7 +5,7 @@ use attaca::{canonical, Open, digest::{Digest, DigestWriter, Sha3Digest},
              store::{Handle, HandleBuilder, HandleDigest, Store}};
 use chashmap::CHashMap;
 use db_key::Key;
-use failure::{self, Error};
+use failure::{self, *};
 use futures::{future::{self, FutureResult}, prelude::*};
 use leb128;
 use leveldb::{database::Database, kv::KV, options::{Options, ReadOptions, WriteOptions}};
@@ -280,10 +280,12 @@ impl LevelStore {
             None => match this.db
                 .read()
                 .unwrap()
-                .get(ReadOptions::new(), DbKey(SmallVec::from(digest.as_bytes())))?
+                .get(ReadOptions::new(), DbKey(SmallVec::from(digest.as_bytes())))
+                .context("Error reading object from database")?
             {
                 Some(bytes) => {
-                    let arc_obj = Arc::new(Object::decode(&mut &bytes[..])?);
+                    let arc_obj =
+                        Arc::new(Object::decode(&mut &bytes[..]).context("Error decoding object")?);
                     this.objects.insert(*digest, arc_obj.clone());
                     Ok(Some(arc_obj))
                 }
