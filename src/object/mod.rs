@@ -1036,6 +1036,10 @@ pub struct Commit<H> {
 }
 
 impl<H> Commit<H> {
+    pub fn diverge(self) -> CommitBuilder<H> {
+        CommitBuilder::Complete(self)
+    }
+
     pub fn as_subtree(&self) -> &TreeRef<H> {
         &self.subtree
     }
@@ -1068,6 +1072,7 @@ impl<H: Handle> Commit<H> {
     }
 }
 
+#[derive(Debug, Clone)]
 pub enum CommitBuilder<H> {
     Incomplete {
         parents: Vec<CommitRef<H>>,
