@@ -86,7 +86,7 @@ fn compare_subtrees<H: Handle>(
                             }
                         }
                         (head_not_tree, cand_not_tree) => {
-                            if head_not_tree == cand_not_tree {
+                            if head_not_tree != cand_not_tree {
                                 stream_yield!(Change::Modified(child_path));
                             }
                         }
