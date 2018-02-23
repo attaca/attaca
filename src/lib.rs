@@ -12,8 +12,6 @@ compile_error!(
 #[macro_use]
 extern crate proptest;
 
-extern crate chrono;
-extern crate etcd;
 #[macro_use]
 extern crate failure;
 extern crate futures_await as futures;
@@ -26,9 +24,7 @@ extern crate memchr;
 extern crate nom;
 extern crate ntriple;
 extern crate parking_lot;
-extern crate sequence_trie;
 extern crate sha3;
-extern crate typenum;
 
 pub mod batch;
 pub mod canonical;

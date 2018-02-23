@@ -5,70 +5,20 @@ name = "attaca"
 version = "0.1.0"
 
 [dependencies]
-atom = "0.3.4"
-bincode = "0.8.0"
-chashmap = "2.2.0"
 digest = "0.7.2"
-digest-writer = "0.2.0"
-etcd = "0.8.0"
 failure = "0.1.1"
-futures = "0.1.16"
 futures-await = "0.1.0"
-futures-bufio = "0.2.0"
-futures-cpupool = "0.1.6"
-globset = "0.2.0"
 hex = "0.3.1"
-histogram = "0.6.8"
-hyper = "0.11.18"
 im = "9.0.0"
-itertools = "0.7.6"
-lazy_static = "0.2.8"
 leb128 = "0.2.2"
-libc = "0.2.29"
 memchr = "2.0.1"
-memmap = "0.5.2"
 nom = "3.2.1"
 ntriple = "0.1.1"
 parking_lot = "0.5.3"
-proptest = "0.5.0"
-rad = "0.5.0"
-seahash = "3.0.5"
-serde = "1.0.11"
-serde_derive = "1.0.11"
 sha3 = "0.7.2"
-smallvec = "0.6.0"
-ssh2 = "0.3.2"
-stable_deref_trait = "1.0.0"
-tokio-core = "0.1.12"
-tokio-io = "0.1.4"
-toml = "0.4.4"
-typenum = "1.9.0"
-
-[dependencies.chrono]
-features = ["serde"]
-version = "0.4.0"
-
-[dependencies.generic-array]
-features = ["serde"]
-version = "0.8.2"
-
-[dependencies.indicatif]
-git = "https://github.com/sdleffler/indicatif"
-optional = false
-
-[dependencies.owning_ref]
-git = "https://github.com/sdleffler/owning-ref-rs"
-
-[dependencies.qp-trie]
-features = ["serde"]
-version = "0.7.1"
-
-[dependencies.sequence_trie]
-git = "https://github.com/sdleffler/rust_sequence_trie"
 
 [dev-dependencies]
-quickcheck = "0.4.1"
-rand = "0.3.17"
+proptest = "0.5.0"
 
 [lib]
 name = "attaca"
