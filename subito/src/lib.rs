@@ -9,6 +9,7 @@ extern crate enum_primitive_derive;
 #[macro_use]
 extern crate failure;
 extern crate futures_await as futures;
+extern crate hex;
 extern crate ignore;
 extern crate itertools;
 extern crate leveldb;
@@ -18,28 +19,34 @@ extern crate num_traits;
 extern crate sequence_trie;
 extern crate smallvec;
 
+#[allow(dead_code)]
 mod cache_capnp {
     include!(concat!(env!("OUT_DIR"), "/cache_capnp.rs"));
 }
 
+#[allow(dead_code)]
 mod digest_capnp {
     include!(concat!(env!("OUT_DIR"), "/digest_capnp.rs"));
 }
 
+#[allow(dead_code)]
 mod object_ref_capnp {
     include!(concat!(env!("OUT_DIR"), "/object_ref_capnp.rs"));
 }
 
+#[allow(dead_code)]
 mod state_capnp {
     include!(concat!(env!("OUT_DIR"), "/state_capnp.rs"));
 }
 
 mod cache;
-mod candidate;
 mod db;
 mod status;
 
-use std::{io::{BufRead, Write}, marker::PhantomData, path::{Path, PathBuf}, sync::{Arc, RwLock}};
+pub mod candidate;
+
+use std::{env, io::{BufRead, Write}, marker::PhantomData, path::{Path, PathBuf},
+          sync::{Arc, RwLock}};
 
 use attaca::{Handle, HandleDigest, Open, Store, digest::{Digest, Sha3Digest},
              object::{CommitRef, TreeBuilder, TreeRef}};
@@ -51,10 +58,10 @@ use leveldb::{database::Database, kv::KV, options::{Options, ReadOptions, WriteO
 use cache::Cache;
 use db::Key;
 
-struct State<H: Handle> {
-    candidate: Option<TreeRef<H>>,
-    head: Option<CommitRef<H>>,
-    active_branch: Option<String>,
+pub struct State<H: Handle> {
+    pub candidate: Option<TreeRef<H>>,
+    pub head: Option<CommitRef<H>>,
+    pub active_branch: Option<String>,
 }
 
 impl<H: Handle> Default for State<H> {
@@ -102,7 +109,23 @@ where
         })
     }
 
-    fn set_state(&self, state: &State<S::Handle>) -> Result<(), Error> {
+    pub fn search() -> Result<Option<Self>, Error> {
+        let mut wd = env::current_dir()?;
+
+        while !wd.join(".attaca").exists() {
+            if !wd.pop() {
+                return Ok(None);
+            }
+        }
+
+        Ok(Some(Self::open(&wd)?))
+    }
+
+    pub fn as_store(&self) -> &S {
+        &self.store
+    }
+
+    pub fn set_state(&self, state: &State<S::Handle>) -> Result<(), Error> {
         use state_capnp::state;
 
         let mut scratch_bytes = [0u8; 1024];
@@ -131,7 +154,7 @@ where
                 digest.set_size(D::SIZE as u32);
             }
             {
-                let mut candidate = state_builder.borrow().get_head();
+                let mut candidate = state_builder.borrow().get_candidate();
                 match candidate_digest {
                     Some(ref digest) => candidate.set_some(digest.as_bytes()),
                     None => candidate.set_none(()),
@@ -156,10 +179,15 @@ where
         let mut buf = Vec::new();
         serialize_packed::write_message(&mut buf, &message)?;
 
+        self.db
+            .read()
+            .unwrap()
+            .put(WriteOptions::new(), &Key::state(), &buf)?;
+
         Ok(())
     }
 
-    fn get_state(&self) -> Result<State<S::Handle>, Error> {
+    pub fn get_state(&self) -> Result<State<S::Handle>, Error> {
         match self.db
             .read()
             .unwrap()
@@ -176,10 +204,26 @@ where
                 let name = digest.get_name()?;
                 let size = digest.get_size() as usize;
 
-                ensure!(name == D::NAME && size == D::SIZE, "Digest mismatch!");
+                ensure!(
+                    name == D::NAME && size == D::SIZE,
+                    "Digest mismatch: expected {}/{}, got {}/{}",
+                    D::NAME,
+                    D::SIZE,
+                    name,
+                    size
+                );
 
                 let head_digest = match state.get_head().which()? {
-                    head::Some(bytes) => Some(D::from_bytes(&bytes?)),
+                    head::Some(bytes_res) => {
+                        let bytes = bytes_res?;
+                        ensure!(
+                            bytes.len() == D::SIZE,
+                            "Invalid head digest: expected {} bytes, found {}",
+                            D::SIZE,
+                            bytes.len()
+                        );
+                        Some(D::from_bytes(bytes))
+                    }
                     head::None(()) => None,
                 };
                 let future_head = head_digest.map(|dg| {
@@ -189,7 +233,16 @@ where
                         .map(CommitRef::new)
                 });
                 let candidate_digest = match state.get_candidate().which()? {
-                    candidate::Some(bytes) => Some(D::from_bytes(&bytes?)),
+                    candidate::Some(bytes_res) => {
+                        let bytes = bytes_res?;
+                        ensure!(
+                            bytes.len() == D::SIZE,
+                            "Invalid candidate digest: expected {} bytes, found {}",
+                            D::SIZE,
+                            bytes.len()
+                        );
+                        Some(D::from_bytes(bytes))
+                    }
                     candidate::None(()) => None,
                 };
                 let future_candidate = candidate_digest.map(|dg| {

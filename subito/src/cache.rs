@@ -4,7 +4,7 @@ use std::{fmt, fs::File, io::{BufRead, Write}, marker::PhantomData, ops::{BitAnd
 
 use attaca::{digest::Digest, object::{LargeRef, ObjectRef, SmallRef}, path::ObjectPath};
 use capnp::{serialize_packed, Word, message::{self, ScratchSpace, ScratchSpaceHeapAllocator}};
-use failure::Error;
+use failure::*;
 use leveldb::{database::Database, kv::KV, options::{ReadOptions, WriteOptions}};
 use nix::{self, errno::Errno, libc::c_int, sys::stat::{lstat, FileStat}};
 use num_traits::FromPrimitive;
@@ -20,6 +20,10 @@ use db::Key;
 const FS_IOC_GETVERSION_MAGIC: u8 = b'v';
 const FS_IOC_GETVERSION_TYPE_MODE: u8 = 1;
 ioctl!(read fs_ioc_getversion with FS_IOC_GETVERSION_MAGIC, FS_IOC_GETVERSION_TYPE_MODE; c_int);
+
+const EXT4_IOC_GETVERSION_MAGIC: u8 = b'f';
+const EXT4_IOC_GETVERSION_TYPE_MODE: u8 = 3;
+ioctl!(read ext4_ioc_getversion with EXT4_IOC_GETVERSION_MAGIC, EXT4_IOC_GETVERSION_TYPE_MODE; c_int);
 
 fn ns_from_components(seconds: i64, nanos: i64) -> Option<i64> {
     seconds
@@ -103,9 +107,10 @@ impl Inode {
         let generation = {
             let file = File::open(path)?;
             let mut generation: c_int = 0;
-            unsafe {
-                fs_ioc_getversion(file.as_raw_fd(), &mut generation)?;
-            }
+            // unsafe {
+            //     fs_ioc_getversion(file.as_raw_fd(), &mut generation)
+            //     // ext4_ioc_getversion(file.as_raw_fd(), &mut generation)
+            // }.context("Error getting i_generation")?;
             generation as u32
         };
 

@@ -1,11 +1,12 @@
 use attaca::{Handle, HandleDigest, Store, digest::Digest, object::{ObjectRef, TreeRef},
              path::ObjectPath};
-use failure::Error;
+use failure::*;
 use futures::{future, prelude::*, stream::FuturesUnordered};
 use itertools::{EitherOrBoth, Itertools};
 
 use {Repository, State};
 
+#[derive(Debug, Clone)]
 pub enum Change {
     Added(ObjectPath),
     Modified(ObjectPath),

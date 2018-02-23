@@ -6,17 +6,17 @@ struct State {
     digest @0 :Digest;
 
     candidate :union {
-        some @5 :Data;
-        none @6 :Void;
+        none @1 :Void;
+        some @2 :Data;
     }
 
     head :union {
-        some @1 :Data;
-        none @2 :Void;
+        none @3 :Void;
+        some @4 :Data;
     }
 
     activeBranch :union {
-        some @3 :Text;
-        none @4 :Void;
+        none @5 :Void;
+        some @6 :Text;
     }
 }

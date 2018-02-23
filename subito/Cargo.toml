@@ -2,7 +2,7 @@
 authors = ["Sean Leffler <sean@errno.com>"]
 build = "build.rs"
 name = "subito"
-version = "0.1.0"
+version = "0.0.1"
 
 [build-dependencies]
 capnpc = "0.8.8"
@@ -13,6 +13,7 @@ db-key = "0.0.5"
 enum-primitive-derive = "0.1.2"
 failure = "0.1.1"
 futures-await = "0.1.0"
+hex = "0.3.1"
 ignore = "0.4.1"
 itertools = "0.7.6"
 leb128 = "0.2.2"
@@ -28,3 +29,7 @@ path = ".."
 
 [dependencies.attaca-leveldb]
 path = "../attaca-leveldb"
+
+[dependencies.clap]
+features = ["yaml"]
+version = "~2.30.0"

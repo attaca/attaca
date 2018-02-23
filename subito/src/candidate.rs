@@ -5,7 +5,7 @@ use attaca::{Handle, HandleDigest, Store,
              batch::{Batch as ObjectBatch, Operation as ObjectOperation}, digest::Digest,
              hierarchy::Hierarchy, object::{self, ObjectRef, TreeBuilder, TreeRef},
              path::ObjectPath};
-use failure::{self, Error};
+use failure::{self, *};
 use futures::{stream, future::Either, prelude::*};
 use ignore::WalkBuilder;
 use itertools::Itertools;
@@ -43,6 +43,16 @@ pub struct Batch {
     ops: Vec<BatchOp>,
 }
 
+impl Batch {
+    pub fn new() -> Self {
+        Self { ops: Vec::new() }
+    }
+
+    pub fn push(&mut self, batch_op: BatchOp) {
+        self.ops.push(batch_op);
+    }
+}
+
 impl<S: Store, D: Digest> Repository<S, D>
 where
     S::Handle: HandleDigest<D>,
@@ -54,7 +64,9 @@ where
         absolute_path: PathBuf,
         object_path: ObjectPath,
     ) -> Result<ObjectRef<S::Handle>, Error> {
-        let status = cache.status(&object_path)?;
+        let status = cache
+            .status(&object_path)
+            .context("Error during cache lookup for file")?;
 
         let pre_resolution = match status {
             Status::Extant(Certainty::Positive, ref snapshot) => {
@@ -67,17 +79,23 @@ where
             _ => None,
         };
 
-        if let Some(resolved) = await!(pre_resolution)?.and_then(|x| x) {
+        if let Some(resolved) = await!(pre_resolution)
+            .context("Error resolving cached digest")?
+            .and_then(|x| x)
+        {
             return Ok(resolved);
         }
 
         match status {
             // TODO: Respect cache and reuse hash.
             Status::Extant(_, snapshot) | Status::New(snapshot) => {
-                let mut file = File::open(&absolute_path)?;
-                let objref = await!(object::share(file, store))?;
-                let digest = await!(objref.digest())?;
-                cache.resolve(snapshot, digest)?;
+                let mut file = File::open(&absolute_path).context("Error opening local file")?;
+                let objref =
+                    await!(object::share(file, store)).context("Error hashing/sending local file")?;
+                let digest = await!(objref.digest()).context("Error fetching object digest")?;
+                cache
+                    .resolve(snapshot, digest)
+                    .context("Error during cache resolution for file")?;
 
                 Ok(objref)
             }
@@ -168,8 +186,15 @@ where
 
         let future_res = paths_res.map(|(absolute_path, object_path)| {
             let future = match op {
-                OpKind::Unstage => Either::A(hierarchy.get(object_path.clone())),
-                OpKind::Stage => Either::B(self.process(absolute_path, object_path.clone())),
+                OpKind::Unstage => Either::A(
+                    hierarchy
+                        .get(object_path.clone())
+                        .map_err(|e| e.context("Error processing file from previous commit")),
+                ),
+                OpKind::Stage => Either::B(
+                    self.process(absolute_path, object_path.clone())
+                        .map_err(|e| e.context("Error processing local file")),
+                ),
             };
             future.map(|objref_opt| (object_path, objref_opt))
         });
@@ -187,7 +212,12 @@ where
         async_block! {
             let state = self.get_state()?;
             let hierarchy = match state.head {
-                Some(head_ref) => Hierarchy::from(await!(head_ref.fetch())?.as_subtree().clone()),
+                Some(head_ref) => Hierarchy::from(
+                    await!(head_ref.fetch())
+                        .context("Error while fetching head")?
+                        .as_subtree()
+                        .clone(),
+                ),
                 None => Hierarchy::new(),
             };
             let queue = stream::futures_ordered(
@@ -197,8 +227,9 @@ where
                     .map(|batch_op| self.process_operation(hierarchy.clone(), batch_op)),
             );
             let batch: ObjectBatch<S::Handle> =
-                await!(queue.fold(ObjectBatch::new(), |batch, op| batch.add(op)))?;
-            await!(self.stage_objects(batch))?;
+                await!(queue.fold(ObjectBatch::new(), |batch, op| batch.add(op)))
+                    .context("Error while batching stage operations")?;
+            await!(self.stage_objects(batch)).context("Error while staging objects")?;
 
             Ok(())
         }
@@ -209,20 +240,25 @@ where
         batch: ObjectBatch<S::Handle>,
     ) -> impl Future<Item = (), Error = Error> + 'r {
         async_block! {
-            let state = self.get_state()?;
+            let state = self.get_state().context("Error while fetching state")?;
             let tree_builder = match state.candidate.clone() {
-                Some(candidate_ref) => await!(candidate_ref.fetch())?.diverge(),
+                Some(candidate_ref) => await!(candidate_ref.fetch())
+                    .context("Error while fetching candidate")?
+                    .diverge(),
                 None => TreeBuilder::new(),
             };
 
-            let new_candidate_built = await!(batch.run(self.store.clone(), tree_builder))?;
+            let new_candidate_built = await!(batch.run(self.store.clone(), tree_builder))
+                .context("Error running batch on candidate")?;
             let candidate = if new_candidate_built.is_empty() && state.head.is_none() {
                 None
             } else {
-                Some(await!(new_candidate_built.as_tree().send(&self.store))?)
+                Some(await!(new_candidate_built.as_tree().send(&self.store))
+                    .context("Error sending new candidate to store")?)
             };
 
-            self.set_state(&State { candidate, ..state })?;
+            self.set_state(&State { candidate, ..state })
+                .context("Error while updating state")?;
 
             Ok(())
         }

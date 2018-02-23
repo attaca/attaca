@@ -1,0 +1,47 @@
+name: subito
+version: "0.0.1"
+about: Fast, distributed version control system with support for extreme quantities of data.
+author: Sean Leffler <sean@errno.com>
+
+subcommands:
+    - init:
+        about: Create a local repository in the working directory.
+    - stage:
+        about: Load local files into the virtual workspace.
+        args:
+            - PATH:
+                help: Path of files to add.
+                required: true
+                index: 1
+                multiple: true
+
+    - unstage:
+        about: Load files from the previous commit into the virtual workspace.
+        args:
+            - PATH:
+                help: Path of files to add.
+                required: true
+                index: 1
+                multiple: true
+    - commit:
+        about: Save the virtual workspace and previous commit as a new commit.
+        args:
+            - message:
+                help: The commit message.
+                short: m
+                long: message
+                takes_value: true
+            - author:
+                help: Add a commit author.
+                long: author
+                takes_value: true
+                multiple: true
+                number_of_values: 1
+            - amend:
+                help: Change the previous commit instead of creating a fresh commit and linking it on.
+                long: amend
+            - force:
+                long: force
+                help: Force a commit regardless of warnings.
+    - status:
+        about: Compare the virtual workspace to the previous commit.
