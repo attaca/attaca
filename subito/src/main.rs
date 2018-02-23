@@ -151,7 +151,7 @@ fn run() -> Result<(), Error> {
                 .head
                 .map(|head| {
                     head.digest()
-                        .map(|d: CommitRef<Sha3Digest>| String::from("0x") + hex::encode(&d.as_inner().as_bytes()[..5]))
+                        .map(|d: CommitRef<Sha3Digest>| hex::encode(&d.as_inner().as_bytes()[..5]))
                 })
                 .join(state.candidate.map(|candidate| {
                     candidate
