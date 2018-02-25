@@ -48,9 +48,13 @@ impl ObjectPath {
     }
 
     pub fn to_path(&self) -> PathBuf {
+        self.with_base(PathBuf::new())
+    }
+
+    pub fn with_base<P: Into<PathBuf>>(&self, path: P) -> PathBuf {
         // Do this imperatively because `List::iter` returns the irritating item type of
         // `Arc<String>` instead of `&String`.
-        let mut path_buf = PathBuf::new();
+        let mut path_buf = path.into();
         for s in &self.inner {
             path_buf.push(s.as_ref());
         }
