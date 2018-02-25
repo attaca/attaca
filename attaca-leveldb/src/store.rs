@@ -1,7 +1,7 @@
 use std::{fmt, str, cell::RefCell, cmp::Ordering, hash::{Hash, Hasher},
           io::{self, BufRead, Cursor, Read, Write}, path::Path, sync::{Arc, RwLock, Weak}};
 
-use attaca::{canonical, Open, digest::{Digest, DigestWriter, Sha3Digest},
+use attaca::{canonical, Init, Open, digest::{Digest, DigestWriter, Sha3Digest},
              store::{Handle, HandleBuilder, HandleDigest, Store}};
 use chashmap::CHashMap;
 use db_key::Key;
@@ -17,7 +17,7 @@ use url::Url;
 use DbKey;
 
 impl Open for LevelStore {
-    const SCHEMES: &'static [&'static str] = &["attaca+leveldb+file"];
+    const SCHEMES: &'static [&'static str] = &["file"];
 
     fn open(url_str: &str) -> Result<Self, Error> {
         let url = Url::parse(url_str)?;
@@ -32,6 +32,31 @@ impl Open for LevelStore {
 
     fn open_path(path: &Path) -> Result<Self, Error> {
         let db = Database::open(&path, Options::new())?;
+        Ok(Self::new(Arc::new(RwLock::new(db))))
+    }
+}
+
+impl Init for LevelStore {
+    fn init(url_str: &str) -> Result<Self, Error> {
+        let url = Url::parse(url_str)?;
+        ensure!(
+            Self::SCHEMES.contains(&url.scheme()),
+            "Unsupported URL scheme!"
+        );
+        let path = url.to_file_path()
+            .map_err(|_| format_err!("URL is not a path!"))?;
+        Self::init_path(&path)
+    }
+
+    fn init_path(path: &Path) -> Result<Self, Error> {
+        let db = Database::open(
+            &path,
+            Options {
+                create_if_missing: true,
+                error_if_exists: true,
+                ..Options::new()
+            },
+        )?;
         Ok(Self::new(Arc::new(RwLock::new(db))))
     }
 }
