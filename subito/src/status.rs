@@ -4,22 +4,40 @@ use attaca::{Handle, HandleDigest, Store, digest::Digest, object::{CommitRef, Ob
              path::ObjectPath};
 use failure::*;
 use futures::{future, prelude::*, stream::FuturesUnordered};
+use hex;
 use itertools::{EitherOrBoth, Itertools};
 
 use {Repository, State};
+use quantified::{QuantifiedOutput, QuantifiedRef};
 
 /// Compare the virtual workspace to the previous commit.
 #[derive(Default, Debug, StructOpt, Builder)]
 #[structopt(name = "status")]
 pub struct StatusArgs {}
 
-pub struct StatusOut<'r, D: Digest> {
-    pub head: Box<Future<Item = Option<CommitRef<D>>, Error = Error> + 'r>,
-    pub candidate: Box<Future<Item = Option<TreeRef<D>>, Error = Error> + 'r>,
+impl<'r> QuantifiedOutput<'r> for StatusArgs {
+    type Output = StatusOut<'r>;
+}
+
+impl QuantifiedRef for StatusArgs {
+    fn apply_ref<'r, S, D>(self, repository: &'r Repository<S, D>) -> Result<StatusOut<'r>, Error>
+    where
+        S: Store,
+        D: Digest,
+        S::Handle: HandleDigest<D>,
+    {
+        Ok(repository.status(self))
+    }
+}
+
+#[must_use = "StatusOut contains futures which must be driven to completion!"]
+pub struct StatusOut<'r> {
+    pub head: Box<Future<Item = Option<String>, Error = Error> + 'r>,
+    pub candidate: Box<Future<Item = Option<String>, Error = Error> + 'r>,
     pub staged: Box<Stream<Item = Change, Error = Error> + 'r>,
 }
 
-impl<'r, D: Digest> fmt::Debug for StatusOut<'r, D> {
+impl<'r> fmt::Debug for StatusOut<'r> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("StatusOut")
             .field("staged", &"OPAQUE")
@@ -38,7 +56,7 @@ impl<S: Store, D: Digest> Repository<S, D>
 where
     S::Handle: HandleDigest<D>,
 {
-    pub fn status<'r>(&'r self, _args: StatusArgs) -> StatusOut<'r, D> {
+    pub fn status<'r>(&'r self, _args: StatusArgs) -> StatusOut<'r> {
         let blocking = self.get_state().compat().into_future();
         let shared = blocking.shared();
 
@@ -46,14 +64,18 @@ where
             let shared = shared.clone();
             async_block! {
                 let head_handle = await!(shared)?.head.clone();
-                Ok(await!(head_handle.map(|h| h.digest()))?)
+                let head_digest = await!(head_handle.map(|h| h.digest()))?;
+                let head_hex = head_digest.map(|d| hex::encode(d.as_inner().as_bytes()));
+                Ok(head_hex)
             }
         };
         let candidate = {
             let shared = shared.clone();
             async_block! {
                 let cand_handle = await!(shared)?.candidate.clone();
-                Ok(await!(cand_handle.map(|c| c.digest()))?)
+                let cand_digest = await!(cand_handle.map(|h| h.digest()))?;
+                let cand_hex = cand_digest.map(|d| hex::encode(d.as_inner().as_bytes()));
+                Ok(cand_hex)
             }
         };
         let staged = async_stream_block! {

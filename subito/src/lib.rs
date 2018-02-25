@@ -18,10 +18,16 @@ extern crate nix;
 extern crate smallvec;
 #[macro_use]
 extern crate structopt;
+extern crate url;
 
 #[allow(dead_code)]
 mod cache_capnp {
     include!(concat!(env!("OUT_DIR"), "/cache_capnp.rs"));
+}
+
+#[allow(dead_code)]
+mod config_capnp {
+    include!(concat!(env!("OUT_DIR"), "/config_capnp.rs"));
 }
 
 #[allow(dead_code)]
@@ -43,11 +49,16 @@ mod cache;
 mod db;
 
 pub mod candidate;
+pub mod config;
+pub mod init;
+pub mod quantified;
 pub mod status;
 
-use std::{env, marker::PhantomData, path::{Path, PathBuf}, sync::{Arc, RwLock}};
+use std::{env, fmt, marker::PhantomData, path::{Path, PathBuf}, sync::{Arc, RwLock}};
 
-use attaca::{Handle, HandleDigest, Store, digest::Digest, object::{CommitRef, TreeRef}};
+use attaca::{Handle, HandleDigest, Store, digest::{Digest, Sha3Digest},
+             object::{CommitRef, TreeRef}};
+use attaca_leveldb::LevelStore;
 use capnp::{serialize_packed, Word, message::{self, ScratchSpace, ScratchSpaceHeapAllocator}};
 use failure::Error;
 use futures::prelude::*;
@@ -55,6 +66,92 @@ use leveldb::{database::Database, kv::KV, options::{Options, ReadOptions, WriteO
 
 use cache::Cache;
 use db::Key;
+use quantified::{Quantified, QuantifiedOutput, QuantifiedRef, QuantifiedRefMut};
+
+pub use candidate::{CommitArgs, StageArgs};
+pub use init::{init, open, search, InitArgs};
+pub use status::StatusArgs;
+
+/// The "universe" of possible repository types. This is a generic type intended to close over all
+/// possible constructible repositories.
+///
+/// This is constructed as a nested enum, consisting of `Universe` and `PerDigest`. `Universe`
+/// dispatches over the digest type of the repository while `PerDigest` dispatches over the
+/// repository type.
+///
+/// This would not be necessary if we had existential types of the form:
+///
+/// `exists<S: Store, D: Digest> where S::Handle: HandleDigest<D>, Repository<S, D>`.
+#[derive(Debug)]
+pub enum Universe {
+    Sha3(PerDigest<Sha3Digest>),
+}
+
+impl Universe {
+    pub fn apply<'r, Q: Quantified>(
+        self,
+        quant: Q,
+    ) -> Result<<Q as QuantifiedOutput<'r>>::Output, Error> {
+        match self {
+            Universe::Sha3(pd) => pd.apply(quant),
+        }
+    }
+
+    pub fn apply_ref<'r, Q: QuantifiedRef>(
+        &'r self,
+        quant: Q,
+    ) -> Result<<Q as QuantifiedOutput<'r>>::Output, Error> {
+        match *self {
+            Universe::Sha3(ref pd) => pd.apply_ref(quant),
+        }
+    }
+
+    pub fn apply_mut<'r, Q: QuantifiedRefMut>(
+        &'r mut self,
+        quant: Q,
+    ) -> Result<<Q as QuantifiedOutput<'r>>::Output, Error> {
+        match *self {
+            Universe::Sha3(ref mut pd) => pd.apply_mut(quant),
+        }
+    }
+}
+
+/// The subset of possible repository types for a given digest.
+///
+/// Not all variants of this enum for any given `D: Digest` may be constructible.
+#[derive(Debug)]
+pub enum PerDigest<D: Digest> {
+    LevelDb(Repository<LevelStore, D>),
+}
+
+impl<D: Digest> PerDigest<D> {
+    pub fn apply<'r, Q: Quantified>(
+        self,
+        quant: Q,
+    ) -> Result<<Q as QuantifiedOutput<'r>>::Output, Error> {
+        match self {
+            PerDigest::LevelDb(rp) => quant.apply(rp),
+        }
+    }
+
+    pub fn apply_ref<'r, Q: QuantifiedRef>(
+        &'r self,
+        quant: Q,
+    ) -> Result<<Q as QuantifiedOutput<'r>>::Output, Error> {
+        match *self {
+            PerDigest::LevelDb(ref rp) => quant.apply_ref(rp),
+        }
+    }
+
+    pub fn apply_mut<'r, Q: QuantifiedRefMut>(
+        &'r mut self,
+        quant: Q,
+    ) -> Result<<Q as QuantifiedOutput<'r>>::Output, Error> {
+        match *self {
+            PerDigest::LevelDb(ref mut rp) => quant.apply_mut(rp),
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 struct State<H: Handle> {
@@ -77,8 +174,6 @@ pub struct Repository<S: Store, D: Digest>
 where
     S::Handle: HandleDigest<D>,
 {
-    _digest: PhantomData<D>,
-
     store: S,
     db: Arc<RwLock<Database<Key>>>,
 
@@ -86,26 +181,44 @@ where
     path: PathBuf,
 }
 
+impl<S: Store + fmt::Debug, D: Digest> fmt::Debug for Repository<S, D>
+where
+    S::Handle: HandleDigest<D>,
+{
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("Repository")
+            .field("store", &self.store)
+            .field("cache", &self.cache)
+            .field("path", &self.path)
+            .finish()
+    }
+}
+
 impl<S: Store, D: Digest> Repository<S, D>
 where
     S::Handle: HandleDigest<D>,
 {
-    pub fn open(path: &Path) -> Result<Self, Error> {
-        let store = S::open_path(&path.join(".attaca/store"))?;
-        let db = Arc::new(RwLock::new(Database::open(
-            &path.join(".attaca/workspace"),
-            Options::new(),
-        )?));
+    pub fn new(path: PathBuf, db: Database<Key>, store: S) -> Self {
+        let db = Arc::new(RwLock::new(db));
         let cache = Cache::from(db.clone());
 
-        Ok(Self {
-            _digest: PhantomData,
+        Self {
             store,
             db,
 
             cache,
-            path: path.to_owned(),
-        })
+            path,
+        }
+    }
+
+    pub fn open(path: PathBuf) -> Result<Self, Error> {
+        let db = Database::open(&path.join(".attaca/workspace"), Options::new())?;
+
+        // TODO: Load from URL, absolute, or relative path instead of this default. Add a database
+        // key to facilitate this.
+        let store = S::open_path(&path.join(".attaca/store"))?;
+
+        Ok(Self::new(path, db, store))
     }
 
     pub fn search() -> Result<Option<Self>, Error> {
@@ -117,7 +230,7 @@ where
             }
         }
 
-        Ok(Some(Self::open(&wd)?))
+        Ok(Some(Self::open(wd)?))
     }
 
     fn set_state(&self, state: &State<S::Handle>) -> Result<(), Error> {

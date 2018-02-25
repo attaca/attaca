@@ -21,7 +21,7 @@ use failure::Error;
 use futures::prelude::*;
 use leveldb::{database::Database, options::Options};
 use structopt::StructOpt;
-use subito::{Repository, candidate::{CommitArgs, StageArgs}, status::StatusArgs};
+use subito::{CommitArgs, InitArgs, Repository, StageArgs, StatusArgs};
 
 fn main() {
     match run() {
@@ -37,69 +37,47 @@ fn main() {
 
 fn run() -> Result<(), Error> {
     let yml = load_yaml!("main.yml");
-    let app = App::from_yaml(yml);
+    let app = App::from_yaml(yml).subcommand(InitArgs::clap());
     let matches = app.get_matches();
 
     match matches.subcommand() {
-        ("init", Some(_sub_m)) => {
-            let current_dir = env::current_dir()?;
-            fs::create_dir(current_dir.join(".attaca"))?;
-            let _ = Database::<i32>::open(
-                &current_dir.join(".attaca/store"),
-                Options {
-                    create_if_missing: true,
-                    ..Options::new()
-                },
-            )?;
-            let _ = Database::<i32>::open(
-                &current_dir.join(".attaca/workspace"),
-                Options {
-                    create_if_missing: true,
-                    ..Options::new()
-                },
-            )?;
-
-            return Ok(());
+        ("init", Some(sub_m)) => {
+            let args = InitArgs::from_clap(sub_m);
+            subito::init(args)?;
+            Ok(())
         }
         ("stage", Some(sub_m)) => {
-            let mut repository = Repository::<LevelStore, Sha3Digest>::search()?
-                .ok_or_else(|| format_err!("Repository not found!"))?;
+            let mut universe =
+                subito::search()?.ok_or_else(|| format_err!("Repository not found!"))?;
             let mut args = StageArgs::from_clap(sub_m);
             args.quiet = true;
-            repository.stage(args).blocking.wait()?;
+            universe.apply_mut(args)?.blocking.wait()?;
             Ok(())
         }
         ("unstage", Some(sub_m)) => {
-            let mut repository = Repository::<LevelStore, Sha3Digest>::search()?
-                .ok_or_else(|| format_err!("Repository not found!"))?;
+            let mut universe =
+                subito::search()?.ok_or_else(|| format_err!("Repository not found!"))?;
             let mut args = StageArgs::from_clap(sub_m);
             args.quiet = true;
             args.previous = true;
-            repository.stage(args).blocking.wait()?;
+            universe.apply_mut(args)?.blocking.wait()?;
             Ok(())
         }
         ("commit", Some(sub_m)) => {
-            let mut repository = Repository::<LevelStore, Sha3Digest>::search()?
-                .ok_or_else(|| format_err!("Repository not found!"))?;
+            let mut universe =
+                subito::search()?.ok_or_else(|| format_err!("Repository not found!"))?;
             let mut args = CommitArgs::from_clap(sub_m);
-            repository.commit(args).blocking.wait()?;
+            universe.apply_mut(args)?.blocking.wait()?;
             Ok(())
         }
         ("status", Some(sub_m)) => {
-            let repository = Repository::<LevelStore, Sha3Digest>::search()?
-                .ok_or_else(|| format_err!("Repository not found!"))?;
+            let mut universe =
+                subito::search()?.ok_or_else(|| format_err!("Repository not found!"))?;
             let args = StatusArgs::from_clap(sub_m);
-            let state = repository.status(args);
-
-            let future_head_display = state.head.map(|opt_ref| {
-                opt_ref.map(|d: CommitRef<Sha3Digest>| hex::encode(&d.as_inner().as_bytes()[..5]))
-            });
-            let future_cand_display = state.candidate.map(|opt_ref| {
-                opt_ref.map(|d: TreeRef<Sha3Digest>| hex::encode(&d.as_inner().as_bytes()[..5]))
-            });
-
-            let (head_display, cand_display) =
-                future_head_display.join(future_cand_display).wait()?;
+            let status = universe.apply_ref(args)?;
+            let (head, cand) = status.head.join(status.candidate).wait()?;
+            let head_display = head.as_ref().map(|s| &s[..8]);
+            let cand_display = cand.as_ref().map(|s| &s[..8]);
 
             match (head_display, cand_display) {
                 (Some(h), Some(c)) => println!("On commit {} with virtual workspace {}", h, c),
@@ -110,7 +88,7 @@ fn run() -> Result<(), Error> {
 
             println!();
 
-            let staged_changes = state.staged.collect().wait()?;
+            let staged_changes = status.staged.collect().wait()?;
             if staged_changes.is_empty() {
                 println!("No changes to be committed. The virtual workspace and previous commit are the same.");
             } else {

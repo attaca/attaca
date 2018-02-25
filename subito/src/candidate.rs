@@ -9,6 +9,7 @@ use ignore::WalkBuilder;
 
 use {Repository, State};
 use cache::{Cache, Certainty, Status};
+use quantified::{QuantifiedOutput, QuantifiedRefMut};
 
 /// Save the virtual workspace as a child commit of the previous commit.
 #[derive(Debug, StructOpt, Builder)]
@@ -31,6 +32,23 @@ pub struct CommitArgs {
     pub force: bool,
 }
 
+impl<'r> QuantifiedOutput<'r> for CommitArgs {
+    type Output = CommitOut<'r>;
+}
+
+impl QuantifiedRefMut for CommitArgs {
+    fn apply_mut<'r, S: Store, D: Digest>(
+        self,
+        repository: &'r mut Repository<S, D>,
+    ) -> Result<CommitOut<'r>, Error>
+    where
+        S::Handle: HandleDigest<D>,
+    {
+        Ok(repository.commit(self))
+    }
+}
+
+#[must_use = "CommitOut contains futures which must be driven to completion!"]
 pub struct CommitOut<'r> {
     pub blocking: Box<Future<Item = (), Error = Error> + 'r>,
 }
@@ -60,6 +78,22 @@ pub struct StageArgs {
     pub quiet: bool,
 }
 
+impl<'r> QuantifiedOutput<'r> for StageArgs {
+    type Output = StageOut<'r>;
+}
+
+impl QuantifiedRefMut for StageArgs {
+    fn apply_mut<'r, S: Store, D: Digest>(
+        self,
+        repository: &'r mut Repository<S, D>,
+    ) -> Result<StageOut<'r>, Error>
+    where
+        S::Handle: HandleDigest<D>,
+    {
+        Ok(repository.stage(self))
+    }
+}
+
 #[derive(Debug)]
 pub struct FileProgress {
     file_path: PathBuf,
@@ -69,6 +103,7 @@ pub struct FileProgress {
     total_bytes: u64,
 }
 
+#[must_use = "StageOut contains futures which must be driven to completion!"]
 pub struct StageOut<'r> {
     pub progress: Box<Stream<Item = FileProgress, Error = Error> + 'r>,
     pub blocking: Box<Future<Item = (), Error = Error> + 'r>,

@@ -4,8 +4,6 @@ about: Fast, distributed version control system with support for extreme quantit
 author: Sean Leffler <sean@errno.com>
 
 subcommands:
-    - init:
-        about: Create a local repository in the working directory.
     - stage:
         about: Load local files into the virtual workspace.
         args:

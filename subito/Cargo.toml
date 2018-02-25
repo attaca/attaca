@@ -20,6 +20,7 @@ leveldb = "0.8.4"
 nix = "0.10.0"
 smallvec = "0.6.0"
 structopt = "0.2.3"
+url = "1.7.0"
 
 [dependencies.attaca]
 path = ".."
