@@ -42,6 +42,26 @@ use failure::Error;
 
 pub use store::*;
 
+/// Trait for types representing resources which can be initialized without outside work.
+///
+/// For example, local filesystem stores, e.g. backed by LevelDB or some other form of local
+/// database, can usually be initialized programmatically. Remote backends however, such as
+/// servers/clusters (e.g. a Ceph/RADOS backed store) require a significant amount of work to set
+/// up; software must be installed, networks must be configured, et cetera.
+///
+/// When `Init::init` returns true, subsequent calls to `Open::open` to the same URL should
+/// succeed, and equivalently for `Init::init_path`.
+pub trait Init: Open {
+    /// Attempt to initialize an instance of this resource at a given URL. URL schemes must follow
+    /// the same valid list of schemes from the corresponding `Open` impl.
+    fn init(s: &str) -> Result<Self, Error>;
+
+    /// Attempt to initialize an instance of this resource at a given path. Not all `Init` types
+    /// may support this operation, and those which do not will indicate their lack of support via
+    /// an error.
+    fn init_path(path: &Path) -> Result<Self, Error>;
+}
+
 /// Trait for types representing resources which must be "opened" for use from URLs; e.g. local
 /// filesystem workspaces and remote servers/clusters.
 pub trait Open: Sized {
@@ -65,7 +85,7 @@ pub trait Open: Sized {
     fn open(s: &str) -> Result<Self, Error>;
 
     /// Attempt to open from a given file path instead of a URL. Not all `Open` types may support
-    /// this operation.
+    /// this operation, and those which do not will indicate their lack of support via an error.
     fn open_path(path: &Path) -> Result<Self, Error>;
 }
 
