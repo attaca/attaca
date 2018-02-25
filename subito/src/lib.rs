@@ -1,3 +1,4 @@
+#![recursion_limit = "128"]
 #![feature(proc_macro, conservative_impl_trait, generators)]
 
 extern crate attaca;
@@ -13,6 +14,7 @@ extern crate hex;
 extern crate ignore;
 extern crate itertools;
 extern crate leveldb;
+extern crate memmap;
 #[macro_use]
 extern crate nix;
 extern crate smallvec;
@@ -49,9 +51,11 @@ mod cache;
 mod db;
 
 pub mod candidate;
+pub mod checkout;
 pub mod config;
 pub mod init;
 pub mod quantified;
+pub mod show;
 pub mod status;
 
 use std::{env, fmt, marker::PhantomData, path::{Path, PathBuf}, sync::{Arc, RwLock}};
@@ -69,7 +73,9 @@ use db::Key;
 use quantified::{Quantified, QuantifiedOutput, QuantifiedRef, QuantifiedRefMut};
 
 pub use candidate::{CommitArgs, StageArgs};
+pub use checkout::CheckoutArgs;
 pub use init::{init, open, search, InitArgs};
+pub use show::ShowArgs;
 pub use status::StatusArgs;
 
 /// The "universe" of possible repository types. This is a generic type intended to close over all
@@ -178,7 +184,7 @@ where
     db: Arc<RwLock<Database<Key>>>,
 
     cache: Cache<D>,
-    path: PathBuf,
+    path: Arc<PathBuf>,
 }
 
 impl<S: Store + fmt::Debug, D: Digest> fmt::Debug for Repository<S, D>
@@ -207,7 +213,7 @@ where
             db,
 
             cache,
-            path,
+            path: Arc::new(path),
         }
     }
 

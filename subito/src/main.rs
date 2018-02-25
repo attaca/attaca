@@ -1,3 +1,4 @@
+#![recursion_limit = "128"]
 #![feature(conservative_impl_trait, generators, proc_macro)]
 
 extern crate attaca;
@@ -21,7 +22,7 @@ use failure::Error;
 use futures::prelude::*;
 use leveldb::{database::Database, options::Options};
 use structopt::StructOpt;
-use subito::{CommitArgs, InitArgs, Repository, StageArgs, StatusArgs};
+use subito::{CheckoutArgs, CommitArgs, InitArgs, Repository, ShowArgs, StageArgs, StatusArgs};
 
 fn main() {
     match run() {
@@ -37,10 +38,22 @@ fn main() {
 
 fn run() -> Result<(), Error> {
     let yml = load_yaml!("main.yml");
-    let app = App::from_yaml(yml).subcommand(InitArgs::clap());
+    let app = App::from_yaml(yml)
+        .subcommand(CheckoutArgs::clap())
+        .subcommand(CommitArgs::clap())
+        .subcommand(InitArgs::clap())
+        .subcommand(ShowArgs::clap())
+        .subcommand(StatusArgs::clap());
     let matches = app.get_matches();
 
     match matches.subcommand() {
+        ("checkout", Some(sub_m)) => {
+            let mut universe =
+                subito::search()?.ok_or_else(|| format_err!("Repository not found!"))?;
+            let mut args = CheckoutArgs::from_clap(sub_m);
+            universe.apply_mut(args)?.blocking.wait()?;
+            Ok(())
+        }
         ("init", Some(sub_m)) => {
             let args = InitArgs::from_clap(sub_m);
             subito::init(args)?;
@@ -68,6 +81,13 @@ fn run() -> Result<(), Error> {
                 subito::search()?.ok_or_else(|| format_err!("Repository not found!"))?;
             let mut args = CommitArgs::from_clap(sub_m);
             universe.apply_mut(args)?.blocking.wait()?;
+            Ok(())
+        }
+        ("show", Some(sub_m)) => {
+            let mut universe =
+                subito::search()?.ok_or_else(|| format_err!("Repository not found!"))?;
+            let mut args = ShowArgs::from_clap(sub_m);
+            universe.apply_ref(args)?.blocking.wait()?;
             Ok(())
         }
         ("status", Some(sub_m)) => {

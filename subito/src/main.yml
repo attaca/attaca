@@ -21,25 +21,3 @@ subcommands:
                 required: true
                 index: 1
                 multiple: true
-    - commit:
-        about: Save the virtual workspace and previous commit as a new commit.
-        args:
-            - message:
-                help: The commit message.
-                short: m
-                long: message
-                takes_value: true
-            - author:
-                help: Add a commit author.
-                long: author
-                takes_value: true
-                multiple: true
-                number_of_values: 1
-            - amend:
-                help: Change the previous commit instead of creating a fresh commit and linking it on.
-                long: amend
-            - force:
-                long: force
-                help: Force a commit regardless of warnings.
-    - status:
-        about: Compare the virtual workspace to the previous commit.

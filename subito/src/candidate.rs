@@ -94,18 +94,9 @@ impl QuantifiedRefMut for StageArgs {
     }
 }
 
-#[derive(Debug)]
-pub struct FileProgress {
-    file_path: PathBuf,
-    object_path: ObjectPath,
-
-    processed_bytes: u64,
-    total_bytes: u64,
-}
-
 #[must_use = "StageOut contains futures which must be driven to completion!"]
 pub struct StageOut<'r> {
-    pub progress: Box<Stream<Item = FileProgress, Error = Error> + 'r>,
+    pub progress: Box<Stream<Item = (), Error = Error> + 'r>,
     pub blocking: Box<Future<Item = (), Error = Error> + 'r>,
 }
 
@@ -359,7 +350,7 @@ where
 
         let paths_res = if raw_path.is_absolute() {
             raw_path
-                .strip_prefix(&self.path)
+                .strip_prefix(&*self.path)
                 .map_err(failure::err_msg)
                 .and_then(|relative_path| ObjectPath::from_path(relative_path))
                 .map(|object_path| (raw_path, object_path))
