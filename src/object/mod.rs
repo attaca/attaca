@@ -688,12 +688,14 @@ impl<H> LargeBuilder<H> {
                 assert!(self.0.depth == 1);
                 let start = self.0.size;
                 let end = self.0.size + small_ref.size();
+                self.0.size += small_ref.size();
                 self.0.entries.insert(start, (end, objref));
             }
             ObjectRef::Large(ref large_ref) => {
                 assert!(self.0.depth == large_ref.depth() + 1);
                 let start = self.0.size;
                 let end = self.0.size + large_ref.size();
+                self.0.size += large_ref.size();
                 self.0.entries.insert(start, (end, objref));
             }
             _ => unreachable!(),
