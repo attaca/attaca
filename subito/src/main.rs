@@ -22,7 +22,8 @@ use failure::Error;
 use futures::prelude::*;
 use leveldb::{database::Database, options::Options};
 use structopt::StructOpt;
-use subito::{CheckoutArgs, CommitArgs, InitArgs, Repository, ShowArgs, StageArgs, StatusArgs};
+use subito::{CheckoutArgs, CommitArgs, FsckArgs, InitArgs, Repository, ShowArgs, StageArgs,
+             StatusArgs};
 
 fn main() {
     match run() {
@@ -41,6 +42,7 @@ fn run() -> Result<(), Error> {
     let app = App::from_yaml(yml)
         .subcommand(CheckoutArgs::clap())
         .subcommand(CommitArgs::clap())
+        .subcommand(FsckArgs::clap())
         .subcommand(InitArgs::clap())
         .subcommand(ShowArgs::clap())
         .subcommand(StatusArgs::clap());
@@ -52,6 +54,28 @@ fn run() -> Result<(), Error> {
                 subito::search()?.ok_or_else(|| format_err!("Repository not found!"))?;
             let mut args = CheckoutArgs::from_clap(sub_m);
             universe.apply_mut(args)?.blocking.wait()?;
+            Ok(())
+        }
+        ("fsck", Some(sub_m)) => {
+            let mut universe =
+                subito::search()?.ok_or_else(|| format_err!("Repository not found!"))?;
+            let mut args = FsckArgs::from_clap(sub_m);
+            let errored = universe
+                .apply_ref(args)?
+                .errors
+                .fold(false, |_, error| -> Result<bool, Error> {
+                    println!(
+                        "Fsck error: digest mismatch: calculated {}, received {}",
+                        error.calculated, error.received
+                    );
+                    Ok(true)
+                })
+                .wait()?;
+
+            if !errored {
+                println!("No errors found.");
+            }
+
             Ok(())
         }
         ("init", Some(sub_m)) => {

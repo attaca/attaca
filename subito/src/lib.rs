@@ -75,6 +75,7 @@ use quantified::{Quantified, QuantifiedOutput, QuantifiedRef, QuantifiedRefMut};
 
 pub use candidate::{CommitArgs, StageArgs};
 pub use checkout::CheckoutArgs;
+pub use fsck::FsckArgs;
 pub use init::{init, open, search, InitArgs};
 pub use show::ShowArgs;
 pub use status::StatusArgs;
