@@ -94,8 +94,8 @@ pub fn copy<H: Handle, S: Store>(root: H, target: S) -> Result<S::Handle, Error>
 
 #[derive(Debug, Clone, Copy, Fail)]
 pub struct FsckError<D: Digest> {
-    received: D,
-    calculated: D,
+    pub received: D,
+    pub calculated: D,
 }
 
 impl<D: Digest> fmt::Display for FsckError<D> {
