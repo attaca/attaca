@@ -55,11 +55,12 @@ pub mod checkout;
 pub mod config;
 pub mod fsck;
 pub mod init;
+pub mod log;
 pub mod quantified;
 pub mod show;
 pub mod status;
 
-use std::{env, fmt, marker::PhantomData, path::{Path, PathBuf}, sync::{Arc, RwLock}};
+use std::{env, fmt, path::PathBuf, sync::{Arc, RwLock}};
 
 use attaca::{Handle, HandleDigest, Store, digest::{Digest, Sha3Digest},
              object::{CommitRef, TreeRef}};
@@ -77,6 +78,7 @@ pub use candidate::{CommitArgs, StageArgs};
 pub use checkout::CheckoutArgs;
 pub use fsck::FsckArgs;
 pub use init::{init, open, search, InitArgs};
+pub use log::LogArgs;
 pub use show::ShowArgs;
 pub use status::StatusArgs;
 

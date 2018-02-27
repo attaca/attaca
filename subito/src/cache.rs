@@ -1,4 +1,4 @@
-use std::{fmt, fs::File, io::{BufRead, Write}, marker::PhantomData, ops::{BitAnd, BitOr, Not},
+use std::{fmt, io::{BufRead, Write}, marker::PhantomData, ops::{BitAnd, BitOr, Not},
           path::{Path, PathBuf}, sync::{Arc, RwLock}, time::{SystemTime, UNIX_EPOCH}};
 
 use attaca::{digest::Digest, object::{LargeRef, ObjectRef, SmallRef}, path::ObjectPath};

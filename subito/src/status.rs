@@ -1,6 +1,6 @@
 use std::fmt;
 
-use attaca::{Handle, HandleDigest, Store, digest::Digest, object::{CommitRef, ObjectRef, TreeRef},
+use attaca::{Handle, HandleDigest, Store, digest::Digest, object::{ObjectRef, TreeRef},
              path::ObjectPath};
 use failure::*;
 use futures::{future, prelude::*, stream::FuturesUnordered};

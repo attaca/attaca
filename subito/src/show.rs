@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, fmt};
+use std::{fmt, collections::BTreeMap};
 
 use attaca::{HandleDigest, Store, digest::Digest, object::ObjectRef};
 use failure::Error;
@@ -25,7 +25,7 @@ pub enum ShowCommand {
     Commit,
 }
 
-/// Show information about specific objects in the repository.
+/// Show information about specific objects in the repository. TODO: currently a stub
 #[derive(Debug, Clone, StructOpt, Builder)]
 #[structopt(name = "show")]
 pub struct ShowArgs {
@@ -88,7 +88,7 @@ impl<S: Store, D: Digest> Repository<S, D>
 where
     S::Handle: HandleDigest<D>,
 {
-    pub fn show<'r>(&'r self, args: ShowArgs) -> ShowOut<'r> {
+    pub fn show<'r>(&'r self, _args: ShowArgs) -> ShowOut<'r> {
         let blocking = async_block! {
             let state = self.get_state()?;
             let subtree = await!(await!(state.head.unwrap().fetch())?.as_subtree().fetch())?;
@@ -97,7 +97,7 @@ where
                 match objref {
                     ObjectRef::Small(small_ref) => println!("{} => Small {}", name, small_ref.size()),
                     ObjectRef::Large(large_ref) => println!("{} => Large {} {}", name, large_ref.depth(), large_ref.size()),
-                    ObjectRef::Tree(tree_ref) => println!("{} => Tree", name),
+                    ObjectRef::Tree(_) => println!("{} => Tree", name),
                     _ => unreachable!(),
                 }
             }

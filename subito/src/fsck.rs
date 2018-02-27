@@ -8,6 +8,7 @@ use hex;
 use Repository;
 use quantified::{QuantifiedOutput, QuantifiedRef};
 
+/// Check repository integrity, verifying hashes of all objects.
 #[derive(Debug, StructOpt, Builder)]
 #[structopt(name = "fsck")]
 pub struct FsckArgs {}
@@ -48,7 +49,7 @@ impl<S: Store, D: Digest> Repository<S, D>
 where
     S::Handle: HandleDigest<D>,
 {
-    pub fn fsck<'r>(&'r self, args: FsckArgs) -> FsckOut<'r> {
+    pub fn fsck<'r>(&'r self, _args: FsckArgs) -> FsckOut<'r> {
         let errors = async_stream_block! {
             let state = self.get_state()?;
             if let Some(head) = state.head {

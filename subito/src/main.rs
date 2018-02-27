@@ -13,17 +13,11 @@ extern crate leveldb;
 extern crate structopt;
 extern crate subito;
 
-use std::{env, fs};
-
-use attaca::{digest::{Digest, Sha3Digest}, object::{CommitRef, TreeRef}};
-use attaca_leveldb::LevelStore;
 use clap::App;
 use failure::Error;
 use futures::prelude::*;
-use leveldb::{database::Database, options::Options};
 use structopt::StructOpt;
-use subito::{CheckoutArgs, CommitArgs, FsckArgs, InitArgs, Repository, ShowArgs, StageArgs,
-             StatusArgs};
+use subito::{CheckoutArgs, CommitArgs, FsckArgs, InitArgs, ShowArgs, StageArgs, StatusArgs};
 
 fn main() {
     match run() {

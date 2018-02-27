@@ -1,4 +1,4 @@
-use attaca::{Handle, HandleDigest, Store, digest::Digest};
+use attaca::{HandleDigest, Store, digest::Digest};
 use failure::Error;
 
 use Repository;

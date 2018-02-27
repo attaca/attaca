@@ -5,7 +5,6 @@ use attaca::{HandleDigest, Store, digest::Digest, hierarchy::Hierarchy,
              object::{Object, ObjectRef, TreeRef}, path::ObjectPath};
 use failure::*;
 use futures::{stream, prelude::*};
-use hex;
 use memmap::MmapMut;
 
 use Repository;
@@ -14,6 +13,7 @@ use quantified::{QuantifiedOutput, QuantifiedRefMut};
 
 const LARGE_CHILD_LOOKAHEAD_BUFFER_SIZE: usize = 32;
 
+/// Copy files from the repository into the local workspace.
 #[derive(Debug, StructOpt, Builder)]
 #[structopt(name = "checkout")]
 pub struct CheckoutArgs {
