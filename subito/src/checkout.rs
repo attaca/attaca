@@ -5,6 +5,7 @@ use attaca::{HandleDigest, Store, digest::Digest, hierarchy::Hierarchy,
              object::{Object, ObjectRef, TreeRef}, path::ObjectPath};
 use failure::*;
 use futures::{stream, prelude::*};
+use ignore::WalkBuilder;
 use memmap::MmapMut;
 
 use Repository;
@@ -222,13 +223,22 @@ where
             fs::create_dir(&absolute_path)?;
         }
 
-        let mut entries = absolute_path
-            .read_dir()?
+        // Use a WalkBuilder in order to respect ignores. This happens to also nicely ignore
+        // `.attaca`.
+        //
+        // TODO: More robust way to avoid clobbering `.attaca`.
+        let mut entries = WalkBuilder::new(&absolute_path)
+            .max_depth(Some(1))
+            .build()
             .map(|direntry| {
                 Ok((
-                    direntry?.file_name().into_string().map_err(|os_string| {
-                        format_err!("Unable to convert {:?} into a UTF-8 string", os_string)
-                    })?,
+                    direntry?
+                        .file_name()
+                        .to_os_string()
+                        .into_string()
+                        .map_err(|os_string| {
+                            format_err!("Unable to convert {:?} into a UTF-8 string", os_string)
+                        })?,
                     None,
                 ))
             })
@@ -301,12 +311,18 @@ where
                 await!(
                     state
                         .head
-                        .ok_or_else(|| format_err!("Cannot checkout from empty virtual directory"))?
+                        .ok_or_else(|| format_err!("No previous commit to checkout from!"))?
                         .fetch()
                 )?.as_subtree().clone(),
             );
 
-            for path in args.paths {
+            let paths = if args.paths.is_empty() {
+                vec![PathBuf::new()]
+            } else {
+                args.paths
+            };
+
+            for path in paths {
                 let object_path = ObjectPath::from_path(&path)?;
                 let maybe_object_ref = await!(subtree.get(object_path.clone()))?;
 
@@ -318,19 +334,7 @@ where
                         object_path,
                         object_ref
                     ))?,
-                    None => {
-                        if path.exists() {
-                            let file_type = path.symlink_metadata()?.file_type();
-
-                            if file_type.is_symlink() || file_type.is_file() {
-                                fs::remove_file(&path)?;
-                            } else if file_type.is_dir() {
-                                fs::remove_dir_all(&path)?;
-                            } else {
-                                bail!("Unrecognized file type {:?}", file_type);
-                            }
-                        }
-                    }
+                    None => bail!("No such object in the previous commit!"),
                 }
             }
 
