@@ -53,6 +53,7 @@ mod db;
 pub mod candidate;
 pub mod checkout;
 pub mod config;
+pub mod fsck;
 pub mod init;
 pub mod quantified;
 pub mod show;
