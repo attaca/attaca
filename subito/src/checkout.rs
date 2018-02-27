@@ -226,7 +226,9 @@ where
         // Use a WalkBuilder in order to respect ignores. This happens to also nicely ignore
         // `.attaca`.
         //
-        // TODO: More robust way to avoid clobbering `.attaca`.
+        // TODO: More robust way to avoid clobbering `.attaca`: add specialized ignores/overrides
+        // to all WalkBuilders.
+        // TODO #33
         let mut entries = WalkBuilder::new(&absolute_path)
             .max_depth(Some(1))
             .build()
@@ -316,6 +318,7 @@ where
                 )?.as_subtree().clone(),
             );
 
+            // Checkout the previous subtree in its entirety if there are no paths specified.
             let paths = if args.paths.is_empty() {
                 vec![PathBuf::new()]
             } else {

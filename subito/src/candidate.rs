@@ -300,6 +300,7 @@ where
             Ok(Some(objref))
         } else {
             let mut object_batch = ObjectBatch::<S::Handle>::new();
+            // TODO #33
             let walk = WalkBuilder::new(&absolute_path).build();
 
             for direntry_res in walk {
