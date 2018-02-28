@@ -12,6 +12,7 @@ compile_error!(
 #[macro_use]
 extern crate proptest;
 
+extern crate chrono;
 #[macro_use]
 extern crate failure;
 extern crate futures_await as futures;

@@ -1,12 +1,13 @@
 use std::{usize, collections::BTreeMap, io::{BufRead, Read}, str::{self, FromStr}};
 
+use chrono::prelude::*;
 use failure::{self, Error};
 use nom::{digit, rest, IResult};
 use ntriple::{self, Object, Predicate, Subject};
 
 use object::{Commit, CommitAuthor, CommitBuilder, CommitRef, Large, LargeRef, ObjectKind,
              ObjectRef, Small, SmallRef, Tree, TreeRef,
-             metadata::{ATTACA_COMMIT_MESSAGE, FOAF_MBOX, FOAF_NAME}};
+             metadata::{ATTACA_COMMIT_MESSAGE, ATTACA_COMMIT_TIMESTAMP, FOAF_MBOX, FOAF_NAME}};
 use store::Handle;
 
 #[cfg_attr(rustfmt, rustfmt_skip)]
@@ -223,7 +224,7 @@ named!(commit_header<(usize, usize)>,
   )
 );
 
-// TODO: Robust RDF formatting - current breaks for non-ASCII strings:
+// TODO: Robust RDF formatting/parsing - current breaks for non-ASCII strings:
 // https://github.com/sdleffler/attaca/issues/25
 pub fn commit<H: Handle>(
     mut content: H::Content,
@@ -272,7 +273,13 @@ pub fn commit<H: Handle>(
                 };
 
                 match iri.as_str() {
-                    ATTACA_COMMIT_MESSAGE => commit_builder.message(object),
+                    ATTACA_COMMIT_MESSAGE => {
+                        commit_builder.message(object);
+                    }
+                    ATTACA_COMMIT_TIMESTAMP => {
+                        let timestamp = DateTime::parse_from_rfc2822(&object)?;
+                        commit_builder.timestamp(timestamp);
+                    }
                     _ => bail!(
                         "Malformed commit metadata: invalid commit predicate <{}>",
                         iri

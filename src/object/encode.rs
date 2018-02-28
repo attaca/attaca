@@ -3,7 +3,7 @@ use std::{ascii, usize, collections::{BTreeSet, HashMap}, io::Write};
 use failure::Error;
 
 use object::{Commit, Large, ObjectRef, Small, Tree,
-             metadata::{ATTACA_COMMIT_MESSAGE, FOAF_MBOX, FOAF_NAME}};
+             metadata::{ATTACA_COMMIT_MESSAGE, ATTACA_COMMIT_TIMESTAMP, FOAF_MBOX, FOAF_NAME}};
 use store::HandleBuilder;
 
 pub fn small<HB>(builder: &mut HB, object: &Small) -> Result<(), Error>
@@ -92,7 +92,7 @@ where
     Ok(())
 }
 
-// TODO: Robust RDF formatting - current breaks for non-ASCII strings:
+// TODO: Robust RDF formatting/parsing - current breaks for non-ASCII strings:
 // https://github.com/sdleffler/attaca/issues/25
 pub fn commit<HB>(builder: &mut HB, object: &Commit<HB::Handle>) -> Result<(), Error>
 where
@@ -137,6 +137,14 @@ where
         let mut buf = Vec::new();
         write!(&mut buf, "_:this <{}> \"", ATTACA_COMMIT_MESSAGE)?;
         buf.write_all(&rdf_literal(message))?;
+        write!(&mut buf, "\" .\n")?;
+        ntriples.insert(buf);
+    }
+
+    {
+        let mut buf = Vec::new();
+        write!(&mut buf, "_:this <{}> \"", ATTACA_COMMIT_TIMESTAMP)?;
+        buf.write_all(&rdf_literal(&object.as_timestamp().to_rfc2822()))?;
         write!(&mut buf, "\" .\n")?;
         ntriples.insert(buf);
     }

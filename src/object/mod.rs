@@ -8,6 +8,7 @@ use std::{mem, collections::{btree_map, BTreeMap, Bound, VecDeque}, io::{self, R
 use failure::Error;
 use futures::{future::{Flatten, FutureResult}, prelude::*, stream::FuturesOrdered};
 
+use chrono::prelude::*;
 use digest::Digest;
 use path::ObjectPath;
 use split::{Parameters, Splitter};
@@ -1033,6 +1034,8 @@ impl CommitAuthor {
 pub struct Commit<H> {
     subtree: TreeRef<H>,
     parents: Vec<CommitRef<H>>,
+
+    timestamp: DateTime<FixedOffset>,
     author: CommitAuthor,
     message: Option<String>,
 }
@@ -1052,6 +1055,10 @@ impl<H> Commit<H> {
 
     pub fn as_author(&self) -> &CommitAuthor {
         &self.author
+    }
+
+    pub fn as_timestamp(&self) -> &DateTime<FixedOffset> {
+        &self.timestamp
     }
 
     pub fn as_message(&self) -> Option<&str> {
@@ -1078,6 +1085,7 @@ impl<H: Handle> Commit<H> {
 pub enum CommitBuilder<H> {
     Incomplete {
         parents: Vec<CommitRef<H>>,
+        timestamp: DateTime<FixedOffset>,
         author: CommitAuthor,
         message: Option<String>,
     },
@@ -1094,6 +1102,10 @@ impl<H> Default for CommitBuilder<H> {
     fn default() -> Self {
         CommitBuilder::Incomplete {
             parents: Default::default(),
+            timestamp: {
+                let local = Local::now();
+                local.with_timezone(local.offset())
+            },
             author: Default::default(),
             message: Default::default(),
         }
@@ -1162,14 +1174,26 @@ impl<H> CommitBuilder<H> {
                 parents,
                 author,
                 message,
+                timestamp,
             } => Commit {
                 subtree: new_subtree,
                 parents,
+                timestamp,
                 author,
                 message,
             },
         };
         *self = CommitBuilder::Complete(tmp);
+        self
+    }
+
+    pub fn timestamp(&mut self, new_timestamp: DateTime<FixedOffset>) -> &mut Self {
+        match *self {
+            CommitBuilder::Complete(ref mut commit) => commit.timestamp = new_timestamp,
+            CommitBuilder::Incomplete {
+                ref mut timestamp, ..
+            } => *timestamp = new_timestamp,
+        }
         self
     }
 }
@@ -1287,7 +1311,7 @@ mod tests {
 
     prop_compose! {
         fn arb_small_ref()
-                (size in any::<u64>(), handle in arb_handle()) -> SmallRef<TestHandle> {
+                (size in 0u64..1 << 20, handle in arb_handle()) -> SmallRef<TestHandle> {
             SmallRef(handle, size)
         }
     }
@@ -1342,6 +1366,14 @@ mod tests {
     }
 
     prop_compose! {
+        fn arb_timestamp()
+                (seconds in 0i64..8_210_298_412_800,
+                 hour_offset in -23..23) -> DateTime<FixedOffset> {
+            FixedOffset::east(3600 * hour_offset).timestamp(seconds, 0)
+        }
+    }
+
+    prop_compose! {
         /// Worth noting: only testing printable characters here in the metadata because we don't
         /// have an RDF N-triples parser/formatter which will correctly deal with
         /// non-printable/non-ASCII characters. TODO: Find or write one.
@@ -1350,15 +1382,17 @@ mod tests {
                  parents in prop::collection::vec(arb_commit_ref(), 0..4),
                  name in prop::option::of("[ -~]*"),
                  mbox in prop::option::of("[ -~]*"),
+                 timestamp in arb_timestamp(),
                  message in prop::option::of("[ -~]*")) -> Commit<TestHandle> {
             let mut builder = CommitBuilder::new();
             builder.subtree(subtree).parents(parents);
+            builder.timestamp(timestamp);
+            builder.author(CommitAuthor { name, mbox });
 
             if let Some(msg) = message {
                 builder.message(msg);
             }
 
-            builder.author(CommitAuthor { name, mbox });
             builder.into_commit().unwrap()
         }
     }
