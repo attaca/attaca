@@ -49,6 +49,7 @@ mod state_capnp {
 
 mod cache;
 mod db;
+mod state;
 
 pub mod candidate;
 pub mod checkout;
@@ -60,18 +61,17 @@ pub mod quantified;
 pub mod show;
 pub mod status;
 
-use std::{env, fmt, io::{BufRead, Cursor, Write}, path::PathBuf, sync::{Arc, RwLock}};
+use std::{env, fmt, io::Cursor, path::PathBuf, sync::{Arc, RwLock}};
 
-use attaca::{Handle, HandleDigest, Store, digest::{Digest, Sha3Digest},
-             object::{CommitRef, TreeRef}};
+use attaca::{HandleDigest, Store, digest::{Digest, Sha3Digest}};
 use attaca_leveldb::LevelStore;
-use capnp::{message, serialize_packed};
 use failure::Error;
 use futures::prelude::*;
 use leveldb::{database::Database, kv::KV, options::{Options, ReadOptions, WriteOptions}};
 
 use cache::Cache;
 use db::Key;
+use state::State;
 use quantified::{Quantified, QuantifiedOutput, QuantifiedRef, QuantifiedRefMut};
 
 pub use candidate::{CommitArgs, StageArgs};
@@ -159,171 +159,6 @@ impl<D: Digest> PerDigest<D> {
     ) -> Result<<Q as QuantifiedOutput<'r>>::Output, Error> {
         match *self {
             PerDigest::LevelDb(ref mut rp) => quant.apply_mut(rp),
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-struct State<H: Handle> {
-    candidate: Option<TreeRef<H>>,
-    head: Option<CommitRef<H>>,
-    active_branch: Option<String>,
-}
-
-impl<H: Handle> Default for State<H> {
-    fn default() -> Self {
-        Self {
-            candidate: None,
-            head: None,
-            active_branch: None,
-        }
-    }
-}
-
-impl<H: Handle> State<H> {
-    fn decode<R, S, D>(mut reader: R, store: S) -> impl Future<Item = Self, Error = Error>
-    where
-        R: BufRead,
-        S: Store<Handle = H>,
-        D: Digest,
-        H: HandleDigest<D>,
-    {
-        use state_capnp::state::{self, active_branch, candidate, head};
-
-        async_block! {
-            let future_head;
-            let future_candidate;
-            let active_branch;
-
-            {
-                let message_reader =
-                    serialize_packed::read_message(&mut reader, message::ReaderOptions::new())?;
-                let state = message_reader.get_root::<state::Reader>()?;
-
-                let digest = state.get_digest()?;
-                let name = digest.get_name()?;
-                let size = digest.get_size() as usize;
-
-                ensure!(
-                    name == D::NAME && size == D::SIZE,
-                    "Digest mismatch: expected {}/{}, got {}/{}",
-                    D::NAME,
-                    D::SIZE,
-                    name,
-                    size
-                    );
-
-                let head_digest = match state.get_head().which()? {
-                    head::Some(bytes_res) => {
-                        let bytes = bytes_res?;
-                        ensure!(
-                            bytes.len() == D::SIZE,
-                            "Invalid head digest: expected {} bytes, found {}",
-                            D::SIZE,
-                            bytes.len()
-                            );
-                        Some(D::from_bytes(bytes))
-                    }
-                    head::None(()) => None,
-                };
-                future_head = head_digest.map(|dg| {
-                    store
-                        .resolve(&dg)
-                        .and_then(|rs| rs.ok_or_else(|| format_err!("Head does not exist!")))
-                        .map(CommitRef::new)
-                });
-                let candidate_digest = match state.get_candidate().which()? {
-                    candidate::Some(bytes_res) => {
-                        let bytes = bytes_res?;
-                        ensure!(
-                            bytes.len() == D::SIZE,
-                            "Invalid candidate digest: expected {} bytes, found {}",
-                            D::SIZE,
-                            bytes.len()
-                            );
-                        Some(D::from_bytes(bytes))
-                    }
-                    candidate::None(()) => None,
-                };
-                future_candidate = candidate_digest.map(|dg| {
-                    store
-                        .resolve(&dg)
-                        .and_then(|rs| rs.ok_or_else(|| format_err!("Candidate does not exist!")))
-                        .map(TreeRef::new)
-                });
-                active_branch = match state.get_active_branch().which()? {
-                    active_branch::Some(name) => Some(String::from(name?)),
-                    active_branch::None(()) => None,
-                };
-            }
-
-            let (candidate, head) = await!(future_candidate.join(future_head))?;
-            Ok(State {
-                candidate,
-                head,
-                active_branch,
-            })
-        }
-    }
-
-    fn encode<'b, W: Write + 'b, D: Digest>(
-        &self,
-        mut buf: W,
-    ) -> impl Future<Item = (), Error = Error> + 'b
-    where
-        H: HandleDigest<D>,
-    {
-        use state_capnp::state;
-
-        let state = self.clone();
-        async_block! {
-            let joined_future = state.candidate
-                .as_ref()
-                .map(TreeRef::as_inner)
-                .map(HandleDigest::digest)
-                .join(
-                    state.head
-                        .as_ref()
-                        .map(CommitRef::as_inner)
-                        .map(HandleDigest::digest),
-                );
-            let (candidate_digest, head_digest) = await!(joined_future)?;
-
-            let mut message = message::Builder::new_default();
-
-            {
-                let mut state_builder = message.init_root::<state::Builder>();
-                {
-                    let mut digest = state_builder.borrow().get_digest()?;
-                    digest.set_name(D::NAME);
-                    digest.set_size(D::SIZE as u32);
-                }
-                {
-                    let mut candidate = state_builder.borrow().get_candidate();
-                    match candidate_digest {
-                        Some(ref digest) => candidate.set_some(digest.as_bytes()),
-                        None => candidate.set_none(()),
-                    }
-                }
-                {
-                    let mut head = state_builder.borrow().get_head();
-                    match head_digest {
-                        Some(ref digest) => head.set_some(digest.as_bytes()),
-                        None => head.set_none(()),
-                    }
-                }
-                {
-                    let mut active_branch = state_builder.borrow().get_active_branch();
-                    match state.active_branch {
-                        Some(ref name) => active_branch.set_some(name),
-                        None => active_branch.set_none(()),
-                    }
-                }
-            }
-
-            serialize_packed::write_message(&mut buf, &message)?;
-
-            Ok(())
         }
     }
 }

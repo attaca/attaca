@@ -13,11 +13,15 @@ extern crate leveldb;
 extern crate structopt;
 extern crate subito;
 
+use std::fmt::Write;
+
+use attaca::object::CommitAuthor;
 use clap::App;
 use failure::Error;
 use futures::prelude::*;
 use structopt::StructOpt;
-use subito::{CheckoutArgs, CommitArgs, FsckArgs, InitArgs, ShowArgs, StageArgs, StatusArgs};
+use subito::{CheckoutArgs, CommitArgs, FsckArgs, InitArgs, LogArgs, ShowArgs, StageArgs,
+             StatusArgs};
 
 fn main() {
     match run() {
@@ -37,6 +41,7 @@ fn run() -> Result<(), Error> {
         .subcommand(CheckoutArgs::clap())
         .subcommand(CommitArgs::clap())
         .subcommand(FsckArgs::clap())
+        .subcommand(LogArgs::clap())
         .subcommand(InitArgs::clap())
         .subcommand(ShowArgs::clap())
         .subcommand(StatusArgs::clap());
@@ -68,6 +73,36 @@ fn run() -> Result<(), Error> {
 
             if !errored {
                 println!("No errors found.");
+            }
+
+            Ok(())
+        }
+        ("log", Some(sub_m)) => {
+            let mut universe =
+                subito::search()?.ok_or_else(|| format_err!("Repository not found!"))?;
+            let mut args = LogArgs::from_clap(sub_m);
+            let mut commits = universe.apply_ref(args)?.entries.collect().wait()?;
+            let mut buf = String::new();
+
+            if !commits.is_empty() {
+                for (commit_ref, commit) in commits {
+                    buf.clear();
+                    writeln!(&mut buf, "commit {}", commit_ref.as_inner())?;
+                    let CommitAuthor { ref name, ref mbox } = *commit.as_author();
+                    match (name, mbox) {
+                        (&Some(ref n), &Some(ref m)) => writeln!(&mut buf, "author {} <{}>", n, m)?,
+                        (&Some(ref n), &None) => writeln!(&mut buf, "author {}", n)?,
+                        (&None, &Some(ref m)) => writeln!(&mut buf, "author <{}>", m)?,
+                        (&None, &None) => {}
+                    }
+                    writeln!(&mut buf, "date {}", commit.as_timestamp())?;
+                    if let Some(message) = commit.as_message() {
+                        writeln!(&mut buf, "\t{}", message)?;
+                    }
+                    println!("{}", buf);
+                }
+            } else {
+                println!("No commits yet.");
             }
 
             Ok(())

@@ -1,4 +1,4 @@
-use std::{fmt, fs::File, path::PathBuf};
+use std::{fmt, ffi::OsStr, fs::File, path::PathBuf};
 
 use attaca::{HandleDigest, Store, batch::{Batch as ObjectBatch, Operation as ObjectOperation},
              digest::Digest, hierarchy::Hierarchy,
@@ -122,17 +122,11 @@ pub enum OpKind {
 /// Type for staging/unstaging operations.
 #[derive(Debug, Clone)]
 pub struct BatchOp {
-    /// An absolute or relative path to an object in the repository to stage or unstage. It does
-    /// not necessarily need to resolve to an actual file; `Stage` operations on nonexistent files
-    /// become `Delete` operations on the candidate while paths for `Unstage` operations do not
-    /// refer to the local filesystem at all, only the HEAD tree.
-    pub path: PathBuf,
-
-    /// The operation type (stage operation, for adding local files to the candidate tree, or
-    /// unstage operation, for resetting objects to the state of the HEAD tree.)
-    pub op: OpKind,
+    path: PathBuf,
+    op: OpKind,
 }
 
+// NOTE stage and unstage iterate and then collect in order to normalize the path.
 impl BatchOp {
     pub fn stage(path: PathBuf) -> Self {
         Self {
@@ -342,12 +336,19 @@ where
         )
     }
 
-    fn process_operation<'r>(
+    fn do_process_operation<'r>(
         &'r self,
         hierarchy: Hierarchy<S::Handle>,
         batch_op: BatchOp,
-    ) -> impl Future<Item = ObjectOperation<S::Handle>, Error = Error> {
+    ) -> Result<impl Future<Item = ObjectOperation<S::Handle>, Error = Error>, Error> {
         let BatchOp { path: raw_path, op } = batch_op;
+
+        ensure!(
+            !raw_path
+                .iter()
+                .any(|component| [OsStr::new("."), OsStr::new("..")].contains(&component)),
+            "TODO #35: Better path parsing: currently normalizing `.` and `..` is not supported."
+        );
 
         let paths_res = if raw_path.is_absolute() {
             raw_path
@@ -374,14 +375,27 @@ where
             };
             future.map(|objref_opt| (object_path, objref_opt))
         });
-        async_block! {
+
+        let future = async_block! {
             let (object_path, objref_opt) = await!(future_res?)?;
             let operation = match objref_opt {
                 Some(objref) => ObjectOperation::Add(object_path, objref),
                 None => ObjectOperation::Delete(object_path),
             };
             Ok(operation)
-        }
+        };
+
+        Ok(future)
+    }
+
+    fn process_operation<'r>(
+        &'r self,
+        hierarchy: Hierarchy<S::Handle>,
+        batch_op: BatchOp,
+    ) -> impl Future<Item = ObjectOperation<S::Handle>, Error = Error> {
+        self.do_process_operation(hierarchy, batch_op)
+            .into_future()
+            .flatten()
     }
 
     pub fn stage_batch<'r, I>(&'r mut self, batch: I) -> impl Future<Item = (), Error = Error> + 'r
