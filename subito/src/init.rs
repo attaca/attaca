@@ -19,7 +19,7 @@ pub struct InitArgs {
     path: Option<PathBuf>,
 
     #[structopt(subcommand)]
-    store: InitStore,
+    store: Option<InitStore>,
 }
 
 #[derive(Debug, Clone, StructOpt)]
@@ -36,8 +36,19 @@ pub enum InitStore {
     },
 }
 
+impl Default for InitStore {
+    fn default() -> Self {
+        InitStore::LevelDb {
+            location: None,
+            no_init: false,
+        }
+    }
+}
+
 pub fn init(args: InitArgs) -> Result<Universe, Error> {
-    match args.store {
+    let store = args.store.unwrap_or_else(InitStore::default);
+
+    match store {
         InitStore::LevelDb { location, no_init } => {
             let url = match location {
                 Some(location) => match Url::parse(&location) {
