@@ -1,22 +1,65 @@
-use std::{fmt, str, cell::RefCell, cmp::Ordering, hash::{Hash, Hasher},
-          io::{self, BufRead, Cursor, Read, Write}, path::Path, sync::{Arc, RwLock, Weak}};
+use std::{fmt, str, collections::HashMap, io::{self, BufRead, Cursor, Read, Write}, path::Path,
+          sync::RwLock};
 
-use attaca::{canonical, Init, Open, digest::{Digest, DigestWriter, Sha3Digest},
-             store::{Handle, HandleBuilder, HandleDigest, Store}};
-use chashmap::CHashMap;
-use db_key::Key;
-use failure::{self, *};
-use futures::{future::{self, FutureResult}, prelude::*};
+use attaca::{canonical, Init, Open, digest::{Sha3Digest, prelude::*}, store::{RawHandle, prelude::*}};
+use capnp::{message, serialize_packed};
+use failure::*;
+use futures::{future::FutureResult, prelude::*};
 use leb128;
 use leveldb::{database::Database, kv::KV, options::{Options, ReadOptions, WriteOptions}};
-use owning_ref::ArcRef;
-use parking_lot::Mutex;
-use smallvec::SmallVec;
 use url::Url;
 
-use DbKey;
+use Key;
 
-impl Open for LevelStore {
+fn decode_branch_set<R: BufRead>(reader: &mut R) -> Result<Vec<(String, Sha3Digest)>, Error> {
+    use branch_set_capnp::*;
+
+    let message_reader = serialize_packed::read_message(reader, message::ReaderOptions::new())?;
+    let branch_set_reader = message_reader.get_root::<branch_set::Reader>()?;
+
+    let mut branches = Vec::new();
+
+    for entry in branch_set_reader.get_entries()?.iter() {
+        let digest = Sha3Digest::from_bytes(entry.get_hash()?);
+        let name = String::from(entry.get_name()?);
+
+        branches.push((name, digest));
+    }
+
+    Ok(branches)
+}
+
+fn encode_branch_set<W: Write, I>(
+    writer: &mut W,
+    branches: I,
+    branches_len: usize,
+) -> Result<(), Error>
+where
+    I: IntoIterator<Item = (String, Sha3Digest)>,
+{
+    use branch_set_capnp::*;
+
+    let mut message = message::Builder::new_default();
+
+    {
+        let mut branch_set_builder = message.init_root::<branch_set::Builder>();
+        let mut entries_builder = branch_set_builder
+            .borrow()
+            .init_entries(branches_len as u32);
+
+        for (i, (branch, digest)) in branches.into_iter().take(branches_len).enumerate() {
+            let mut entry_builder = entries_builder.borrow().get(i as u32);
+            entry_builder.set_name(&branch);
+            entry_builder.set_hash(digest.as_bytes());
+        }
+    }
+
+    serialize_packed::write_message(writer, &message)?;
+
+    Ok(())
+}
+
+impl Open for LevelDbBackend {
     const SCHEMES: &'static [&'static str] = &["file"];
 
     fn open(url_str: &str) -> Result<Self, Error> {
@@ -32,11 +75,11 @@ impl Open for LevelStore {
 
     fn open_path(path: &Path) -> Result<Self, Error> {
         let db = Database::open(&path, Options::new())?;
-        Ok(Self::new(Arc::new(RwLock::new(db))))
+        Ok(Self::new(db))
     }
 }
 
-impl Init for LevelStore {
+impl Init for LevelDbBackend {
     fn init(url_str: &str) -> Result<Self, Error> {
         let url = Url::parse(url_str)?;
         ensure!(
@@ -57,461 +100,296 @@ impl Init for LevelStore {
                 ..Options::new()
             },
         )?;
-        Ok(Self::new(Arc::new(RwLock::new(db))))
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct LevelStore {
-    inner: Arc<StoreInner>,
-}
-
-impl Store for LevelStore {
-    type Handle = LevelHandle;
-
-    type HandleBuilder = LevelHandleBuilder;
-    fn handle_builder(&self) -> Self::HandleBuilder {
-        LevelHandleBuilder {
-            store: self.inner.clone(),
-
-            blob: Vec::new(),
-            refs: Vec::new(),
-        }
-    }
-
-    type FutureLoadBranch = FutureResult<Option<Self::Handle>, Error>;
-    fn load_branch(&self, branch: String) -> Self::FutureLoadBranch {
-        let db_lock = self.inner.db.write().unwrap();
-        let key = branch + " (branch)";
-
-        match db_lock.get(
-            ReadOptions::new(),
-            DbKey(SmallVec::from_vec(key.into_bytes())),
-        ) {
-            Ok(opt) => future::ok(opt.map(|bytes| {
-                Self::handle_from_digest(&self.inner, &Sha3Digest::from_bytes(&bytes))
-            })),
-            Err(err) => future::err(err.into()),
-        }
-    }
-
-    type FutureSwapBranch = FutureResult<(), Error>;
-    fn swap_branch(
-        &self,
-        branch: String,
-        previous: Option<Self::Handle>,
-        new: Option<Self::Handle>,
-    ) -> Self::FutureSwapBranch {
-        let db_lock = self.inner.db.write().unwrap();
-        let key = branch + " (branch)";
-
-        match db_lock.get(ReadOptions::new(), DbKey(SmallVec::from(key.as_bytes()))) {
-            Ok(Some(bytes)) => {
-                let previous_handle = match previous {
-                    Some(ph) => ph,
-                    None => {
-                        return future::err(format_err!(
-                            "Branch compare-and-swap mismatch: expected empty branch, but found nonempty!!"
-                        ))
-                    }
-                };
-
-                let current_digest = Sha3Digest::from_bytes(&bytes);
-                let expected_digest = previous_handle.inner.digest;
-
-                if current_digest != expected_digest {
-                    return future::err(format_err!("Branch compare-and-swap mismatch: current branch digest does not match expected digest!"));
-                }
-            }
-            Ok(None) => {
-                if previous.is_some() {
-                    return future::err(format_err!("Branch compare-and-swap mismatch: expected nonempty branch, but found empty!"));
-                }
-            }
-            Err(err) => return future::err(err.into()),
-        }
-
-        let result = match new {
-            Some(new_handle) => db_lock.put(
-                WriteOptions::new(),
-                DbKey(SmallVec::from_vec(key.into_bytes())),
-                new_handle.inner.digest.as_bytes(),
-            ),
-            None => db_lock.delete(
-                WriteOptions::new(),
-                DbKey(SmallVec::from_vec(key.into_bytes())),
-            ),
-        };
-
-        match result {
-            Ok(()) => future::ok(()),
-            Err(err) => future::err(err.into()),
-        }
-    }
-
-    type FutureResolve = FutureResult<Option<Self::Handle>, Error>;
-    fn resolve<D: Digest>(&self, digest: &D) -> Self::FutureResolve
-    where
-        Self::Handle: HandleDigest<D>,
-    {
-        let digest = if D::NAME == Sha3Digest::NAME && D::SIZE == Sha3Digest::SIZE {
-            Sha3Digest::from_bytes(digest.as_bytes())
-        } else {
-            return future::err(failure::err_msg(
-                "LevelHandle currently only supports SHA-3 digests!",
-            ));
-        };
-
-        match self.inner.handles.get(&digest).map(|g| (*g).clone()) {
-            Some(handle) => future::ok(Some(handle)),
-            None => match LevelStore::object(&self.inner, &digest) {
-                Ok(Some(arc_obj)) => {
-                    let handle = Self::handle_from_digest(&self.inner, &digest);
-                    let arc_obj = {
-                        let content_lock = handle.inner.content.lock();
-
-                        match Weak::upgrade(&content_lock) {
-                            Some(arc_obj) => arc_obj,
-                            None => {
-                                let cl_cell = RefCell::new(content_lock);
-                                self.inner.objects.upsert(
-                                    digest,
-                                    || {
-                                        **cl_cell.borrow_mut() = Arc::downgrade(&arc_obj);
-                                        arc_obj
-                                    },
-                                    |arc_obj| {
-                                        **cl_cell.borrow_mut() = Arc::downgrade(arc_obj);
-                                    },
-                                );
-
-                                Weak::upgrade(&cl_cell.into_inner()).unwrap()
-                            }
-                        }
-                    };
-                    self.inner.objects.insert(digest, arc_obj);
-                    future::ok(Some(handle))
-                }
-                Ok(None) => future::ok(None),
-                Err(err) => future::err(err),
-            },
-        }
-    }
-}
-
-struct StoreInner {
-    db: Arc<RwLock<Database<DbKey>>>,
-
-    handles: CHashMap<Sha3Digest, LevelHandle>,
-    objects: CHashMap<Sha3Digest, Arc<Object>>,
-}
-
-impl fmt::Debug for StoreInner {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("StoreInner")
-            .field("db", &"OPAQUE")
-            .field("handles", &self.handles)
-            .field("objects", &self.objects)
-            .finish()
-    }
-}
-
-impl LevelStore {
-    pub fn new(db: Arc<RwLock<Database<DbKey>>>) -> Self {
-        Self {
-            inner: Arc::new(StoreInner {
-                db,
-
-                handles: CHashMap::new(),
-                objects: CHashMap::new(),
-            }),
-        }
-    }
-
-    fn handle_from_digest(this: &Arc<StoreInner>, digest: &Sha3Digest) -> LevelHandle {
-        let out = RefCell::new(None);
-        this.handles.upsert(
-            *digest,
-            || {
-                let handle = LevelHandle {
-                    inner: Arc::new(HandleInner {
-                        store: Arc::downgrade(this),
-
-                        digest: *digest,
-                        content: Mutex::new(Weak::new()),
-                    }),
-                };
-                *out.borrow_mut() = Some(handle.clone());
-                handle
-            },
-            |handle| {
-                *out.borrow_mut() = Some(handle.clone());
-            },
-        );
-        out.into_inner().unwrap()
-    }
-
-    fn handle_from_object(this: &Arc<StoreInner>, object: Object) -> Result<LevelHandle, Error> {
-        let digest = {
-            let mut writer = Sha3Digest::writer();
-            object.encode(&mut writer).unwrap();
-            writer.finish()
-        };
-
-        let handle = Self::handle_from_digest(this, &digest);
-        let arc_obj = {
-            let content_lock = handle.inner.content.lock();
-
-            match Weak::upgrade(&content_lock) {
-                Some(arc_obj) => arc_obj,
-                None => {
-                    let cl_cell = RefCell::new(content_lock);
-                    this.objects.upsert(
-                        digest,
-                        || {
-                            let arc_obj = Arc::new(object);
-                            **cl_cell.borrow_mut() = Arc::downgrade(&arc_obj);
-                            arc_obj
-                        },
-                        |arc_obj| {
-                            **cl_cell.borrow_mut() = Arc::downgrade(arc_obj);
-                        },
-                    );
-
-                    Weak::upgrade(&cl_cell.into_inner()).unwrap()
-                }
-            }
-        };
-
-        let data = {
-            let mut buf = Vec::new();
-            arc_obj.encode(&mut buf).unwrap();
-            buf
-        };
-
-        this.db.read().unwrap().put(
-            WriteOptions::new(),
-            DbKey(SmallVec::from(digest.as_bytes())),
-            &data,
-        )?;
-        this.objects.insert(digest, arc_obj);
-
-        Ok(handle)
-    }
-
-    fn object(this: &Arc<StoreInner>, digest: &Sha3Digest) -> Result<Option<Arc<Object>>, Error> {
-        match this.objects.get(&digest).map(|g| (*g).clone()) {
-            Some(arc_object) => Ok(Some(arc_object)),
-            None => match this.db
-                .read()
-                .unwrap()
-                .get(ReadOptions::new(), DbKey(SmallVec::from(digest.as_bytes())))
-                .context("Error reading object from database")?
-            {
-                Some(bytes) => {
-                    let arc_obj =
-                        Arc::new(Object::decode(&mut &bytes[..]).context("Error decoding object")?);
-                    this.objects.insert(*digest, arc_obj.clone());
-                    Ok(Some(arc_obj))
-                }
-                None => Ok(None),
-            },
-        }
+        Ok(Self::new(db))
     }
 }
 
 #[derive(Debug)]
-pub struct Object {
+pub struct LevelDbBuilder {
     blob: Vec<u8>,
-    refs: Vec<Sha3Digest>,
+    refs: Vec<RawHandle>,
 }
 
-impl Object {
-    pub fn encode<W: Write>(&self, w: &mut W) -> Result<(), Error> {
-        leb128::write::unsigned(w, self.blob.len() as u64)?; // `C.length || C`
-        w.write_all(&self.blob)?;
-        canonical::encode(w, &self.blob, &self.refs)?; // `EncodedRefs(C)`
-
-        Ok(())
-    }
-
-    pub fn decode<R: Read>(r: &mut R) -> Result<Self, Error> {
-        let mut blob = vec![0; leb128::read::unsigned(r)? as usize]; // `C.length || C`
-        r.read_exact(&mut blob)?;
-        let refs = canonical::decode(r)?.finish::<Sha3Digest>()?.refs; // `EncodedRefs(C)`
-
-        Ok(Self { blob, refs })
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct LevelHandleContent(Cursor<ArcRef<Object, [u8]>>);
-
-impl From<Arc<Object>> for LevelHandleContent {
-    fn from(arc_obj: Arc<Object>) -> Self {
-        LevelHandleContent(Cursor::new(
-            ArcRef::new(arc_obj.clone()).map(|obj| obj.blob.as_slice()),
-        ))
-    }
-}
-
-impl Read for LevelHandleContent {
-    fn read(&mut self, buf: &mut [u8]) -> Result<usize, io::Error> {
-        self.0.read(buf)
-    }
-}
-
-impl BufRead for LevelHandleContent {
-    fn fill_buf(&mut self) -> Result<&[u8], io::Error> {
-        self.0.fill_buf()
-    }
-
-    fn consume(&mut self, amt: usize) {
-        self.0.consume(amt);
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct LevelHandleRefs {
-    store: Arc<StoreInner>,
-    digests: ArcRef<Object, [Sha3Digest]>,
-}
-
-impl LevelHandleRefs {
-    fn new(store: Arc<StoreInner>, arc_obj: Arc<Object>) -> Self {
-        LevelHandleRefs {
-            store,
-            digests: ArcRef::new(arc_obj).map(|obj| obj.refs.as_slice()),
-        }
-    }
-}
-
-impl Iterator for LevelHandleRefs {
-    type Item = LevelHandle;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.digests.first().cloned().map(|digest| {
-            self.digests = self.digests.clone().map(|slice| &slice[1..]);
-            LevelStore::handle_from_digest(&self.store, &digest)
-        })
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct LevelHandle {
-    inner: Arc<HandleInner>,
-}
-
-impl PartialEq for LevelHandle {
-    fn eq(&self, rhs: &LevelHandle) -> bool {
-        self.inner.digest == rhs.inner.digest
-    }
-}
-
-impl Eq for LevelHandle {}
-
-impl PartialOrd for LevelHandle {
-    fn partial_cmp(&self, rhs: &LevelHandle) -> Option<Ordering> {
-        Some(self.cmp(rhs))
-    }
-}
-
-impl Ord for LevelHandle {
-    fn cmp(&self, rhs: &LevelHandle) -> Ordering {
-        self.inner.digest.cmp(&rhs.inner.digest)
-    }
-}
-
-impl Hash for LevelHandle {
-    fn hash<H>(&self, state: &mut H)
-    where
-        H: Hasher,
-    {
-        self.inner.digest.hash(state);
-    }
-}
-
-impl Handle for LevelHandle {
-    type Content = LevelHandleContent;
-    type Refs = LevelHandleRefs;
-
-    type FutureLoad = FutureResult<(Self::Content, Self::Refs), Error>;
-    fn load(&self) -> Self::FutureLoad {
-        let store = Weak::upgrade(&self.inner.store).unwrap();
-
-        let mut lock = self.inner.content.lock();
-        let arc_obj = match Weak::upgrade(&lock) {
-            Some(arc_obj) => arc_obj.clone(),
-            None => match LevelStore::object(&store, &self.inner.digest) {
-                Ok(Some(arc_obj)) => {
-                    *lock = Arc::downgrade(&arc_obj);
-                    arc_obj
-                }
-                Ok(None) => return future::err(format_err!("Bad handle: no such object!")),
-                Err(err) => return future::err(err),
-            },
-        };
-
-        let handle_content = LevelHandleContent::from(arc_obj.clone());
-        let handle_refs = LevelHandleRefs::new(store, arc_obj);
-
-        future::ok((handle_content, handle_refs))
-    }
-}
-
-impl<D: Digest> HandleDigest<D> for LevelHandle {
-    type FutureDigest = FutureResult<D, Error>;
-    fn digest(&self) -> Self::FutureDigest {
-        if D::NAME == Sha3Digest::NAME && D::SIZE == Sha3Digest::SIZE {
-            future::ok(D::from_bytes(self.inner.digest.as_bytes()))
-        } else {
-            future::err(failure::err_msg(
-                "LevelHandle currently only supports SHA-3 digests!",
-            ))
-        }
-    }
-}
-
-#[derive(Debug)]
-struct HandleInner {
-    store: Weak<StoreInner>,
-
-    digest: Sha3Digest,
-    content: Mutex<Weak<Object>>,
-}
-
-#[derive(Debug)]
-pub struct LevelHandleBuilder {
-    store: Arc<StoreInner>,
-
-    blob: Vec<u8>,
-    refs: Vec<LevelHandle>,
-}
-
-impl Write for LevelHandleBuilder {
+impl Write for LevelDbBuilder {
     fn write(&mut self, buf: &[u8]) -> Result<usize, io::Error> {
         self.blob.write(buf)
     }
 
     fn flush(&mut self) -> Result<(), io::Error> {
-        Ok(())
+        Write::flush(&mut self.blob)
     }
 }
 
-impl HandleBuilder for LevelHandleBuilder {
-    type Handle = LevelHandle;
+impl Extend<RawHandle> for LevelDbBuilder {
+    fn extend<I>(&mut self, iterable: I)
+    where
+        I: IntoIterator<Item = RawHandle>,
+    {
+        self.refs.extend(iterable);
+    }
+}
 
-    fn add_reference(&mut self, reference: LevelHandle) {
-        self.refs.push(reference);
+#[derive(Debug)]
+pub struct LevelDbContent {
+    blob: Cursor<Vec<u8>>,
+    refs: <Vec<RawHandle> as IntoIterator>::IntoIter,
+}
+
+impl Read for LevelDbContent {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, io::Error> {
+        self.blob.read(buf)
+    }
+}
+
+impl Iterator for LevelDbContent {
+    type Item = RawHandle;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.refs.next()
+    }
+}
+
+struct Inner {
+    db: Database<Key>,
+
+    ids: HashMap<Sha3Digest, RawHandle>,
+    handles: HashMap<RawHandle, Sha3Digest>,
+}
+
+impl fmt::Debug for Inner {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("Inner")
+            .field("db", &"Database")
+            .field("ids", &self.ids)
+            .field("handles", &self.handles)
+            .finish()
+    }
+}
+
+#[derive(Debug)]
+pub struct LevelDbBackend {
+    inner: RwLock<Inner>,
+}
+
+impl LevelDbBackend {
+    fn new(db: Database<Key>) -> Self {
+        Self {
+            inner: RwLock::new(Inner {
+                db,
+                ids: HashMap::new(),
+                handles: HashMap::new(),
+            }),
+        }
     }
 
-    type FutureHandle = FutureResult<LevelHandle, Error>;
-    fn finish(self) -> Self::FutureHandle {
-        let object = Object {
-            blob: self.blob,
-            refs: self.refs.into_iter().map(|ch| ch.inner.digest).collect(),
+    // This function returns `Ok` if the ID is fresh and `Err` if it is not.
+    fn reserve(&self, digest: Sha3Digest) -> Result<RawHandle, RawHandle> {
+        let attempt = self.inner.read().unwrap().ids.get(&digest).cloned();
+        match attempt {
+            Some(id) => Err(id),
+            None => {
+                let mut inner = self.inner.write().unwrap();
+
+                match inner.ids.get(&digest).cloned() {
+                    Some(id) => Err(id),
+                    None => {
+                        let new_id = RawHandle(inner.ids.len() as u64);
+                        inner.ids.insert(digest, new_id);
+                        inner.handles.insert(new_id, digest);
+                        Ok(new_id)
+                    }
+                }
+            }
+        }
+    }
+
+    fn do_finish(&self, builder: LevelDbBuilder) -> Result<RawHandle, Error> {
+        let inner = self.inner.read().unwrap();
+
+        let blob = builder.blob;
+        let refs = builder
+            .refs
+            .into_iter()
+            .map(|id| inner.handles[&id])
+            .collect::<Vec<_>>();
+
+        let mut hasher = Sha3Digest::writer();
+        canonical::encode(&mut hasher, &blob, &refs).unwrap();
+        let digest = hasher.finish();
+
+        let _ = inner;
+
+        match self.reserve(digest) {
+            Ok(id) => {
+                let mut buf = Vec::new();
+                leb128::write::unsigned(&mut buf, blob.len() as u64)?; // `C.length || C`
+                buf.write_all(&blob)?;
+                canonical::encode(&mut buf, &blob, &refs)?; // `EncodedRefs(C)`
+                self.inner.read().unwrap().db.put(
+                    WriteOptions::new(),
+                    &Key::blob(digest.as_bytes()),
+                    &buf,
+                )?;
+
+                Ok(id)
+            }
+            Err(id) => Ok(id),
+        }
+    }
+
+    fn do_load(&self, id: RawHandle) -> Result<LevelDbContent, Error> {
+        let inner = self.inner.read().unwrap();
+        let digest = inner.handles[&id];
+        let mut data = Cursor::new(
+            inner
+                .db
+                .get(ReadOptions::new(), &Key::blob(digest.as_bytes()))?
+                .expect("bad ID!"),
+        );
+        let mut blob = vec![0; leb128::read::unsigned(&mut data)? as usize]; // `C.length || C`
+        data.read_exact(&mut blob)?;
+        let ref_digests = canonical::decode(&mut data)?.finish::<Sha3Digest>()?.refs; // `EncodedRefs(C)`
+
+        // Discard the read lock so we don't deadlock ourselves, because `reserve` may attempt to
+        // take a write lock.
+        let _ = inner;
+        let refs: Vec<_> = ref_digests
+            .into_iter()
+            .map(|digest| self.reserve(digest).unwrap_or_else(|e| e))
+            .collect();
+
+        Ok(LevelDbContent {
+            blob: Cursor::new(blob),
+            refs: refs.into_iter(),
+        })
+    }
+
+    fn do_digest(&self, signature: DigestSignature, id: RawHandle) -> Result<Sha3Digest, Error> {
+        ensure!(signature == Sha3Digest::SIGNATURE, "bad digest");
+
+        Ok(self.inner.read().unwrap().handles[&id])
+    }
+
+    fn do_load_branches(&self) -> Result<HashMap<String, RawHandle>, Error> {
+        let data = self.inner
+            .read()
+            .unwrap()
+            .db
+            .get(ReadOptions::new(), &Key::branches())?;
+        let decoded = match data {
+            Some(bytes) => decode_branch_set(&mut Cursor::new(bytes))?,
+            None => Vec::new(),
+        };
+        let resolved = decoded
+            .into_iter()
+            .map(|(name, digest)| (name, self.reserve(digest).unwrap_or_else(|e| e)))
+            .collect();
+        Ok(resolved)
+    }
+
+    fn do_swap_branches(
+        &self,
+        old: HashMap<String, RawHandle>,
+        new: HashMap<String, RawHandle>,
+    ) -> Result<(), Error> {
+        // This is an atomic operation. Take a write lock.
+        let inner = self.inner.write().unwrap();
+
+        let data = inner.db.get(ReadOptions::new(), &Key::branches())?;
+        let decoded = match data {
+            Some(bytes) => decode_branch_set(&mut Cursor::new(bytes))?,
+            None => Vec::new(),
         };
 
-        LevelStore::handle_from_object(&self.store, object).into_future()
+        let current = decoded
+            .into_iter()
+            .map(|(name, digest)| (name, inner.ids[&digest]))
+            .collect::<HashMap<_, _>>();
+
+        ensure!(old == current, "compare failed");
+
+        let mut buf = Vec::new();
+        let new_len = new.len();
+        encode_branch_set(
+            &mut buf,
+            new.into_iter().map(|(name, id)| (name, inner.handles[&id])),
+            new_len,
+        )?;
+        inner.db.put(WriteOptions::new(), &Key::branches(), &buf)?;
+
+        Ok(())
+    }
+
+    fn do_resolve(&self, signature: DigestSignature, bytes: &[u8]) -> Result<Option<RawHandle>, Error> {
+        ensure!(
+            signature == Sha3Digest::SIGNATURE,
+            "unsupported digest {:?}",
+            signature
+        );
+
+        let digest = Sha3Digest::from_bytes(bytes);
+        let id = self.reserve(digest).unwrap_or_else(|e| e);
+        let inner = self.inner.read().unwrap();
+        let db_contains_digest = inner
+            .db
+            .get(ReadOptions::new(), &Key::blob(digest.as_bytes()))?
+            .is_some();
+
+        if db_contains_digest {
+            Ok(Some(id))
+        } else {
+            Ok(None)
+        }
+    }
+}
+
+impl Backend for LevelDbBackend {
+    type Builder = LevelDbBuilder;
+    type FutureFinish = FutureResult<RawHandle, Error>;
+
+    fn builder(&self) -> Self::Builder {
+        LevelDbBuilder {
+            blob: Vec::new(),
+            refs: Vec::new(),
+        }
+    }
+
+    fn finish(&self, builder: Self::Builder) -> Self::FutureFinish {
+        self.do_finish(builder).into_future()
+    }
+
+    type Content = LevelDbContent;
+    type FutureContent = FutureResult<Self::Content, Error>;
+
+    fn load(&self, id: RawHandle) -> Self::FutureContent {
+        self.do_load(id).into_future()
+    }
+
+    type Digest = Sha3Digest;
+    type FutureDigest = FutureResult<Self::Digest, Error>;
+
+    fn digest(&self, signature: DigestSignature, id: RawHandle) -> Self::FutureDigest {
+        self.do_digest(signature, id).into_future()
+    }
+
+    type FutureLoadBranches = FutureResult<HashMap<String, RawHandle>, Error>;
+
+    fn load_branches(&self) -> Self::FutureLoadBranches {
+        self.do_load_branches().into_future()
+    }
+
+    type FutureSwapBranches = FutureResult<(), Error>;
+
+    fn swap_branches(
+        &self,
+        previous: HashMap<String, RawHandle>,
+        new: HashMap<String, RawHandle>,
+    ) -> Self::FutureSwapBranches {
+        self.do_swap_branches(previous, new).into_future()
+    }
+
+    type FutureResolve = FutureResult<Option<RawHandle>, Error>;
+    fn resolve(&self, signature: DigestSignature, bytes: &[u8]) -> Self::FutureResolve {
+        self.do_resolve(signature, bytes).into_future()
     }
 }

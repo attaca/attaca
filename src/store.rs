@@ -26,7 +26,7 @@ pub mod prelude {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Id(pub u64);
+pub struct RawHandle(pub u64);
 
 #[derive(Debug, Default)]
 struct Inner<B: Backend> {
@@ -128,7 +128,7 @@ impl<B: Backend> Iterator for Content<B> {
 #[derive(Debug)]
 pub struct Handle<B: Backend> {
     store: Store<B>,
-    id: Id,
+    id: RawHandle,
 }
 
 impl<B: Backend> Clone for Handle<B> {
@@ -251,46 +251,56 @@ impl ErasedDigest for Box<Any + Send> {
     }
 }
 
+impl<D: Digest> ErasedDigest for D {
+    fn into_digest<E: Digest>(self) -> Option<E> {
+        if D::SIGNATURE == E::SIGNATURE {
+            Some(E::from_bytes(self.as_bytes()))
+        } else {
+            None
+        }
+    }
+}
+
 pub trait Backend: Send + Sync + 'static {
-    type Builder: Write + Extend<Id> + 'static;
-    type FutureFinish: Future<Item = Id, Error = Error>;
+    type Builder: Write + Extend<RawHandle> + 'static;
+    type FutureFinish: Future<Item = RawHandle, Error = Error>;
     fn builder(&self) -> Self::Builder;
     fn finish(&self, Self::Builder) -> Self::FutureFinish;
 
-    type Content: Read + Iterator<Item = Id> + 'static;
+    type Content: Read + Iterator<Item = RawHandle> + 'static;
     type FutureContent: Future<Item = Self::Content, Error = Error>;
-    fn load(&self, id: Id) -> Self::FutureContent;
+    fn load(&self, id: RawHandle) -> Self::FutureContent;
 
     type Digest: ErasedDigest;
     type FutureDigest: Future<Item = Self::Digest, Error = Error>;
-    fn digest(&self, signature: DigestSignature, id: Id) -> Self::FutureDigest;
+    fn digest(&self, signature: DigestSignature, id: RawHandle) -> Self::FutureDigest;
 
-    type FutureLoadBranches: Future<Item = HashMap<String, Id>, Error = Error>;
+    type FutureLoadBranches: Future<Item = HashMap<String, RawHandle>, Error = Error>;
     fn load_branches(&self) -> Self::FutureLoadBranches;
 
     type FutureSwapBranches: Future<Item = (), Error = Error>;
     fn swap_branches(
         &self,
-        previous: HashMap<String, Id>,
-        new: HashMap<String, Id>,
+        previous: HashMap<String, RawHandle>,
+        new: HashMap<String, RawHandle>,
     ) -> Self::FutureSwapBranches;
 
-    type FutureResolve: Future<Item = Option<Id>, Error = Error>;
+    type FutureResolve: Future<Item = Option<RawHandle>, Error = Error>;
     fn resolve(&self, signature: DigestSignature, bytes: &[u8]) -> Self::FutureResolve;
 }
 
 trait AnyBuilder: 'static {
     fn as_write(&mut self) -> &mut Write;
-    fn do_extend(&mut self, iterator: &mut Iterator<Item = Id>);
+    fn do_extend(&mut self, iterator: &mut Iterator<Item = RawHandle>);
     fn into_any(self: Box<Self>) -> Box<Any>;
 }
 
-impl<T: Write + Extend<Id> + 'static> AnyBuilder for T {
+impl<T: Write + Extend<RawHandle> + 'static> AnyBuilder for T {
     fn as_write(&mut self) -> &mut Write {
         self
     }
 
-    fn do_extend(&mut self, iterator: &mut Iterator<Item = Id>) {
+    fn do_extend(&mut self, iterator: &mut Iterator<Item = RawHandle>) {
         self.extend(iterator);
     }
 
@@ -313,17 +323,17 @@ impl Write for ErasedBuilder {
     }
 }
 
-impl Extend<Id> for ErasedBuilder {
+impl Extend<RawHandle> for ErasedBuilder {
     fn extend<I>(&mut self, iterable: I)
     where
-        I: IntoIterator<Item = Id>,
+        I: IntoIterator<Item = RawHandle>,
     {
         self.do_extend(&mut iterable.into_iter());
     }
 }
 
 impl ErasedBuilder {
-    fn new<T: Write + Extend<Id> + 'static>(builder: T) -> Self {
+    fn new<T: Write + Extend<RawHandle> + 'static>(builder: T) -> Self {
         Self {
             boxed: Box::new(builder),
         }
@@ -332,15 +342,15 @@ impl ErasedBuilder {
 
 trait AnyContent: 'static {
     fn as_read(&mut self) -> &mut Read;
-    fn as_iterator(&mut self) -> &mut Iterator<Item = Id>;
+    fn as_iterator(&mut self) -> &mut Iterator<Item = RawHandle>;
 }
 
-impl<T: Read + Iterator<Item = Id> + 'static> AnyContent for T {
+impl<T: Read + Iterator<Item = RawHandle> + 'static> AnyContent for T {
     fn as_read(&mut self) -> &mut Read {
         self
     }
 
-    fn as_iterator(&mut self) -> &mut Iterator<Item = Id> {
+    fn as_iterator(&mut self) -> &mut Iterator<Item = RawHandle> {
         self
     }
 }
@@ -356,7 +366,7 @@ impl Read for ErasedContent {
 }
 
 impl Iterator for ErasedContent {
-    type Item = Id;
+    type Item = RawHandle;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.boxed.as_iterator().next()
@@ -364,7 +374,7 @@ impl Iterator for ErasedContent {
 }
 
 impl ErasedContent {
-    fn new<T: Read + Iterator<Item = Id> + 'static>(content: T) -> Self {
+    fn new<T: Read + Iterator<Item = RawHandle> + 'static>(content: T) -> Self {
         Self {
             boxed: Box::new(content),
         }
@@ -377,7 +387,7 @@ pub struct BoxWrapped<B: Backend> {
 
 impl<B: Backend> Backend for BoxWrapped<B> {
     type Builder = ErasedBuilder;
-    type FutureFinish = Box<Future<Item = Id, Error = Error>>;
+    type FutureFinish = Box<Future<Item = RawHandle, Error = Error>>;
     fn builder(&self) -> Self::Builder {
         ErasedBuilder::new(self.backend.builder())
     }
@@ -388,13 +398,13 @@ impl<B: Backend> Backend for BoxWrapped<B> {
 
     type Content = ErasedContent;
     type FutureContent = Box<Future<Item = Self::Content, Error = Error>>;
-    fn load(&self, id: Id) -> Self::FutureContent {
+    fn load(&self, id: RawHandle) -> Self::FutureContent {
         Box::new(self.backend.load(id).map(ErasedContent::new))
     }
 
     type Digest = Box<Any + Send>;
     type FutureDigest = Box<Future<Item = Self::Digest, Error = Error>>;
-    fn digest(&self, signature: DigestSignature, id: Id) -> Self::FutureDigest {
+    fn digest(&self, signature: DigestSignature, id: RawHandle) -> Self::FutureDigest {
         Box::new(
             self.backend
                 .digest(signature, id)
@@ -402,7 +412,7 @@ impl<B: Backend> Backend for BoxWrapped<B> {
         )
     }
 
-    type FutureLoadBranches = Box<Future<Item = HashMap<String, Id>, Error = Error>>;
+    type FutureLoadBranches = Box<Future<Item = HashMap<String, RawHandle>, Error = Error>>;
     fn load_branches(&self) -> Self::FutureLoadBranches {
         Box::new(self.backend.load_branches())
     }
@@ -410,13 +420,13 @@ impl<B: Backend> Backend for BoxWrapped<B> {
     type FutureSwapBranches = Box<Future<Item = (), Error = Error>>;
     fn swap_branches(
         &self,
-        old: HashMap<String, Id>,
-        new: HashMap<String, Id>,
+        old: HashMap<String, RawHandle>,
+        new: HashMap<String, RawHandle>,
     ) -> Self::FutureSwapBranches {
         Box::new(self.backend.swap_branches(old, new))
     }
 
-    type FutureResolve = Box<Future<Item = Option<Id>, Error = Error>>;
+    type FutureResolve = Box<Future<Item = Option<RawHandle>, Error = Error>>;
     fn resolve(&self, signature: DigestSignature, bytes: &[u8]) -> Self::FutureResolve {
         Box::new(self.backend.resolve(signature, bytes))
     }
@@ -432,21 +442,21 @@ pub struct ErasedBackend {
     boxed: Box<
         Backend<
             Builder = ErasedBuilder,
-            FutureFinish = Box<Future<Item = Id, Error = Error>>,
+            FutureFinish = Box<Future<Item = RawHandle, Error = Error>>,
             Content = ErasedContent,
             FutureContent = Box<Future<Item = ErasedContent, Error = Error>>,
             Digest = Box<Any + Send>,
             FutureDigest = Box<Future<Item = Box<Any + Send>, Error = Error>>,
-            FutureLoadBranches = Box<Future<Item = HashMap<String, Id>, Error = Error>>,
+            FutureLoadBranches = Box<Future<Item = HashMap<String, RawHandle>, Error = Error>>,
             FutureSwapBranches = Box<Future<Item = (), Error = Error>>,
-            FutureResolve = Box<Future<Item = Option<Id>, Error = Error>>,
+            FutureResolve = Box<Future<Item = Option<RawHandle>, Error = Error>>,
         >,
     >,
 }
 
 impl Backend for ErasedBackend {
     type Builder = ErasedBuilder;
-    type FutureFinish = Box<Future<Item = Id, Error = Error>>;
+    type FutureFinish = Box<Future<Item = RawHandle, Error = Error>>;
     fn builder(&self) -> Self::Builder {
         self.boxed.builder()
     }
@@ -456,17 +466,17 @@ impl Backend for ErasedBackend {
 
     type Content = ErasedContent;
     type FutureContent = Box<Future<Item = Self::Content, Error = Error>>;
-    fn load(&self, id: Id) -> Self::FutureContent {
+    fn load(&self, id: RawHandle) -> Self::FutureContent {
         self.boxed.load(id)
     }
 
     type Digest = Box<Any + Send>;
     type FutureDigest = Box<Future<Item = Self::Digest, Error = Error>>;
-    fn digest(&self, signature: DigestSignature, id: Id) -> Self::FutureDigest {
+    fn digest(&self, signature: DigestSignature, id: RawHandle) -> Self::FutureDigest {
         self.boxed.digest(signature, id)
     }
 
-    type FutureLoadBranches = Box<Future<Item = HashMap<String, Id>, Error = Error>>;
+    type FutureLoadBranches = Box<Future<Item = HashMap<String, RawHandle>, Error = Error>>;
     fn load_branches(&self) -> Self::FutureLoadBranches {
         self.boxed.load_branches()
     }
@@ -474,13 +484,13 @@ impl Backend for ErasedBackend {
     type FutureSwapBranches = Box<Future<Item = (), Error = Error>>;
     fn swap_branches(
         &self,
-        old: HashMap<String, Id>,
-        new: HashMap<String, Id>,
+        old: HashMap<String, RawHandle>,
+        new: HashMap<String, RawHandle>,
     ) -> Self::FutureSwapBranches {
         self.boxed.swap_branches(old, new)
     }
 
-    type FutureResolve = Box<Future<Item = Option<Id>, Error = Error>>;
+    type FutureResolve = Box<Future<Item = Option<RawHandle>, Error = Error>>;
     fn resolve(&self, signature: DigestSignature, bytes: &[u8]) -> Self::FutureResolve {
         self.boxed.resolve(signature, bytes)
     }
@@ -608,7 +618,7 @@ pub mod dummy {
     #[derive(Debug, Default)]
     pub struct DummyBuilder {
         pub blob: Vec<u8>,
-        pub refs: Vec<Id>,
+        pub refs: Vec<RawHandle>,
     }
 
     impl Write for DummyBuilder {
@@ -621,10 +631,10 @@ pub mod dummy {
         }
     }
 
-    impl Extend<Id> for DummyBuilder {
+    impl Extend<RawHandle> for DummyBuilder {
         fn extend<I>(&mut self, iterable: I)
         where
-            I: IntoIterator<Item = Id>,
+            I: IntoIterator<Item = RawHandle>,
         {
             self.refs.extend(iterable);
         }
@@ -633,7 +643,7 @@ pub mod dummy {
     #[derive(Debug)]
     pub struct DummyContent {
         blob: Cursor<Vec<u8>>,
-        refs: ::std::vec::IntoIter<Id>,
+        refs: ::std::vec::IntoIter<RawHandle>,
     }
 
     impl Read for DummyContent {
@@ -643,7 +653,7 @@ pub mod dummy {
     }
 
     impl Iterator for DummyContent {
-        type Item = Id;
+        type Item = RawHandle;
 
         fn next(&mut self) -> Option<Self::Item> {
             self.refs.next()
@@ -724,7 +734,7 @@ pub mod dummy {
 
     impl Backend for DummyBackend {
         type Builder = DummyBuilder;
-        type FutureFinish = Box<Future<Item = Id, Error = Error>>;
+        type FutureFinish = Box<Future<Item = RawHandle, Error = Error>>;
         fn builder(&self) -> Self::Builder {
             DummyBuilder::default()
         }
@@ -734,17 +744,17 @@ pub mod dummy {
 
         type Content = DummyContent;
         type FutureContent = Box<Future<Item = Self::Content, Error = Error>>;
-        fn load(&self, id: Id) -> Self::FutureContent {
+        fn load(&self, id: RawHandle) -> Self::FutureContent {
             unimplemented!();
         }
 
         type Digest = DummyDigest;
         type FutureDigest = Box<Future<Item = Self::Digest, Error = Error>>;
-        fn digest(&self, signature: DigestSignature, id: Id) -> Self::FutureDigest {
+        fn digest(&self, signature: DigestSignature, id: RawHandle) -> Self::FutureDigest {
             unimplemented!();
         }
 
-        type FutureLoadBranches = Box<Future<Item = HashMap<String, Id>, Error = Error>>;
+        type FutureLoadBranches = Box<Future<Item = HashMap<String, RawHandle>, Error = Error>>;
         fn load_branches(&self) -> Self::FutureLoadBranches {
             unimplemented!();
         }
@@ -752,13 +762,13 @@ pub mod dummy {
         type FutureSwapBranches = Box<Future<Item = (), Error = Error>>;
         fn swap_branches(
             &self,
-            previous: HashMap<String, Id>,
-            new: HashMap<String, Id>,
+            previous: HashMap<String, RawHandle>,
+            new: HashMap<String, RawHandle>,
         ) -> Self::FutureSwapBranches {
             unimplemented!();
         }
 
-        type FutureResolve = Box<Future<Item = Option<Id>, Error = Error>>;
+        type FutureResolve = Box<Future<Item = Option<RawHandle>, Error = Error>>;
         fn resolve(&self, signature: DigestSignature, bytes: &[u8]) -> Self::FutureResolve {
             unimplemented!();
         }
@@ -768,7 +778,7 @@ pub mod dummy {
         any::<u64>()
             .prop_map(move |n| Handle {
                 store: store.clone(),
-                id: Id(n),
+                id: RawHandle(n),
             })
             .boxed()
     }

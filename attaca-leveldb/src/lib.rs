@@ -1,9 +1,12 @@
 extern crate attaca;
+extern crate capnp;
 extern crate chashmap;
 extern crate db_key;
 #[macro_use]
 extern crate failure;
 extern crate futures_await as futures;
+#[macro_use]
+extern crate im;
 extern crate leb128;
 extern crate leveldb;
 extern crate owning_ref;
@@ -11,53 +14,57 @@ extern crate parking_lot;
 extern crate smallvec;
 extern crate url;
 
+#[allow(dead_code)]
+mod branch_set_capnp {
+    include!(concat!(env!("OUT_DIR"), "/branch_set_capnp.rs"));
+}
+
 mod store;
-mod workspace;
 
 pub use store::*;
-pub use workspace::*;
 
-use std::{str, borrow::Cow, path::{Path, PathBuf}};
-
-use db_key::Key;
-use failure::Error;
 use smallvec::SmallVec;
 
+const BRANCHES_KEY: &'static [u8] = b"BRANCHES";
+const BLOB_PREFIX: &'static [u8] = b"#";
+
 #[derive(Debug, Clone)]
-pub struct DbKey(SmallVec<[u8; 32]>);
+pub enum Key {
+    Owned(SmallVec<[u8; 32]>),
+    Borrowed(&'static [u8]),
+}
 
-impl Key for DbKey {
-    fn from_u8(key: &[u8]) -> Self {
-        DbKey(SmallVec::from(key))
-    }
-
-    fn as_slice<T, F: Fn(&[u8]) -> T>(&self, f: F) -> T {
-        f(self.0.as_slice())
+impl AsRef<[u8]> for Key {
+    fn as_ref(&self) -> &[u8] {
+        match *self {
+            Key::Owned(ref smallvec) => smallvec.as_slice(),
+            Key::Borrowed(slice) => slice,
+        }
     }
 }
 
-impl DbKey {
-    pub fn from_path(path: Cow<Path>) -> Result<Self, Error> {
-        match path {
-            Cow::Borrowed(path) => Ok(DbKey(SmallVec::from(
-                path.to_str()
-                    .ok_or_else(|| format_err!("Path is not valid UTF-8!"))?
-                    .as_bytes(),
-            ))),
-            Cow::Owned(path_buf) => Ok(DbKey(SmallVec::from(
-                path_buf
-                    .into_os_string()
-                    .into_string()
-                    .map_err(|_| format_err!("Path is not valid UTF-8!"))?
-                    .into_bytes(),
-            ))),
-        }
+impl ::db_key::Key for Key {
+    fn from_u8(key: &[u8]) -> Self {
+        Key::Owned(SmallVec::from(key))
     }
 
-    pub fn from_str(s: Cow<str>) -> Self {
-        match s {
-            Cow::Borrowed(s) => DbKey(SmallVec::from(s.as_bytes())),
-            Cow::Owned(s) => DbKey(SmallVec::from(s.into_bytes())),
-        }
+    fn as_slice<T, F: Fn(&[u8]) -> T>(&self, f: F) -> T {
+        f(self.as_ref())
+    }
+}
+
+impl Key {
+    pub fn branches() -> Self {
+        Key::Borrowed(BRANCHES_KEY)
+    }
+
+    pub fn blob(bytes: &[u8]) -> Self {
+        let mut buf = SmallVec::from(BLOB_PREFIX);
+        buf.extend_from_slice(bytes);
+        Key::Owned(buf)
+    }
+
+    pub fn is_blob(&self) -> bool {
+        self.as_ref().starts_with(BLOB_PREFIX)
     }
 }
