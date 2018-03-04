@@ -4,12 +4,12 @@ use failure::*;
 use leb128;
 use memchr;
 
-use digest::Digest;
+use digest::prelude::*;
 
 const NUL: u8 = 0;
 
 pub fn encode<W: Write, D: Digest>(w: &mut W, blob: &[u8], refs: &[D]) -> Result<(), Error> {
-    let hash_name_bytes = D::NAME.as_bytes();
+    let hash_name_bytes = D::SIGNATURE.name.as_bytes();
     ensure!(
         memchr::memchr(NUL, hash_name_bytes).is_none(),
         "Hash name contains a nul byte: {}"
@@ -17,7 +17,7 @@ pub fn encode<W: Write, D: Digest>(w: &mut W, blob: &[u8], refs: &[D]) -> Result
 
     w.write_all(&hash_name_bytes)?;
     w.write(&[NUL])?;
-    leb128::write::unsigned(w, D::SIZE as u64)?;
+    leb128::write::unsigned(w, D::SIGNATURE.size as u64)?;
     leb128::write::unsigned(w, blob.len() as u64)?;
     leb128::write::unsigned(w, refs.len() as u64)?;
     leb128::write::unsigned(w, 0)?;
@@ -80,19 +80,21 @@ impl PartialItem {
     }
 
     pub fn finish<D: Digest>(&self) -> Result<Item<D>, Error> {
+        let DigestSignature { name, size } = D::SIGNATURE;
+
         ensure!(
-            self.hash_name == D::NAME && self.hash_size == D::SIZE,
+            self.hash_name == name && self.hash_size == size,
             "Hash name/size mismatch! Decoded {}/{} vs. expected {}/{}",
             self.hash_name,
             self.hash_size,
-            D::NAME,
-            D::SIZE
+            name,
+            size,
         );
 
-        let (blob_digest_bytes, ref_bytes) = self.digests.split_at(D::SIZE);
+        let (blob_digest_bytes, ref_bytes) = self.digests.split_at(size);
         let blob_digest = D::from_bytes(blob_digest_bytes);
-        assert!(ref_bytes.len() % D::SIZE == 0 && ref_bytes.len() / D::SIZE == self.ref_count);
-        let refs = ref_bytes.chunks(D::SIZE).map(D::from_bytes).collect();
+        assert!(ref_bytes.len() % size == 0 && ref_bytes.len() / size == self.ref_count);
+        let refs = ref_bytes.chunks(size).map(D::from_bytes).collect();
 
         Ok(Item {
             blob_len: self.blob_len,
@@ -130,8 +132,8 @@ mod tests {
             let mut buf = Vec::new();
             encode::<_, Sha3Digest>(&mut buf, bytes, digests).unwrap();
             let partial = decode(&mut &buf[..]).unwrap();
-            assert_eq!(partial.hash_name(), Sha3Digest::NAME);
-            assert_eq!(partial.hash_size(), Sha3Digest::SIZE);
+            assert_eq!(partial.hash_name(), Sha3Digest::SIGNATURE.name);
+            assert_eq!(partial.hash_size(), Sha3Digest::SIGNATURE.size);
             let item = partial.finish::<Sha3Digest>().unwrap();
             assert_eq!(item.blob_len, bytes.len());
             assert_eq!(&item.refs, digests);

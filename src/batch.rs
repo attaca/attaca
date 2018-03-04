@@ -6,16 +6,16 @@ use im::List;
 
 use object::{ObjectRef, TreeBuilder};
 use path::ObjectPath;
-use store::{Handle, Store};
+use store::prelude::*;
 
 #[derive(Debug, Clone)]
-enum Node<H: Handle> {
-    Add(ObjectRef<H>),
+enum Node<B: Backend> {
+    Add(ObjectRef<Handle<B>>),
     Delete,
-    Branch(HashMap<Arc<String>, Node<H>>),
+    Branch(HashMap<Arc<String>, Node<B>>),
 }
 
-impl<H: Handle> Node<H> {
+impl<B: Backend> Node<B> {
     fn new() -> Self {
         Node::Branch(HashMap::new())
     }
@@ -26,14 +26,14 @@ impl<H: Handle> Node<H> {
         Node::Branch(hash_map)
     }
 
-    fn leaf(objref: Option<ObjectRef<H>>) -> Self {
+    fn leaf(objref: Option<ObjectRef<Handle<B>>>) -> Self {
         match objref {
             Some(objref) => Node::Add(objref),
             None => Node::Delete,
         }
     }
 
-    fn chain(path: List<String>, value: Option<ObjectRef<H>>) -> Self {
+    fn chain(path: List<String>, value: Option<ObjectRef<Handle<B>>>) -> Self {
         match path.uncons() {
             Some((head, tail)) => Self::singleton(head, Self::chain(tail, value)),
             None => Self::leaf(value),
@@ -44,7 +44,7 @@ impl<H: Handle> Node<H> {
     fn do_insert(
         head: Arc<String>,
         tail: List<String>,
-        value: Option<ObjectRef<H>>,
+        value: Option<ObjectRef<Handle<B>>>,
         mut map: HashMap<Arc<String>, Self>,
     ) -> Result<HashMap<Arc<String>, Self>, Error> {
         match map.remove(&head) {
@@ -60,7 +60,11 @@ impl<H: Handle> Node<H> {
     }
 
     #[async(boxed)]
-    fn insert(self, path: List<String>, value: Option<ObjectRef<H>>) -> Result<Self, Error> {
+    fn insert(
+        self,
+        path: List<String>,
+        value: Option<ObjectRef<Handle<B>>>,
+    ) -> Result<Self, Error> {
         match (path.uncons(), self) {
             (Some((head, tail)), Node::Add(ObjectRef::Tree(tree_ref))) => {
                 let tree = await!(tree_ref.fetch()).context("Error fetching unloaded branch node")?;
@@ -113,12 +117,12 @@ impl<H: Handle> Node<H> {
 }
 
 #[derive(Debug, Clone)]
-pub enum Operation<H: Handle> {
-    Add(ObjectPath, ObjectRef<H>),
+pub enum Operation<B: Backend> {
+    Add(ObjectPath, ObjectRef<Handle<B>>),
     Delete(ObjectPath),
 }
 
-impl<H: Handle> Operation<H> {
+impl<B: Backend> Operation<B> {
     pub fn as_object_path(&self) -> &ObjectPath {
         match *self {
             Operation::Add(ref object_path, _) => object_path,
@@ -128,11 +132,11 @@ impl<H: Handle> Operation<H> {
 }
 
 #[derive(Debug, Clone)]
-pub struct Batch<H: Handle> {
-    root: HashMap<Arc<String>, Node<H>>,
+pub struct Batch<B: Backend> {
+    root: HashMap<Arc<String>, Node<B>>,
 }
 
-impl<H: Handle> Batch<H> {
+impl<B: Backend> Batch<B> {
     pub fn new() -> Self {
         Self {
             root: HashMap::new(),
@@ -140,7 +144,7 @@ impl<H: Handle> Batch<H> {
     }
 
     #[async]
-    pub fn add(self, op: Operation<H>) -> Result<Self, Error> {
+    pub fn add(self, op: Operation<B>) -> Result<Self, Error> {
         let (path, value) = match op {
             Operation::Add(path, value) => (path, Some(value)),
             Operation::Delete(path) => (path, None),
@@ -155,33 +159,34 @@ impl<H: Handle> Batch<H> {
     }
 
     #[async]
-    pub fn run<S>(self, store: S, tree_builder: TreeBuilder<H>) -> Result<TreeBuilder<H>, Error>
-    where
-        S: Store<Handle = H>,
-    {
+    pub fn run(
+        self,
+        store: Store<B>,
+        tree_builder: TreeBuilder<Handle<B>>,
+    ) -> Result<TreeBuilder<Handle<B>>, Error> {
         Ok(await!(self.into_iter().run(store, tree_builder))?)
     }
 }
 
-impl<H: Handle> IntoIterator for Batch<H> {
-    type IntoIter = BatchIter<H>;
-    type Item = (Arc<String>, BatchedOp<H>);
+impl<B: Backend> IntoIterator for Batch<B> {
+    type IntoIter = BatchIter<B>;
+    type Item = (Arc<String>, BatchedOp<B>);
 
     fn into_iter(self) -> Self::IntoIter {
         BatchIter(self.root.into_iter())
     }
 }
 
-pub enum BatchedOp<H: Handle> {
-    Add(ObjectRef<H>),
+pub enum BatchedOp<B: Backend> {
+    Add(ObjectRef<Handle<B>>),
     Delete,
-    Recurse(BatchIter<H>),
+    Recurse(BatchIter<B>),
 }
 
-pub struct BatchIter<H: Handle>(<HashMap<Arc<String>, Node<H>> as IntoIterator>::IntoIter);
+pub struct BatchIter<B: Backend>(<HashMap<Arc<String>, Node<B>> as IntoIterator>::IntoIter);
 
-impl<H: Handle> Iterator for BatchIter<H> {
-    type Item = (Arc<String>, BatchedOp<H>);
+impl<B: Backend> Iterator for BatchIter<B> {
+    type Item = (Arc<String>, BatchedOp<B>);
 
     fn next(&mut self) -> Option<Self::Item> {
         self.0.next().map(|(name, node)| match node {
@@ -192,14 +197,14 @@ impl<H: Handle> Iterator for BatchIter<H> {
     }
 }
 
-impl<H: Handle> BatchIter<H> {
+impl<B: Backend> BatchIter<B> {
     // TODO: Optimize (recursions should be able to make requests concurrently.)
     #[async(boxed)]
-    fn run<S: Store<Handle = H>>(
+    fn run(
         self,
-        store: S,
-        tree_builder: TreeBuilder<H>,
-    ) -> Result<TreeBuilder<H>, Error> {
+        store: Store<B>,
+        tree_builder: TreeBuilder<Handle<B>>,
+    ) -> Result<TreeBuilder<Handle<B>>, Error> {
         for (name, batched_op) in self {
             match batched_op {
                 BatchedOp::Add(objref) => {

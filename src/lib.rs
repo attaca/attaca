@@ -1,6 +1,7 @@
 //! # `attaca` - distributed, resilient version control with a git-like interface
 
-#![feature(proc_macro, conservative_impl_trait, generators, nll, from_utf8_error_as_bytes)]
+#![feature(proc_macro, conservative_impl_trait, generators, nll, from_utf8_error_as_bytes,
+           get_type_id)]
 #![recursion_limit = "256"]
 
 #[cfg(not(target_pointer_width = "64"))]
@@ -31,7 +32,6 @@ pub mod batch;
 pub mod canonical;
 pub mod digest;
 pub mod hierarchy;
-pub mod merge;
 pub mod object;
 pub mod path;
 pub mod split;

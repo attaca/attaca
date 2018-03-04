@@ -7,15 +7,15 @@ use parking_lot::RwLock;
 
 use object::{FutureTree, ObjectRef, Tree, TreeRef};
 use path::ObjectPath;
-use store::Handle;
+use store::prelude::*;
 
 #[derive(Debug, Clone)]
-pub struct Hierarchy<H: Handle> {
-    root: Option<Arc<RwLock<Node<H>>>>,
+pub struct Hierarchy<B: Backend> {
+    root: Option<Arc<RwLock<Node<B>>>>,
 }
 
-impl<H: Handle> From<TreeRef<H>> for Hierarchy<H> {
-    fn from(tree_ref: TreeRef<H>) -> Self {
+impl<B: Backend> From<TreeRef<Handle<B>>> for Hierarchy<B> {
+    fn from(tree_ref: TreeRef<Handle<B>>) -> Self {
         Self {
             root: Some(Arc::new(RwLock::new(Node {
                 objref: ObjectRef::Tree(tree_ref),
@@ -25,12 +25,15 @@ impl<H: Handle> From<TreeRef<H>> for Hierarchy<H> {
     }
 }
 
-impl<H: Handle> Hierarchy<H> {
+impl<B: Backend> Hierarchy<B> {
     pub fn new() -> Self {
         Self { root: None }
     }
 
-    pub fn get(&self, path: ObjectPath) -> impl Future<Item = Option<ObjectRef<H>>, Error = Error> {
+    pub fn get(
+        &self,
+        path: ObjectPath,
+    ) -> impl Future<Item = Option<ObjectRef<Handle<B>>>, Error = Error> {
         let root = self.root.clone();
 
         async_block! {
@@ -42,16 +45,16 @@ impl<H: Handle> Hierarchy<H> {
     }
 }
 
-struct CompatFutureTree<H: Handle>(FutureTree<H>);
+struct CompatFutureTree<B: Backend>(FutureTree<B>);
 
-impl<H: Handle> fmt::Debug for CompatFutureTree<H> {
+impl<B: Backend> fmt::Debug for CompatFutureTree<B> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_tuple("CompatFutureTree").field(&"OPAQUE").finish()
     }
 }
 
-impl<H: Handle> Future for CompatFutureTree<H> {
-    type Item = Tree<H>;
+impl<B: Backend> Future for CompatFutureTree<B> {
+    type Item = Tree<Handle<B>>;
     type Error = Compat<Error>;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
@@ -60,18 +63,18 @@ impl<H: Handle> Future for CompatFutureTree<H> {
 }
 
 #[derive(Debug, Clone)]
-enum NodeState<H: Handle> {
+enum NodeState<B: Backend> {
     UnPolled,
-    NotReady(Shared<CompatFutureTree<H>>),
-    Ready(HashMap<Arc<String>, Arc<RwLock<Node<H>>>>),
+    NotReady(Shared<CompatFutureTree<B>>),
+    Ready(HashMap<Arc<String>, Arc<RwLock<Node<B>>>>),
 }
 
-impl<H: Handle> NodeState<H> {
+impl<B: Backend> NodeState<B> {
     fn update_if_unpolled_and_extract_shared(
         &mut self,
         head: &Arc<String>,
-        tree_ref: TreeRef<H>,
-    ) -> Option<Secondary<H>> {
+        tree_ref: TreeRef<Handle<B>>,
+    ) -> Option<Secondary<B>> {
         match *self {
             NodeState::UnPolled => {
                 let shared = CompatFutureTree(tree_ref.fetch()).shared();
@@ -83,7 +86,7 @@ impl<H: Handle> NodeState<H> {
         }
     }
 
-    fn extract_shared(&self, head: &Arc<String>) -> Option<Secondary<H>> {
+    fn extract_shared(&self, head: &Arc<String>) -> Option<Secondary<B>> {
         match *self {
             NodeState::UnPolled => {
                 unreachable!("Missed write opportunity, should no longer be UnPolled!")
@@ -94,18 +97,18 @@ impl<H: Handle> NodeState<H> {
     }
 }
 
-enum Primary<H: Handle> {
-    UnPolled(TreeRef<H>),
-    NotReady(Shared<CompatFutureTree<H>>),
-    Ready(Arc<RwLock<Node<H>>>),
+enum Primary<B: Backend> {
+    UnPolled(TreeRef<Handle<B>>),
+    NotReady(Shared<CompatFutureTree<B>>),
+    Ready(Arc<RwLock<Node<B>>>),
 }
 
-impl<H: Handle> Primary<H> {
+impl<B: Backend> Primary<B> {
     fn update_if_unpolled(
         self,
-        this: &Arc<RwLock<Node<H>>>,
+        this: &Arc<RwLock<Node<B>>>,
         head: &Arc<String>,
-    ) -> Option<Secondary<H>> {
+    ) -> Option<Secondary<B>> {
         match self {
             // If we're unpolled, attempt to acquire a write guard in order to poll the tree ref.
             Primary::UnPolled(tree_ref) => match this.try_write() {
@@ -127,20 +130,23 @@ impl<H: Handle> Primary<H> {
     }
 }
 
-enum Secondary<H: Handle> {
-    NotReady(Shared<CompatFutureTree<H>>),
-    Ready(Arc<RwLock<Node<H>>>),
+enum Secondary<B: Backend> {
+    NotReady(Shared<CompatFutureTree<B>>),
+    Ready(Arc<RwLock<Node<B>>>),
 }
 
 #[derive(Debug, Clone)]
-struct Node<H: Handle> {
-    objref: ObjectRef<H>,
-    state: NodeState<H>,
+struct Node<B: Backend> {
+    objref: ObjectRef<Handle<B>>,
+    state: NodeState<B>,
 }
 
-impl<H: Handle> Node<H> {
+impl<B: Backend> Node<B> {
     #[async(boxed)]
-    fn get(this: Arc<RwLock<Self>>, path: List<String>) -> Result<Option<ObjectRef<H>>, Error> {
+    fn get(
+        this: Arc<RwLock<Self>>,
+        path: List<String>,
+    ) -> Result<Option<ObjectRef<Handle<B>>>, Error> {
         match path.uncons() {
             None => Ok(Some(this.read().objref.clone())),
             Some((head, tail)) => {

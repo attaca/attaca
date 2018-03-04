@@ -1,4 +1,5 @@
-use std::{usize, collections::BTreeMap, io::{BufRead, Read}, str::{self, FromStr}};
+use std::{usize, borrow::Borrow, collections::BTreeMap, io::{BufRead, Cursor, Read},
+          str::{self, FromStr}};
 
 use chrono::prelude::*;
 use failure::{self, Error};
@@ -8,7 +9,7 @@ use ntriple::{self, Object, Predicate, Subject};
 use object::{Commit, CommitAuthor, CommitBuilder, CommitRef, Large, LargeRef, ObjectKind,
              ObjectRef, Small, SmallRef, Tree, TreeRef,
              metadata::{ATTACA_COMMIT_MESSAGE, ATTACA_COMMIT_TIMESTAMP, FOAF_MBOX, FOAF_NAME}};
-use store::Handle;
+use store::prelude::*;
 
 #[cfg_attr(rustfmt, rustfmt_skip)]
 named!(
@@ -81,7 +82,7 @@ named!(
   )
 );
 
-pub fn small<H: Handle>(mut content: H::Content) -> Result<Small, Error> {
+pub fn small<B: Backend>(mut content: Content<B>) -> Result<Small, Error> {
     let mut data = Vec::new();
     content.read_to_end(&mut data)?;
     Ok(Small { data })
@@ -100,17 +101,16 @@ named!(large_entry<(u64, u64, usize)>,
   )
 );
 
-pub fn large<H: Handle>(
-    mut content: H::Content,
-    refs_iter: H::Refs,
+pub fn large<B: Backend>(
+    mut content: Content<B>,
     size: u64,
     depth: u8,
-) -> Result<Large<H>, Error> {
+) -> Result<Large<Handle<B>>, Error> {
     assert!(depth > 0);
 
     let mut data = Vec::new();
     content.read_to_end(&mut data)?;
-    let refs = refs_iter.collect::<Vec<_>>();
+    let refs = content.map(|r| r.borrow().to_owned()).collect::<Vec<_>>();
 
     let ir: IResult<_, _> = terminated!(
         data.as_slice(),
@@ -179,10 +179,10 @@ named!(tree_entry<(&str, usize, TreeEntry)>,
   )
 );
 
-pub fn tree<H: Handle>(mut content: H::Content, refs_iter: H::Refs) -> Result<Tree<H>, Error> {
+pub fn tree<B: Backend>(mut content: Content<B>) -> Result<Tree<Handle<B>>, Error> {
     let mut data = Vec::new();
     content.read_to_end(&mut data)?;
-    let refs = refs_iter.collect::<Vec<_>>();
+    let refs = content.map(|r| r.borrow().to_owned()).collect::<Vec<_>>();
 
     let ir: IResult<_, _> = terminated!(
         data.as_slice(),
@@ -226,27 +226,30 @@ named!(commit_header<(usize, usize)>,
 
 // TODO: Robust RDF formatting/parsing - current breaks for non-ASCII strings:
 // https://github.com/sdleffler/attaca/issues/25
-pub fn commit<H: Handle>(
-    mut content: H::Content,
-    mut refs_iter: H::Refs,
-) -> Result<Commit<H>, Error> {
+pub fn commit<B: Backend>(mut content: Content<B>) -> Result<Commit<Handle<B>>, Error> {
+    let mut bytes = {
+        let mut buf = Vec::new();
+        content.read_to_end(&mut buf)?;
+        Cursor::new(buf)
+    };
+    let mut refs = content;
+
     let mut data = Vec::new();
-    content.read_until(b'\n', &mut data)?;
+    bytes.read_until(b'\n', &mut data)?;
+
     let (n_parents, n_meta) = commit_header(data.as_slice()).to_result()?;
 
     let mut commit_builder = CommitBuilder::new();
-
-    commit_builder.subtree(TreeRef::new(refs_iter
-        .next()
+    commit_builder.subtree(TreeRef::new(refs.next()
         .ok_or_else(|| format_err!("Malformed commit: no subtree handle!"))?));
-    commit_builder.parents(refs_iter.by_ref().take(n_parents).map(CommitRef::new));
+    commit_builder.parents(Iterator::take(&mut refs, n_parents).map(CommitRef::new));
 
     // We don't have anything to do with these metadata refs yet, but the encoding has them, so we
     // should at least consume them to be sure they're there.
-    let _meta_handles = refs_iter.by_ref().take(n_meta).for_each(|_| ());
+    let _meta_handles = Iterator::take(&mut refs, n_meta).for_each(|_| ());
 
     let mut meta_string = String::new();
-    content.read_to_string(&mut meta_string)?;
+    bytes.read_to_string(&mut meta_string)?;
 
     let mut author = CommitAuthor::new();
 

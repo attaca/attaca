@@ -1,11 +1,21 @@
 use std::{hash::Hash, io::{self, Write}};
 
+pub mod prelude {
+    pub use super::{Digest, DigestSignature, DigestWriter};
+}
+
 mod crypto {
     extern crate digest;
     extern crate sha3;
 
     pub use self::digest::Digest;
     pub use self::sha3::Sha3_256;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DigestSignature {
+    pub name: &'static str,
+    pub size: usize,
 }
 
 #[derive(Debug)]
@@ -29,8 +39,7 @@ pub trait DigestWriter: Write {
 }
 
 pub trait Digest: Clone + Ord + Hash + Sized + Send + Sync + 'static {
-    const NAME: &'static str;
-    const SIZE: usize;
+    const SIGNATURE: DigestSignature;
 
     type Writer: DigestWriter<Output = Self>;
     fn writer() -> Self::Writer;
@@ -49,8 +58,10 @@ pub trait Digest: Clone + Ord + Hash + Sized + Send + Sync + 'static {
 pub struct Sha3Digest([u8; 32]);
 
 impl Digest for Sha3Digest {
-    const NAME: &'static str = "SHA-3-256";
-    const SIZE: usize = 32;
+    const SIGNATURE: DigestSignature = DigestSignature {
+        name: "SHA-3-256",
+        size: 32,
+    };
 
     type Writer = GenericDigestWriter<self::crypto::Sha3_256>;
     fn writer() -> Self::Writer {

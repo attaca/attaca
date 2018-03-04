@@ -2,27 +2,26 @@ pub mod decode;
 pub mod encode;
 pub mod metadata;
 
-use std::{mem, collections::{btree_map, BTreeMap, Bound, VecDeque}, io::{self, Read, Write},
+use std::{mem, collections::{btree_map, BTreeMap, Bound}, io::{self, Read, Write},
           ops::{Deref, DerefMut, Range}};
 
 use failure::Error;
-use futures::{future::{Flatten, FutureResult}, prelude::*, stream::FuturesOrdered};
+use futures::{prelude::*, stream::FuturesOrdered};
 
 use chrono::prelude::*;
 use digest::Digest;
-use path::ObjectPath;
 use split::{Parameters, Splitter};
-use store::{Handle, HandleBuilder, HandleDigest, Store};
+use store::prelude::*;
 
 #[derive(Debug, Clone)]
-pub enum Object<H: Handle> {
+pub enum Object<H> {
     Small(Small),
     Large(Large<H>),
     Tree(Tree<H>),
     Commit(Commit<H>),
 }
 
-impl<H: Handle> Object<H> {
+impl<B: Backend> Object<Handle<B>> {
     pub fn kind(&self) -> ObjectKind {
         match *self {
             Object::Small(_) => ObjectKind::Small,
@@ -32,10 +31,7 @@ impl<H: Handle> Object<H> {
         }
     }
 
-    pub fn send<S>(&self, store: &S) -> FutureObjectHandle<S>
-    where
-        S: Store<Handle = H>,
-    {
+    pub fn send(&self, store: &Store<B>) -> FutureObjectHandle<B> {
         match *self {
             Object::Small(ref small) => FutureObjectHandle::Small(small.send(store)),
             Object::Large(ref large) => FutureObjectHandle::Large(large.send(store)),
@@ -45,15 +41,15 @@ impl<H: Handle> Object<H> {
     }
 }
 
-pub enum FutureObjectHandle<S: Store> {
-    Small(FutureSmallHandle<S>),
-    Large(FutureLargeHandle<S>),
-    Tree(FutureTreeHandle<S>),
-    Commit(FutureCommitHandle<S>),
+pub enum FutureObjectHandle<B: Backend> {
+    Small(FutureSmallHandle<B>),
+    Large(FutureLargeHandle<B>),
+    Tree(FutureTreeHandle<B>),
+    Commit(FutureCommitHandle<B>),
 }
 
-impl<S: Store> Future for FutureObjectHandle<S> {
-    type Item = ObjectRef<S::Handle>;
+impl<B: Backend> Future for FutureObjectHandle<B> {
+    type Item = ObjectRef<Handle<B>>;
     type Error = Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
@@ -66,15 +62,15 @@ impl<S: Store> Future for FutureObjectHandle<S> {
     }
 }
 
-pub enum FutureResolvedObject<S: Store> {
-    Small(FutureResolvedSmall<S>),
-    Large(FutureResolvedLarge<S>),
-    Tree(FutureResolvedTree<S>),
-    Commit(FutureResolvedCommit<S>),
+pub enum FutureResolvedObject<B: Backend> {
+    Small(FutureResolvedSmall<B>),
+    Large(FutureResolvedLarge<B>),
+    Tree(FutureResolvedTree<B>),
+    Commit(FutureResolvedCommit<B>),
 }
 
-impl<S: Store> Future for FutureResolvedObject<S> {
-    type Item = Option<ObjectRef<S::Handle>>;
+impl<B: Backend> Future for FutureResolvedObject<B> {
+    type Item = Option<ObjectRef<Handle<B>>>;
     type Error = Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
@@ -95,14 +91,14 @@ impl<S: Store> Future for FutureResolvedObject<S> {
     }
 }
 
-pub enum FutureObjectDigest<D: Digest, H: HandleDigest<D>> {
-    Small(FutureSmallDigest<D, H>),
-    Large(FutureLargeDigest<D, H>),
-    Tree(FutureTreeDigest<D, H>),
-    Commit(FutureCommitDigest<D, H>),
+pub enum FutureObjectDigest<D: Digest> {
+    Small(FutureSmallDigest<D>),
+    Large(FutureLargeDigest<D>),
+    Tree(FutureTreeDigest<D>),
+    Commit(FutureCommitDigest<D>),
 }
 
-impl<D: Digest, H: HandleDigest<D>> Future for FutureObjectDigest<D, H> {
+impl<D: Digest> Future for FutureObjectDigest<D> {
     type Item = ObjectRef<D>;
     type Error = Error;
 
@@ -161,8 +157,8 @@ impl<H> ObjectRef<H> {
     }
 }
 
-impl<H: Handle> ObjectRef<H> {
-    pub fn fetch(&self) -> FutureObject<H> {
+impl<B: Backend> ObjectRef<Handle<B>> {
+    pub fn fetch(&self) -> FutureObject<B> {
         match *self {
             ObjectRef::Small(ref small_ref) => FutureObject::Small(small_ref.fetch()),
             ObjectRef::Large(ref large_ref) => FutureObject::Large(large_ref.fetch()),
@@ -171,10 +167,7 @@ impl<H: Handle> ObjectRef<H> {
         }
     }
 
-    pub fn digest<D: Digest>(&self) -> FutureObjectDigest<D, H>
-    where
-        H: HandleDigest<D>,
-    {
+    pub fn digest<D: Digest>(&self) -> FutureObjectDigest<D> {
         match *self {
             ObjectRef::Small(ref small_ref) => FutureObjectDigest::Small(small_ref.digest()),
             ObjectRef::Large(ref large_ref) => FutureObjectDigest::Large(large_ref.digest()),
@@ -185,10 +178,7 @@ impl<H: Handle> ObjectRef<H> {
 }
 
 impl<D: Digest> ObjectRef<D> {
-    pub fn resolve<S: Store>(&self, store: &S) -> FutureResolvedObject<S>
-    where
-        S::Handle: HandleDigest<D>,
-    {
+    pub fn resolve<B: Backend>(&self, store: &Store<B>) -> FutureResolvedObject<B> {
         match *self {
             ObjectRef::Small(ref small_ref) => {
                 FutureResolvedObject::Small(small_ref.resolve(store))
@@ -204,15 +194,15 @@ impl<D: Digest> ObjectRef<D> {
     }
 }
 
-pub enum FutureObject<H: Handle> {
-    Small(FutureSmall<H>),
-    Large(FutureLarge<H>),
-    Tree(FutureTree<H>),
-    Commit(FutureCommit<H>),
+pub enum FutureObject<B: Backend> {
+    Small(FutureSmall<B>),
+    Large(FutureLarge<B>),
+    Tree(FutureTree<B>),
+    Commit(FutureCommit<B>),
 }
 
-impl<H: Handle> Future for FutureObject<H> {
-    type Item = Object<H>;
+impl<B: Backend> Future for FutureObject<B> {
+    type Item = Object<Handle<B>>;
     type Error = Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
@@ -225,15 +215,15 @@ impl<H: Handle> Future for FutureObject<H> {
     }
 }
 
-pub struct FutureSmall<H: Handle>(H::FutureLoad);
+pub struct FutureSmall<B: Backend>(FutureContent<B>);
 
-impl<H: Handle> Future for FutureSmall<H> {
+impl<B: Backend> Future for FutureSmall<B> {
     type Item = Small;
     type Error = Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         match self.0.poll()? {
-            Async::Ready((content, _)) => Ok(Async::Ready(decode::small::<H>(content)?)),
+            Async::Ready(content) => Ok(Async::Ready(decode::small::<B>(content)?)),
             Async::NotReady => Ok(Async::NotReady),
         }
     }
@@ -260,15 +250,12 @@ impl<H> SmallRef<H> {
     }
 }
 
-impl<H: Handle> SmallRef<H> {
-    pub fn fetch(&self) -> FutureSmall<H> {
+impl<B: Backend> SmallRef<Handle<B>> {
+    pub fn fetch(&self) -> FutureSmall<B> {
         FutureSmall(self.0.load())
     }
 
-    pub fn digest<D: Digest>(&self) -> FutureSmallDigest<D, H>
-    where
-        H: HandleDigest<D>,
-    {
+    pub fn digest<D: Digest>(&self) -> FutureSmallDigest<D> {
         FutureSmallDigest {
             blocking: self.0.digest(),
             size: self.1,
@@ -277,24 +264,21 @@ impl<H: Handle> SmallRef<H> {
 }
 
 impl<D: Digest> SmallRef<D> {
-    pub fn resolve<S: Store>(&self, store: &S) -> FutureResolvedSmall<S>
-    where
-        S::Handle: HandleDigest<D>,
-    {
+    pub fn resolve<B: Backend>(&self, store: &Store<B>) -> FutureResolvedSmall<B> {
         FutureResolvedSmall {
-            blocking: store.resolve(self.as_inner()),
+            blocking: store.resolve(self.as_inner().clone()),
             size: self.size(),
         }
     }
 }
 
-pub struct FutureResolvedSmall<S: Store> {
-    blocking: S::FutureResolve,
+pub struct FutureResolvedSmall<B: Backend> {
+    blocking: FutureResolve<B>,
     size: u64,
 }
 
-impl<S: Store> Future for FutureResolvedSmall<S> {
-    type Item = Option<SmallRef<S::Handle>>;
+impl<B: Backend> Future for FutureResolvedSmall<B> {
+    type Item = Option<SmallRef<Handle<B>>>;
     type Error = Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
@@ -304,26 +288,28 @@ impl<S: Store> Future for FutureResolvedSmall<S> {
     }
 }
 
-pub struct FutureSmallHandle<S: Store>(
-    Flatten<FutureResult<<S::HandleBuilder as HandleBuilder>::FutureHandle, Error>>,
-    u64,
-);
-
-impl<S: Store> Future for FutureSmallHandle<S> {
-    type Item = SmallRef<S::Handle>;
-    type Error = Error;
-
-    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        Ok(self.0.poll()?.map(|handle| SmallRef(handle, self.1)))
-    }
-}
-
-pub struct FutureSmallDigest<D: Digest, H: HandleDigest<D>> {
-    blocking: H::FutureDigest,
+pub struct FutureSmallHandle<B: Backend> {
+    blocking: FutureFinish<B>,
     size: u64,
 }
 
-impl<D: Digest, H: HandleDigest<D>> Future for FutureSmallDigest<D, H> {
+impl<B: Backend> Future for FutureSmallHandle<B> {
+    type Item = SmallRef<Handle<B>>;
+    type Error = Error;
+
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        Ok(self.blocking
+            .poll()?
+            .map(|handle| SmallRef(handle, self.size)))
+    }
+}
+
+pub struct FutureSmallDigest<D: Digest> {
+    blocking: FutureDigest<D>,
+    size: u64,
+}
+
+impl<D: Digest> Future for FutureSmallDigest<D> {
     type Item = SmallRef<D>;
     type Error = Error;
 
@@ -352,18 +338,17 @@ impl Small {
         self.data.len() as u64
     }
 
-    pub fn send<S>(&self, store: &S) -> FutureSmallHandle<S>
-    where
-        S: Store,
-    {
-        let mut builder = store.handle_builder();
-        FutureSmallHandle(
-            encode::small(&mut builder, self)
-                .map(|()| builder.finish())
-                .into_future()
-                .flatten(),
-            self.size(),
-        )
+    pub fn send<B: Backend>(&self, store: &Store<B>) -> FutureSmallHandle<B> {
+        let mut builder = store.builder();
+        FutureSmallHandle {
+            blocking: Box::new(
+                encode::small(&mut builder, self)
+                    .map(|()| builder.finish())
+                    .into_future()
+                    .flatten(),
+            ),
+            size: self.size(),
+        }
     }
 }
 
@@ -410,21 +395,20 @@ impl SmallBuilder {
     }
 }
 
-pub struct FutureLarge<H: Handle> {
-    blocking: H::FutureLoad,
+pub struct FutureLarge<B: Backend> {
+    blocking: FutureContent<B>,
     size: u64,
     depth: u8,
 }
 
-impl<H: Handle> Future for FutureLarge<H> {
-    type Item = Large<H>;
+impl<B: Backend> Future for FutureLarge<B> {
+    type Item = Large<Handle<B>>;
     type Error = Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         match self.blocking.poll()? {
-            Async::Ready((content, refs_iter)) => Ok(Async::Ready(decode::large::<H>(
+            Async::Ready(content) => Ok(Async::Ready(decode::large::<B>(
                 content,
-                refs_iter,
                 self.size,
                 self.depth,
             )?)),
@@ -464,8 +448,8 @@ impl<H> LargeRef<H> {
     }
 }
 
-impl<H: Handle> LargeRef<H> {
-    pub fn fetch(&self) -> FutureLarge<H> {
+impl<B: Backend> LargeRef<Handle<B>> {
+    pub fn fetch(&self) -> FutureLarge<B> {
         FutureLarge {
             blocking: self.inner.load(),
             size: self.size,
@@ -473,10 +457,7 @@ impl<H: Handle> LargeRef<H> {
         }
     }
 
-    pub fn digest<D: Digest>(&self) -> FutureLargeDigest<D, H>
-    where
-        H: HandleDigest<D>,
-    {
+    pub fn digest<D: Digest>(&self) -> FutureLargeDigest<D> {
         FutureLargeDigest {
             blocking: self.inner.digest(),
             size: self.size,
@@ -486,26 +467,23 @@ impl<H: Handle> LargeRef<H> {
 }
 
 impl<D: Digest> LargeRef<D> {
-    pub fn resolve<S: Store>(&self, store: &S) -> FutureResolvedLarge<S>
-    where
-        S::Handle: HandleDigest<D>,
-    {
+    pub fn resolve<B: Backend>(&self, store: &Store<B>) -> FutureResolvedLarge<B> {
         FutureResolvedLarge {
-            blocking: store.resolve(self.as_inner()),
+            blocking: store.resolve(self.as_inner().clone()),
             size: self.size,
             depth: self.depth,
         }
     }
 }
 
-pub struct FutureResolvedLarge<S: Store> {
-    blocking: S::FutureResolve,
+pub struct FutureResolvedLarge<B: Backend> {
+    blocking: FutureResolve<B>,
     size: u64,
     depth: u8,
 }
 
-impl<S: Store> Future for FutureResolvedLarge<S> {
-    type Item = Option<LargeRef<S::Handle>>;
+impl<B: Backend> Future for FutureResolvedLarge<B> {
+    type Item = Option<LargeRef<Handle<B>>>;
     type Error = Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
@@ -515,14 +493,14 @@ impl<S: Store> Future for FutureResolvedLarge<S> {
     }
 }
 
-pub struct FutureLargeHandle<S: Store> {
-    blocking: Flatten<FutureResult<<S::HandleBuilder as HandleBuilder>::FutureHandle, Error>>,
+pub struct FutureLargeHandle<B: Backend> {
+    blocking: FutureFinish<B>,
     size: u64,
     depth: u8,
 }
 
-impl<S: Store> Future for FutureLargeHandle<S> {
-    type Item = LargeRef<S::Handle>;
+impl<B: Backend> Future for FutureLargeHandle<B> {
+    type Item = LargeRef<Handle<B>>;
     type Error = Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
@@ -532,13 +510,13 @@ impl<S: Store> Future for FutureLargeHandle<S> {
     }
 }
 
-pub struct FutureLargeDigest<D: Digest, H: HandleDigest<D>> {
-    blocking: H::FutureDigest,
+pub struct FutureLargeDigest<D: Digest> {
+    blocking: FutureDigest<D>,
     size: u64,
     depth: u8,
 }
 
-impl<D: Digest, H: HandleDigest<D>> Future for FutureLargeDigest<D, H> {
+impl<D: Digest> Future for FutureLargeDigest<D> {
     type Item = LargeRef<D>;
     type Error = Error;
 
@@ -646,17 +624,16 @@ impl<H> Large<H> {
     }
 }
 
-impl<H: Handle> Large<H> {
-    pub fn send<S>(&self, store: &S) -> FutureLargeHandle<S>
-    where
-        S: Store<Handle = H>,
-    {
-        let mut builder = store.handle_builder();
+impl<B: Backend> Large<Handle<B>> {
+    pub fn send(&self, store: &Store<B>) -> FutureLargeHandle<B> {
+        let mut builder = store.builder();
         FutureLargeHandle {
-            blocking: encode::large(&mut builder, self)
-                .map(|()| builder.finish())
-                .into_future()
-                .flatten(),
+            blocking: Box::new(
+                encode::large(&mut builder, self)
+                    .map(|()| builder.finish())
+                    .into_future()
+                    .flatten(),
+            ),
             size: self.size,
             depth: self.depth,
         }
@@ -704,17 +681,15 @@ impl<H> LargeBuilder<H> {
     }
 }
 
-pub struct FutureTree<H: Handle>(H::FutureLoad);
+pub struct FutureTree<B: Backend>(FutureContent<B>);
 
-impl<H: Handle> Future for FutureTree<H> {
-    type Item = Tree<H>;
+impl<B: Backend> Future for FutureTree<B> {
+    type Item = Tree<Handle<B>>;
     type Error = Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         match self.0.poll()? {
-            Async::Ready((content, refs_iter)) => {
-                Ok(Async::Ready(decode::tree::<H>(content, refs_iter)?))
-            }
+            Async::Ready(content) => Ok(Async::Ready(decode::tree::<B>(content)?)),
             Async::NotReady => Ok(Async::NotReady),
         }
     }
@@ -737,36 +712,30 @@ impl<H> TreeRef<H> {
     }
 }
 
-impl<H: Handle> TreeRef<H> {
-    pub fn fetch(&self) -> FutureTree<H> {
+impl<B: Backend> TreeRef<Handle<B>> {
+    pub fn fetch(&self) -> FutureTree<B> {
         FutureTree(self.0.load())
     }
 
-    pub fn digest<D: Digest>(&self) -> FutureTreeDigest<D, H>
-    where
-        H: HandleDigest<D>,
-    {
+    pub fn digest<D: Digest>(&self) -> FutureTreeDigest<D> {
         FutureTreeDigest(self.0.digest())
     }
 }
 
 impl<D: Digest> TreeRef<D> {
-    pub fn resolve<S: Store>(&self, store: &S) -> FutureResolvedTree<S>
-    where
-        S::Handle: HandleDigest<D>,
-    {
+    pub fn resolve<B: Backend>(&self, store: &Store<B>) -> FutureResolvedTree<B> {
         FutureResolvedTree {
-            blocking: store.resolve(self.as_inner()),
+            blocking: store.resolve(self.as_inner().clone()),
         }
     }
 }
 
-pub struct FutureResolvedTree<S: Store> {
-    blocking: S::FutureResolve,
+pub struct FutureResolvedTree<B: Backend> {
+    blocking: FutureResolve<B>,
 }
 
-impl<S: Store> Future for FutureResolvedTree<S> {
-    type Item = Option<TreeRef<S::Handle>>;
+impl<B: Backend> Future for FutureResolvedTree<B> {
+    type Item = Option<TreeRef<Handle<B>>>;
     type Error = Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
@@ -776,12 +745,10 @@ impl<S: Store> Future for FutureResolvedTree<S> {
     }
 }
 
-pub struct FutureTreeHandle<S: Store>(
-    Flatten<FutureResult<<S::HandleBuilder as HandleBuilder>::FutureHandle, Error>>,
-);
+pub struct FutureTreeHandle<B: Backend>(FutureFinish<B>);
 
-impl<S: Store> Future for FutureTreeHandle<S> {
-    type Item = TreeRef<S::Handle>;
+impl<B: Backend> Future for FutureTreeHandle<B> {
+    type Item = TreeRef<Handle<B>>;
     type Error = Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
@@ -789,9 +756,9 @@ impl<S: Store> Future for FutureTreeHandle<S> {
     }
 }
 
-pub struct FutureTreeDigest<D: Digest, H: HandleDigest<D>>(H::FutureDigest);
+pub struct FutureTreeDigest<D: Digest>(FutureDigest<D>);
 
-impl<D: Digest, H: HandleDigest<D>> Future for FutureTreeDigest<D, H> {
+impl<D: Digest> Future for FutureTreeDigest<D> {
     type Item = TreeRef<D>;
     type Error = Error;
 
@@ -828,58 +795,15 @@ impl<H> Tree<H> {
     }
 }
 
-impl<H: Handle> Tree<H> {
-    pub fn files(self) -> Box<Stream<Item = (ObjectPath, ObjectRef<H>), Error = Error>> {
-        let stream = async_stream_block! {
-            let mut streams = VecDeque::new();
-            for (name, objref) in self.entries {
-                match objref {
-                    ObjectRef::Tree(tree_ref) => {
-                        let path = ObjectPath::new().push_back(name);
-                        let stream_future = async_block! {
-                            match await!(ObjectRef::Tree(tree_ref).fetch())? {
-                                Object::Tree(tree_obj) => Ok(tree_obj.files()),
-                                _ => unreachable!(),
-                            }
-                        };
-                        streams.push_back((path, stream_future.flatten_stream()))
-                    }
-                    other => stream_yield!((ObjectPath::new().push_back(name), other)),
-                }
-            }
-
-            while let Some((prefix, mut stream)) = streams.pop_front() {
-                match stream.poll()? {
-                    // If the stream yields readily, yield the item and then keep it at the front
-                    // of the deque since it may be ready to yield more.
-                    Async::Ready(Some((postfix, objref))) => {
-                        stream_yield!((&prefix + &postfix, objref));
-                        streams.push_front((prefix, stream));
-                    }
-                    // If the stream yields none, don't put it back in the deque. It's finished.
-                    Async::Ready(None) => {}
-                    // If the stream isn't ready, throw it to the back of the deque.
-                    Async::NotReady => streams.push_back((prefix, stream)),
-                }
-            }
-
-            Ok(())
-        };
-
-        Box::new(stream)
-    }
-
-    pub fn send<S>(&self, store: &S) -> FutureTreeHandle<S>
-    where
-        S: Store<Handle = H>,
-    {
-        let mut builder = store.handle_builder();
-        FutureTreeHandle(
+impl<B: Backend> Tree<Handle<B>> {
+    pub fn send(&self, store: &Store<B>) -> FutureTreeHandle<B> {
+        let mut builder = store.builder();
+        FutureTreeHandle(Box::new(
             encode::tree(&mut builder, self)
                 .map(|()| builder.finish())
                 .into_future()
                 .flatten(),
-        )
+        ))
     }
 }
 
@@ -922,17 +846,15 @@ impl<H> TreeBuilder<H> {
     }
 }
 
-pub struct FutureCommit<H: Handle>(H::FutureLoad);
+pub struct FutureCommit<B: Backend>(FutureContent<B>);
 
-impl<H: Handle> Future for FutureCommit<H> {
-    type Item = Commit<H>;
+impl<B: Backend> Future for FutureCommit<B> {
+    type Item = Commit<Handle<B>>;
     type Error = Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         match self.0.poll()? {
-            Async::Ready((content, refs_iter)) => {
-                Ok(Async::Ready(decode::commit::<H>(content, refs_iter)?))
-            }
+            Async::Ready(content) => Ok(Async::Ready(decode::commit::<B>(content)?)),
             Async::NotReady => Ok(Async::NotReady),
         }
     }
@@ -955,36 +877,30 @@ impl<H> CommitRef<H> {
     }
 }
 
-impl<H: Handle> CommitRef<H> {
-    pub fn fetch(&self) -> FutureCommit<H> {
+impl<B: Backend> CommitRef<Handle<B>> {
+    pub fn fetch(&self) -> FutureCommit<B> {
         FutureCommit(self.0.load())
     }
 
-    pub fn digest<D: Digest>(&self) -> FutureCommitDigest<D, H>
-    where
-        H: HandleDigest<D>,
-    {
+    pub fn digest<D: Digest>(&self) -> FutureCommitDigest<D> {
         FutureCommitDigest(self.0.digest())
     }
 }
 
 impl<D: Digest> CommitRef<D> {
-    pub fn resolve<S: Store>(&self, store: &S) -> FutureResolvedCommit<S>
-    where
-        S::Handle: HandleDigest<D>,
-    {
+    pub fn resolve<B: Backend>(&self, store: &Store<B>) -> FutureResolvedCommit<B> {
         FutureResolvedCommit {
-            blocking: store.resolve(self.as_inner()),
+            blocking: store.resolve(self.as_inner().clone()),
         }
     }
 }
 
-pub struct FutureResolvedCommit<S: Store> {
-    blocking: S::FutureResolve,
+pub struct FutureResolvedCommit<B: Backend> {
+    blocking: FutureResolve<B>,
 }
 
-impl<S: Store> Future for FutureResolvedCommit<S> {
-    type Item = Option<CommitRef<S::Handle>>;
+impl<B: Backend> Future for FutureResolvedCommit<B> {
+    type Item = Option<CommitRef<Handle<B>>>;
     type Error = Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
@@ -994,12 +910,10 @@ impl<S: Store> Future for FutureResolvedCommit<S> {
     }
 }
 
-pub struct FutureCommitHandle<S: Store>(
-    Flatten<FutureResult<<S::HandleBuilder as HandleBuilder>::FutureHandle, Error>>,
-);
+pub struct FutureCommitHandle<B: Backend>(FutureFinish<B>);
 
-impl<S: Store> Future for FutureCommitHandle<S> {
-    type Item = CommitRef<S::Handle>;
+impl<B: Backend> Future for FutureCommitHandle<B> {
+    type Item = CommitRef<Handle<B>>;
     type Error = Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
@@ -1007,9 +921,9 @@ impl<S: Store> Future for FutureCommitHandle<S> {
     }
 }
 
-pub struct FutureCommitDigest<D: Digest, H: HandleDigest<D>>(H::FutureDigest);
+pub struct FutureCommitDigest<D: Digest>(FutureDigest<D>);
 
-impl<D: Digest, H: HandleDigest<D>> Future for FutureCommitDigest<D, H> {
+impl<D: Digest> Future for FutureCommitDigest<D> {
     type Item = CommitRef<D>;
     type Error = Error;
 
@@ -1066,18 +980,15 @@ impl<H> Commit<H> {
     }
 }
 
-impl<H: Handle> Commit<H> {
-    pub fn send<S>(&self, store: &S) -> FutureCommitHandle<S>
-    where
-        S: Store<Handle = H>,
-    {
-        let mut builder = store.handle_builder();
-        FutureCommitHandle(
+impl<B: Backend> Commit<Handle<B>> {
+    pub fn send(&self, store: &Store<B>) -> FutureCommitHandle<B> {
+        let mut builder = store.builder();
+        FutureCommitHandle(Box::new(
             encode::commit(&mut builder, self)
                 .map(|()| builder.finish())
                 .into_future()
                 .flatten(),
-        )
+        ))
     }
 }
 
@@ -1198,10 +1109,10 @@ impl<H> CommitBuilder<H> {
     }
 }
 
-pub fn share<R: Read, S: Store>(
+pub fn share<R: Read, B: Backend>(
     reader: R,
-    store: S,
-) -> impl Future<Item = ObjectRef<S::Handle>, Error = Error> {
+    store: Store<B>,
+) -> impl Future<Item = ObjectRef<Handle<B>>, Error = Error> {
     async_block! {
         let mut splitter = Splitter::new(reader, Parameters::default());
 
@@ -1242,65 +1153,11 @@ pub fn share<R: Read, S: Store>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use store::dummy::*;
 
     use std::io::Cursor;
 
     use proptest::prelude::*;
-
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-    struct TestHandle(u64);
-
-    impl Handle for TestHandle {
-        type Content = Cursor<Vec<u8>>;
-        type Refs = ::std::vec::IntoIter<Self>;
-
-        type FutureLoad = FutureResult<(Self::Content, Self::Refs), Error>;
-        fn load(&self) -> Self::FutureLoad {
-            unimplemented!();
-        }
-    }
-
-    #[derive(Default)]
-    struct TestBuilder {
-        data: Vec<u8>,
-        refs: Vec<TestHandle>,
-    }
-
-    impl Write for TestBuilder {
-        fn write(&mut self, buf: &[u8]) -> Result<usize, io::Error> {
-            self.data.write(buf)
-        }
-
-        fn flush(&mut self) -> Result<(), io::Error> {
-            Write::flush(&mut self.data)
-        }
-    }
-
-    impl HandleBuilder for TestBuilder {
-        type Handle = TestHandle;
-
-        fn add_reference(&mut self, handle: Self::Handle) {
-            self.refs.push(handle);
-        }
-
-        type FutureHandle = FutureResult<TestHandle, Error>;
-        fn finish(self) -> Self::FutureHandle {
-            unimplemented!();
-        }
-    }
-
-    impl TestBuilder {
-        fn destruct(self) -> (Cursor<Vec<u8>>, ::std::vec::IntoIter<TestHandle>) {
-            (Cursor::new(self.data), self.refs.into_iter())
-        }
-    }
-
-    prop_compose! {
-        fn arb_handle()
-                (id in any::<u64>()) -> TestHandle {
-            TestHandle(id)
-        }
-    }
 
     prop_compose! {
         fn arb_small()
@@ -1310,15 +1167,15 @@ mod tests {
     }
 
     prop_compose! {
-        fn arb_small_ref()
-                (size in 0u64..1 << 20, handle in arb_handle()) -> SmallRef<TestHandle> {
+        fn arb_small_ref(store: Store<DummyBackend>)
+                (size in 0u64..1 << 20, handle in dummy_handle(store)) -> SmallRef<Handle<DummyBackend>> {
             SmallRef(handle, size)
         }
     }
 
     prop_compose! {
-        fn arb_large()
-                (refs in prop::collection::vec(arb_small_ref(), 1..1024)) -> Large<TestHandle> {
+        fn arb_large(store: Store<DummyBackend>)
+                (refs in prop::collection::vec(arb_small_ref(store), 1..1024)) -> Large<Handle<DummyBackend>> {
             let mut builder = LargeBuilder::new(1);
             for small_ref in refs {
                 builder.push(ObjectRef::Small(small_ref));
@@ -1328,28 +1185,28 @@ mod tests {
     }
 
     prop_compose! {
-        fn arb_large_ref()
-                (size in any::<u64>(), depth in 1u8..255u8, inner in arb_handle()) -> LargeRef<TestHandle> {
+        fn arb_large_ref(store: Store<DummyBackend>)
+                (size in any::<u64>(), depth in 1u8..255u8, inner in dummy_handle(store)) -> LargeRef<Handle<DummyBackend>> {
 
             LargeRef { inner, size, depth }
         }
     }
 
     prop_compose! {
-        fn arb_tree()
+        fn arb_tree(store: Store<DummyBackend>)
                 (entries in
                     prop::collection::vec(
                         (
                             ".*",
                             prop_oneof![
-                               1 => arb_small_ref().prop_map(ObjectRef::Small),
-                               1 => arb_large_ref().prop_map(ObjectRef::Large),
-                               1 => arb_tree_ref().prop_map(ObjectRef::Tree)
+                               1 => arb_small_ref(store.clone()).prop_map(ObjectRef::Small),
+                               1 => arb_large_ref(store.clone()).prop_map(ObjectRef::Large),
+                               1 => arb_tree_ref(store.clone()).prop_map(ObjectRef::Tree)
                             ]
                         ),
                         0..1024,
                     )
-                ) -> Tree<TestHandle> {
+                ) -> Tree<Handle<DummyBackend>> {
             let mut tree_builder = TreeBuilder::new();
             for (name, handle) in entries {
                 tree_builder.insert(name, handle);
@@ -1359,8 +1216,8 @@ mod tests {
     }
 
     prop_compose! {
-        fn arb_tree_ref()
-                (handle in arb_handle()) -> TreeRef<TestHandle> {
+        fn arb_tree_ref(store: Store<DummyBackend>)
+                (handle in dummy_handle(store)) -> TreeRef<Handle<DummyBackend>> {
             TreeRef(handle)
         }
     }
@@ -1377,13 +1234,13 @@ mod tests {
         /// Worth noting: only testing printable characters here in the metadata because we don't
         /// have an RDF N-triples parser/formatter which will correctly deal with
         /// non-printable/non-ASCII characters. TODO: Find or write one.
-        fn arb_commit()
-                (subtree in arb_tree_ref(),
-                 parents in prop::collection::vec(arb_commit_ref(), 0..4),
+        fn arb_commit(store: Store<DummyBackend>)
+                (subtree in arb_tree_ref(store.clone()),
+                 parents in prop::collection::vec(arb_commit_ref(store.clone()), 0..4),
                  name in prop::option::of("[ -~]*"),
                  mbox in prop::option::of("[ -~]*"),
                  timestamp in arb_timestamp(),
-                 message in prop::option::of("[ -~]*")) -> Commit<TestHandle> {
+                 message in prop::option::of("[ -~]*")) -> Commit<Handle<DummyBackend>> {
             let mut builder = CommitBuilder::new();
             builder.subtree(subtree).parents(parents);
             builder.timestamp(timestamp);
@@ -1398,48 +1255,59 @@ mod tests {
     }
 
     prop_compose! {
-        fn arb_commit_ref()
-                (handle in arb_handle()) -> CommitRef<TestHandle> {
+        fn arb_commit_ref(store: Store<DummyBackend>)
+                (handle in dummy_handle(store)) -> CommitRef<Handle<DummyBackend>> {
             CommitRef(handle)
         }
     }
 
     proptest! {
-        #[test]
-        fn roundtrip_small(ref small in arb_small()) {
-            let mut builder = TestBuilder::default();
-            super::encode::small(&mut builder, small).unwrap();
-            let (content, _) = builder.destruct();
-            let battered_small = super::decode::small::<TestHandle>(content).unwrap();
-            assert_eq!(small, &battered_small);
-        }
+         #[test]
+         fn roundtrip_small((ref small, ref store) in
+                             Just(Store::default()).prop_flat_map(|store|
+                                (arb_small(), Just(store.clone())))) {
+             let mut builder = store.builder();
+             super::encode::small(&mut builder, small).unwrap();
+             let battered_small =
+                 super::decode::small::<DummyBackend>(DummyContent::new(builder, store.clone()))
+                     .unwrap();
+             assert_eq!(small, &battered_small);
+         }
 
-        #[test]
-        fn roundtrip_large(ref large in arb_large()) {
-            let mut builder = TestBuilder::default();
-            super::encode::large(&mut builder, large).unwrap();
-            let (content, refs) = builder.destruct();
-            let battered_large = super::decode::large::<TestHandle>(content, refs, large.size(), large.depth()).unwrap();
-            assert_eq!(large, &battered_large);
-        }
+         #[test]
+         fn roundtrip_large((ref large, ref store) in
+                             Just(Store::default()).prop_flat_map(|store|
+                                (arb_large(store.clone()), Just(store.clone())))) {
+             let mut builder = store.builder();
+             super::encode::large(&mut builder, large).unwrap();
+             let battered_large =
+                 super::decode::large::<DummyBackend>(DummyContent::new(builder, store.clone()), large.size(), large.depth())
+                     .unwrap();
+             assert_eq!(large, &battered_large);
+         }
 
-        #[test]
-        fn roundtrip_tree(ref tree in arb_tree()) {
-            let mut builder = TestBuilder::default();
-            super::encode::tree(&mut builder, tree).unwrap();
-            let (content, refs) = builder.destruct();
-            let battered_tree = super::decode::tree::<TestHandle>(content, refs).unwrap();
-            assert_eq!(tree, &battered_tree);
-        }
+         #[test]
+         fn roundtrip_tree((ref tree, ref store) in
+                             Just(Store::default()).prop_flat_map(|store|
+                                (arb_tree(store.clone()), Just(store.clone())))) {
+             let mut builder = store.builder();
+             super::encode::tree(&mut builder, tree).unwrap();
+             let battered_tree =
+                 super::decode::tree::<DummyBackend>(DummyContent::new(builder, store.clone()))
+                     .unwrap();
+             assert_eq!(tree, &battered_tree);
+         }
 
-        #[test]
-        fn roundtrip_commit(ref commit in arb_commit()) {
-            let mut builder = TestBuilder::default();
-            super::encode::commit(&mut builder, commit).unwrap();
-            let (content, refs) = builder.destruct();
-            println!("Content:\n{}", String::from_utf8_lossy(content.get_ref()));
-            let battered_commit = super::decode::commit::<TestHandle>(content, refs).unwrap();
-            assert_eq!(commit, &battered_commit);
-        }
+         #[test]
+         fn roundtrip_commit((ref commit, ref store) in
+                             Just(Store::default()).prop_flat_map(|store|
+                                (arb_commit(store.clone()), Just(store.clone())))) {
+             let mut builder = store.builder();
+             super::encode::commit(&mut builder, commit).unwrap();
+             let battered_commit =
+                 super::decode::commit::<DummyBackend>(DummyContent::new(builder, store.clone()))
+                     .unwrap();
+             assert_eq!(commit, &battered_commit);
+         }
     }
 }

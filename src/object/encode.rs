@@ -4,20 +4,14 @@ use failure::Error;
 
 use object::{Commit, Large, ObjectRef, Small, Tree,
              metadata::{ATTACA_COMMIT_MESSAGE, ATTACA_COMMIT_TIMESTAMP, FOAF_MBOX, FOAF_NAME}};
-use store::HandleBuilder;
+use store::prelude::*;
 
-pub fn small<HB>(builder: &mut HB, object: &Small) -> Result<(), Error>
-where
-    HB: HandleBuilder,
-{
+pub fn small<B: Backend>(builder: &mut Builder<B>, object: &Small) -> Result<(), Error> {
     builder.write_all(&object.data)?;
     Ok(())
 }
 
-pub fn large<HB>(builder: &mut HB, object: &Large<HB::Handle>) -> Result<(), Error>
-where
-    HB: HandleBuilder,
-{
+pub fn large<B: Backend>(builder: &mut Builder<B>, object: &Large<Handle<B>>) -> Result<(), Error> {
     let mut handles = HashMap::new();
 
     for (&start, &(end, ref reference)) in &object.entries {
@@ -41,7 +35,7 @@ where
             None => {
                 let new_id = handles.len();
                 handles.insert(handle.clone(), new_id);
-                builder.add_reference(handle);
+                builder.push(handle);
                 new_id
             }
         };
@@ -52,10 +46,7 @@ where
     Ok(())
 }
 
-pub fn tree<HB>(builder: &mut HB, object: &Tree<HB::Handle>) -> Result<(), Error>
-where
-    HB: HandleBuilder,
-{
+pub fn tree<B: Backend>(builder: &mut Builder<B>, object: &Tree<Handle<B>>) -> Result<(), Error> {
     let mut handles = HashMap::new();
 
     for (name, reference) in &object.entries {
@@ -65,7 +56,7 @@ where
             None => {
                 let new_id = handles.len();
                 handles.insert(handle, new_id);
-                builder.add_reference(handle.clone());
+                builder.push(handle.clone());
                 new_id
             }
         };
@@ -94,10 +85,10 @@ where
 
 // TODO: Robust RDF formatting/parsing - current breaks for non-ASCII strings:
 // https://github.com/sdleffler/attaca/issues/25
-pub fn commit<HB>(builder: &mut HB, object: &Commit<HB::Handle>) -> Result<(), Error>
-where
-    HB: HandleBuilder,
-{
+pub fn commit<B: Backend>(
+    builder: &mut Builder<B>,
+    object: &Commit<Handle<B>>,
+) -> Result<(), Error> {
     fn rdf_literal(s: &str) -> Vec<u8> {
         s.as_bytes()
             .iter()
@@ -106,9 +97,9 @@ where
             .collect::<Vec<_>>()
     }
 
-    builder.add_reference(object.subtree.as_inner().clone());
+    builder.push(object.subtree.as_inner().clone());
     for parent in &object.parents {
-        builder.add_reference(parent.as_inner().clone());
+        builder.push(parent.as_inner().clone());
     }
 
     // The `0` is for metadata refs; N-triples metadata does not yet use refs (since it's just
