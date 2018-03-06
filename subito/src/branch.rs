@@ -28,7 +28,10 @@ pub struct BranchCreateArgs {
 
 #[derive(Debug, Clone, StructOpt, Builder)]
 #[structopt(name = "list")]
-pub struct BranchListArgs {}
+pub struct BranchListArgs {
+    #[structopt(long = "remote", short = "r")]
+    remote: Option<String>,
+}
 
 pub struct BranchOut<'r> {
     pub blocking: Box<Future<Item = (), Error = Error> + 'r>,
@@ -66,18 +69,29 @@ impl<B: Backend> Repository<B> {
     pub fn branch_list<'r>(&'r mut self, args: BranchListArgs) -> BranchOut<'r> {
         let blocking = async_block! {
             let state = self.get_state()?;
-            let maybe_branch = match state.head {
-                Head::Empty => None,
-                Head::Detached(_) => None,
-                Head::Branch(branch) => Some(branch),
-            };
-            let branches = await!(self.store.load_branches())?;
-            // TODO better and more flexible output instead of just printlning everything
-            for (branch_name, _) in branches {
-                if Some(&branch_name) == maybe_branch.as_ref() {
-                    println!("=> {}", branch_name);
-                } else {
-                    println!("   {}", branch_name);
+            match args.remote {
+                Some(remote) => {
+                    ensure!(state.remote_refs.contains_key(&remote), "no such remote");
+
+                    for (branch_name, _) in &state.remote_refs[&remote] {
+                        println!("   {}", branch_name);
+                    }
+                }
+                None => {
+                    let maybe_branch = match state.head {
+                        Head::Empty => None,
+                        Head::Detached(_) => None,
+                        Head::Branch(branch) => Some(branch),
+                    };
+                    let branches = await!(self.store.load_branches())?;
+                    // TODO better and more flexible output instead of just printlning everything
+                    for (branch_name, _) in branches {
+                        if Some(&branch_name) == maybe_branch.as_ref() {
+                            println!("=> {}", branch_name);
+                        } else {
+                            println!("   {}", branch_name);
+                        }
+                    }
                 }
             }
             Ok(())
