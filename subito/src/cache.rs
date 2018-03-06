@@ -1,7 +1,8 @@
 use std::{fmt, io::{BufRead, Write}, marker::PhantomData, ops::{BitAnd, BitOr, Not},
           path::{Path, PathBuf}, sync::{Arc, RwLock}, time::{SystemTime, UNIX_EPOCH}};
 
-use attaca::{digest::Digest, object::{LargeRef, ObjectRef, SmallRef}, path::ObjectPath};
+use attaca::{digest::prelude::*, object::{LargeRef, ObjectRef, SmallRef}, path::ObjectPath,
+             store::prelude::*};
 use capnp::{serialize_packed, Word, message::{self, ScratchSpace, ScratchSpaceHeapAllocator}};
 use failure::*;
 use leveldb::{database::Database, kv::KV, options::{ReadOptions, WriteOptions}};
@@ -127,14 +128,45 @@ impl Inode {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-struct Entry<D: Digest> {
-    maybe_ref: Option<ObjectRef<D>>,
+struct Entry<B: Backend> {
+    maybe_ref: Option<ObjectRef<OwnedLocalId<B>>>,
 
     inode: Inode,
 }
 
-impl<D: Digest> Entry<D> {
+impl<B: Backend> fmt::Debug for Entry<B>
+where
+    LocalId<B>: fmt::Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        use std::borrow::Borrow;
+
+        f.debug_struct("Entry")
+            .field(
+                "maybe_ref",
+                &self.maybe_ref
+                    .as_ref()
+                    .map(|objref| objref.as_ref().map(Borrow::borrow)),
+            )
+            .field("inode", &self.inode)
+            .finish()
+    }
+}
+
+impl<B: Backend> Clone for Entry<B> {
+    fn clone(&self) -> Self {
+        use std::borrow::Borrow;
+
+        Self {
+            maybe_ref: self.maybe_ref
+                .as_ref()
+                .map(|objref| objref.as_ref().map(Borrow::borrow).map(ToOwned::to_owned)),
+            inode: self.inode,
+        }
+    }
+}
+
+impl<B: Backend> Entry<B> {
     fn decode<R: BufRead>(reader: &mut R) -> Result<Self, Error> {
         use self::entry::{self, inode, maybe_ref};
         use self::object_ref::kind;
@@ -145,28 +177,15 @@ impl<D: Digest> Entry<D> {
         let maybe_ref = match entry.get_maybe_ref().which()? {
             maybe_ref::Some(object_ref_reader_res) => {
                 let object_ref_reader = object_ref_reader_res?;
-                let digest_info = object_ref_reader.get_digest()?;
-                ensure!(digest_info.get_name()? == D::NAME, "Digest name mismatch!");
-                ensure!(
-                    digest_info.get_size() == D::SIZE as u32,
-                    "Digest size mismatch!"
-                );
-
-                let bytes = object_ref_reader.get_bytes()?;
-                ensure!(
-                    bytes.len() == D::SIZE,
-                    "Bad digest: length does not match digest metadata!"
-                );
-                let digest = D::from_bytes(bytes);
-
+                let bytes = <B as Backend>::Id::from_bytes(object_ref_reader.get_bytes()?);
                 let object_digest = match object_ref_reader.get_kind().which()? {
                     kind::Small(small_kind) => {
-                        ObjectRef::Small(SmallRef::new(small_kind.get_size(), digest))
+                        ObjectRef::Small(SmallRef::new(small_kind.get_size(), bytes))
                     }
                     kind::Large(large_kind) => ObjectRef::Large(LargeRef::new(
                         large_kind.get_size(),
                         large_kind.get_depth(),
-                        digest,
+                        bytes,
                     )),
                     kind::Tree(_) | kind::Commit(_) => {
                         bail!("Bad cache entry: object reference should be small or large only!");
@@ -205,25 +224,20 @@ impl<D: Digest> Entry<D> {
     }
 
     fn encode<W: Write>(&self, writer: &mut W) -> Result<(), Error> {
-        let mut scratch_bytes = [0u8; 1024];
-        let mut scratch_space = ScratchSpace::new(Word::bytes_to_words_mut(&mut scratch_bytes));
-        let mut message = message::Builder::new(ScratchSpaceHeapAllocator::new(&mut scratch_space));
-
+        let mut message = message::Builder::new_default();
         {
             let mut entry = message.init_root::<entry::Builder>();
             {
                 let mut maybe_ref = entry.borrow().get_maybe_ref();
                 match self.maybe_ref {
-                    Some(ref object_digest) => {
-                        let mut object_digest_writer = maybe_ref.init_some();
+                    Some(ref object_id) => {
+                        let mut object_id_writer = maybe_ref.init_some();
                         {
-                            let mut digest_writer = object_digest_writer.borrow().get_digest()?;
-                            digest_writer.set_name(D::NAME);
-                            digest_writer.set_size(D::SIZE as u32);
+                            use std::borrow::Borrow;
+                            object_id_writer.set_bytes(object_id.as_inner().borrow().as_ref());
                         }
-                        object_digest_writer.set_bytes(object_digest.as_inner().as_bytes());
-                        let mut kind_writer = object_digest_writer.borrow().get_kind();
-                        match *object_digest {
+                        let mut kind_writer = object_id_writer.init_kind();
+                        match *object_id {
                             ObjectRef::Small(ref small) => {
                                 let mut small_writer = kind_writer.init_small();
                                 small_writer.set_size(small.size());
@@ -240,7 +254,7 @@ impl<D: Digest> Entry<D> {
                 }
             }
             {
-                let mut inode = entry.borrow().get_inode();
+                let mut inode = entry.borrow().init_inode();
                 inode.set_timestamp_ns(self.inode.timestamp_ns);
                 inode.set_generation(self.inode.generation);
                 inode.set_number(self.inode.number);
@@ -328,45 +342,101 @@ impl Certainty {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct Snapshot<D: Digest> {
+pub struct Snapshot<B: Backend> {
     path_buf: PathBuf,
     object_path: ObjectPath,
 
     inode: Inode,
-    maybe_ref: Option<ObjectRef<D>>,
+    maybe_ref: Option<ObjectRef<OwnedLocalId<B>>>,
 }
 
-impl<D: Digest> Snapshot<D> {
+impl<B: Backend> fmt::Debug for Snapshot<B>
+where
+    OwnedLocalId<B>: fmt::Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("Snapshot")
+            .field("path_buf", &self.path_buf)
+            .field("object_path", &self.object_path)
+            .field("inode", &self.inode)
+            .field("maybe_ref", &self.maybe_ref)
+            .finish()
+    }
+}
+
+impl<B: Backend> Clone for Snapshot<B> {
+    fn clone(&self) -> Self {
+        use std::borrow::Borrow;
+
+        Self {
+            path_buf: self.path_buf.clone(),
+            object_path: self.object_path.clone(),
+
+            inode: self.inode.clone(),
+            maybe_ref: self.maybe_ref
+                .as_ref()
+                .map(|objref| objref.as_ref().map(Borrow::borrow).map(ToOwned::to_owned)),
+        }
+    }
+}
+
+impl<B: Backend> Snapshot<B> {
     pub fn path(&self) -> &Path {
         &self.path_buf
     }
 
-    pub fn as_object_ref(&self) -> Option<&ObjectRef<D>> {
+    pub fn as_object_ref(&self) -> Option<&ObjectRef<OwnedLocalId<B>>> {
         self.maybe_ref.as_ref()
     }
 }
 
-#[derive(Debug, Clone)]
-pub enum Status<D: Digest> {
-    Extant(Certainty, Snapshot<D>),
-    New(Snapshot<D>),
+pub enum Status<B: Backend> {
+    Extant(Certainty, Snapshot<B>),
+    New(Snapshot<B>),
     Removed,
     Extinct,
 }
 
-pub struct Cache<D: Digest> {
-    _phantom: PhantomData<D>,
+impl<B: Backend> fmt::Debug for Status<B>
+where
+    OwnedLocalId<B>: fmt::Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match *self {
+            Status::Extant(ref certainty, ref snapshot) => f.debug_tuple("Extant")
+                .field(certainty)
+                .field(snapshot)
+                .finish(),
+            Status::New(ref snapshot) => f.debug_tuple("New").field(snapshot).finish(),
+            Status::Removed => f.debug_tuple("Removed").finish(),
+            Status::Extinct => f.debug_tuple("Extinct").finish(),
+        }
+    }
+}
+
+impl<B: Backend> Clone for Status<B> {
+    fn clone(&self) -> Self {
+        match *self {
+            Status::Extant(certainty, ref snapshot) => Status::Extant(certainty, snapshot.clone()),
+            Status::New(ref snapshot) => Status::New(snapshot.clone()),
+            Status::Removed => Status::Removed,
+            Status::Extinct => Status::Extinct,
+        }
+    }
+}
+
+pub struct Cache<B: Backend> {
+    _phantom: PhantomData<B>,
     db: Arc<RwLock<Database<Key>>>,
 }
 
-impl<D: Digest> fmt::Debug for Cache<D> {
+impl<B: Backend> fmt::Debug for Cache<B> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("Cache").field("db", &"OPAQUE").finish()
     }
 }
 
-impl<D: Digest> Clone for Cache<D> {
+impl<B: Backend> Clone for Cache<B> {
     fn clone(&self) -> Self {
         Self {
             db: self.db.clone(),
@@ -375,7 +445,7 @@ impl<D: Digest> Clone for Cache<D> {
     }
 }
 
-impl<D: Digest> From<Arc<RwLock<Database<Key>>>> for Cache<D> {
+impl<B: Backend> From<Arc<RwLock<Database<Key>>>> for Cache<B> {
     fn from(db: Arc<RwLock<Database<Key>>>) -> Self {
         Self {
             db,
@@ -384,8 +454,8 @@ impl<D: Digest> From<Arc<RwLock<Database<Key>>>> for Cache<D> {
     }
 }
 
-impl<D: Digest> Cache<D> {
-    pub fn status(&self, path: &ObjectPath) -> Result<Status<D>, Error> {
+impl<B: Backend> Cache<B> {
+    pub fn status(&self, path: &ObjectPath) -> Result<Status<B>, Error> {
         let db_lock = self.db.read().unwrap();
         let key = Key::cache(path);
         let path_buf = path.to_path();
@@ -394,7 +464,7 @@ impl<D: Digest> Cache<D> {
 
         match (entry_opt, inode_opt) {
             (Some(bytes), Some(newest)) => {
-                let mut entry = Entry::decode(&mut &bytes[..])?;
+                let mut entry = Entry::<B>::decode(&mut &bytes[..])?;
                 let is_unchanged = Inode::is_unchanged(&entry.inode, &newest);
                 Ok(Status::Extant(
                     is_unchanged,
@@ -417,14 +487,18 @@ impl<D: Digest> Cache<D> {
         }
     }
 
-    pub fn resolve(&self, snapshot: Snapshot<D>, object_digest: ObjectRef<D>) -> Result<(), Error> {
+    pub fn resolve(
+        &self,
+        snapshot: Snapshot<B>,
+        object_id: ObjectRef<OwnedLocalId<B>>,
+    ) -> Result<(), Error> {
         let newest =
             Inode::open(&snapshot.path_buf)?.ok_or_else(|| format_err!("File has been removed!"))?;
 
         match Inode::is_unchanged(&snapshot.inode, &newest) {
             Certainty::Positive => {
-                let mut entry = Entry {
-                    maybe_ref: Some(object_digest),
+                let mut entry: Entry<B> = Entry {
+                    maybe_ref: Some(object_id),
                     inode: newest,
                 };
                 let mut buf = SmallVec::<[u8; 1024]>::new();
@@ -439,44 +513,4 @@ impl<D: Digest> Cache<D> {
             Certainty::Unknown | Certainty::Negative => bail!("File has been changed!"),
         }
     }
-
-    //     pub fn status_mut(&self, path: &ObjectPath) -> Result<Status, Error> {
-    //         let db_lock = self.db.write().unwrap();
-    //         let key = Key::cache(path);
-    //         let path_buf = path.to_path();
-    //         let entry_opt = db_lock.get(ReadOptions::new(), &key)?;
-    //         let inode_opt = Inode::open(&path_buf)?;
-    //
-    //         match (entry_opt, inode_opt) {
-    //             (Some(bytes), Some(newest)) => {
-    //                 let mut entry = Entry::decode(&mut &bytes[..])?;
-    //                 let is_unchanged = Inode::is_unchanged(&entry.inode, &newest);
-    //
-    //                 match is_unchanged {
-    //                     Certainty::Positive => {}
-    //                     Certainty::Unknown | Certainty::Negative => {
-    //                         entry.maybe_ref = None;
-    //                         let mut buf = SmallVec::<[u8; 1024]>::new();
-    //                         entry.encode(&mut buf)?;
-    //                         db_lock.put(WriteOptions::new(), &key, &buf)?;
-    //                     }
-    //                 }
-    //
-    //                 Ok(Status::Modified(is_unchanged))
-    //             }
-    //             (Some(_), None) => Ok(Status::Removed),
-    //             (None, Some(inode)) => {
-    //                 let entry = Entry {
-    //                     maybe_ref: None,
-    //                     inode,
-    //                 };
-    //                 let mut buf = SmallVec::<[u8; 1024]>::new();
-    //                 entry.encode(&mut buf)?;
-    //                 db_lock.put(WriteOptions::new(), &key, &buf)?;
-    //
-    //                 Ok(Status::New)
-    //             }
-    //             (None, None) => Ok(Status::Ghost),
-    //         }
-    //     }
 }

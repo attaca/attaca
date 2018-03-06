@@ -5,14 +5,13 @@ extern crate db_key;
 #[macro_use]
 extern crate failure;
 extern crate futures_await as futures;
-#[macro_use]
-extern crate im;
 extern crate leb128;
 extern crate leveldb;
 extern crate owning_ref;
 extern crate parking_lot;
 extern crate smallvec;
 extern crate url;
+extern crate uuid;
 
 #[allow(dead_code)]
 mod branch_set_capnp {
@@ -27,6 +26,7 @@ use smallvec::SmallVec;
 
 const BRANCHES_KEY: &'static [u8] = b"BRANCHES";
 const BLOB_PREFIX: &'static [u8] = b"#";
+const UUID_KEY: &'static [u8] = b"UUID";
 
 #[derive(Debug, Clone)]
 pub enum Key {
@@ -56,6 +56,10 @@ impl ::db_key::Key for Key {
 impl Key {
     pub fn branches() -> Self {
         Key::Borrowed(BRANCHES_KEY)
+    }
+
+    pub fn uuid() -> Self {
+        Key::Borrowed(UUID_KEY)
     }
 
     pub fn blob(bytes: &[u8]) -> Self {

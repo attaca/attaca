@@ -1,34 +1,19 @@
-use std::fmt;
+use std::{fmt, borrow::Borrow};
 
-use attaca::{Handle, HandleDigest, Store, digest::Digest, object::{ObjectRef, TreeRef},
-             path::ObjectPath};
+use attaca::{digest::prelude::*, object::{CommitRef, ObjectRef, TreeRef}, path::ObjectPath,
+             store::prelude::*};
 use failure::*;
 use futures::{future, prelude::*, stream::FuturesUnordered};
 use hex;
 use itertools::{EitherOrBoth, Itertools};
 
-use {Repository, State};
-use quantified::{QuantifiedOutput, QuantifiedRef};
+use Repository;
+use state::{Head, State};
 
 /// Compare the virtual workspace to the previous commit.
 #[derive(Default, Debug, StructOpt, Builder)]
 #[structopt(name = "status")]
 pub struct StatusArgs {}
-
-impl<'r> QuantifiedOutput<'r> for StatusArgs {
-    type Output = StatusOut<'r>;
-}
-
-impl QuantifiedRef for StatusArgs {
-    fn apply_ref<'r, S, D>(self, repository: &'r Repository<S, D>) -> Result<StatusOut<'r>, Error>
-    where
-        S: Store,
-        D: Digest,
-        S::Handle: HandleDigest<D>,
-    {
-        Ok(repository.status(self))
-    }
-}
 
 #[must_use = "StatusOut contains futures which must be driven to completion!"]
 pub struct StatusOut<'r> {
@@ -52,10 +37,7 @@ pub enum Change {
     Removed(ObjectPath),
 }
 
-impl<S: Store, D: Digest> Repository<S, D>
-where
-    S::Handle: HandleDigest<D>,
-{
+impl<B: Backend> Repository<B> {
     pub fn status<'r>(&'r self, _args: StatusArgs) -> StatusOut<'r> {
         let blocking = self.get_state().compat().into_future();
         let shared = blocking.shared();
@@ -63,24 +45,30 @@ where
         let head = {
             let shared = shared.clone();
             async_block! {
-                let head_handle = await!(shared)?.head.clone();
-                let head_digest = await!(head_handle.map(|h| h.digest()))?;
-                let head_hex = head_digest.map(|d| hex::encode(d.as_inner().as_bytes()));
-                Ok(head_hex)
+                let commit_ref = match await!(shared)?.head {
+                    Head::Empty => return Ok(None),
+                    Head::Detached(ref commit_ref) => {
+                        commit_ref.as_inner().clone()
+                    }
+                    Head::Branch(ref branch) => return Ok(Some(String::from("branch/") + branch)),
+                };
+                let head_id = await!(commit_ref.id())?;
+                let head_hex = hex::encode(head_id.borrow().as_bytes());
+                Ok(Some(head_hex))
             }
         };
         let candidate = {
             let shared = shared.clone();
             async_block! {
-                let cand_handle = await!(shared)?.candidate.clone();
-                let cand_digest = await!(cand_handle.map(|h| h.digest()))?;
-                let cand_hex = cand_digest.map(|d| hex::encode(d.as_inner().as_bytes()));
-                Ok(cand_hex)
+                let maybe_cand_handle = await!(shared)?.candidate.clone();
+                let maybe_cand_id = await!(maybe_cand_handle.map(|h| h.id()))?;
+                let maybe_cand_hex = maybe_cand_id.map(|d| hex::encode(d.as_inner().borrow().as_bytes()));
+                Ok(maybe_cand_hex)
             }
         };
         let staged = async_stream_block! {
             let shared_head = await!(shared)?;
-            let staged_changes = Self::staged_changes((*shared_head).clone());
+            let staged_changes = Self::staged_changes(self.store.clone(), (*shared_head).clone());
             #[async]
             for change in staged_changes {
                 stream_yield!(change);
@@ -96,9 +84,9 @@ where
     }
 
     #[async_stream(item = self::Change)]
-    fn compare_subtrees<H: Handle>(
-        head_ref: TreeRef<H>,
-        candidate_ref: TreeRef<H>,
+    fn compare_subtrees(
+        head_ref: TreeRef<Handle<B>>,
+        candidate_ref: TreeRef<Handle<B>>,
     ) -> Result<(), Error> {
         let mut queue = FuturesUnordered::new();
         queue.push(future::ok(ObjectPath::new()).join3(head_ref.fetch(), candidate_ref.fetch()));
@@ -183,7 +171,7 @@ where
     }
 
     #[async_stream(item = self::Change)]
-    fn staged_changes(state: State<S::Handle>) -> Result<(), Error> {
+    fn staged_changes(store: Store<B>, state: State<Handle<B>>) -> Result<(), Error> {
         // We have four possible cases:
         // 1. Both HEAD and the candidate tree are `Some`. In this case we take the
         //    union of all paths in both the HEAD tree and candidate tree; then, we look at
@@ -197,7 +185,15 @@ where
         // 3. HEAD is `Some` but the candidate tree is `None`. This case is absurd.
         // 4. The candidate tree is `Some` but HEAD is `None`. In this case, everything in the
         //    candidate tree is newly added.
-        match (state.head, state.candidate) {
+        let maybe_head = match state.head {
+            Head::Empty => None,
+            Head::Detached(commit_ref) => Some(commit_ref),
+            Head::Branch(branch) => Some(CommitRef::new(
+                await!(store.load_branches())?[&branch].clone(),
+            )),
+        };
+
+        match (maybe_head, state.candidate) {
             (Some(head_ref), Some(candidate_ref)) => {
                 let head_subtree = await!(head_ref.fetch())?.as_subtree().clone();
 

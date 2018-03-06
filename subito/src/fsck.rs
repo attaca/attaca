@@ -1,31 +1,22 @@
 use std::fmt;
 
-use attaca::{store, HandleDigest, Store, digest::Digest};
+use attaca::{digest::prelude::*, store::{self, FsckError, prelude::*}};
 use failure::*;
 use futures::prelude::*;
 use hex;
 
 use Repository;
-use quantified::{QuantifiedOutput, QuantifiedRef};
+use state::Head;
 
 /// Check repository integrity, verifying hashes of all objects.
 #[derive(Debug, StructOpt, Builder)]
 #[structopt(name = "fsck")]
-pub struct FsckArgs {}
-
-impl<'r> QuantifiedOutput<'r> for FsckArgs {
-    type Output = FsckOut<'r>;
-}
-
-impl QuantifiedRef for FsckArgs {
-    fn apply_ref<'r, S, D>(self, repository: &'r Repository<S, D>) -> Result<FsckOut<'r>, Error>
-    where
-        S: Store,
-        D: Digest,
-        S::Handle: HandleDigest<D>,
-    {
-        Ok(repository.fsck(self))
-    }
+pub struct FsckArgs {
+    /// The digest function to use for checking validity.
+    #[structopt(long = "digest",
+                raw(possible_values = r#"digest_names!()"#,
+                    default_value = "::attaca::digest::Sha3Digest::SIGNATURE.name"))]
+    digest_name: String,
 }
 
 pub struct FsckMismatch {
@@ -45,16 +36,32 @@ impl<'r> fmt::Debug for FsckOut<'r> {
     }
 }
 
-impl<S: Store, D: Digest> Repository<S, D>
-where
-    S::Handle: HandleDigest<D>,
-{
-    pub fn fsck<'r>(&'r self, _args: FsckArgs) -> FsckOut<'r> {
+macro_rules! digest_fsck {
+    (@inner $name:expr, $head:expr, $($dty:ty),*) => {
+        match $name {
+            $(ref name if name == <$dty>::SIGNATURE.name => store::fsck::<$dty, _>($head),)*
+            _ => unreachable!("bad digest name"),
+        }
+    };
+    ($($stuff:tt)*) => {
+        all_digests!(digest_fsck!(@inner $($stuff)*))
+    };
+}
+
+impl<B: Backend> Repository<B> {
+    pub fn fsck<'r>(&'r self, args: FsckArgs) -> FsckOut<'r> {
         let errors = async_stream_block! {
             let state = self.get_state()?;
-            if let Some(head) = state.head {
+
+            let maybe_head = match state.head {
+                Head::Empty => None,
+                Head::Detached(commit_ref) => Some(commit_ref.as_inner().clone()),
+                Head::Branch(branch) => Some(await!(self.store.load_branches())?[&branch].clone()),
+            };
+
+            if let Some(head) = maybe_head {
                 #[async]
-                for error in store::fsck::<D, S::Handle>(head.as_inner().clone()) {
+                for error in digest_fsck!(args.digest_name, head) {
                     stream_yield!(FsckMismatch {
                         received: hex::encode(error.received.as_bytes()),
                         calculated: hex::encode(error.calculated.as_bytes()),

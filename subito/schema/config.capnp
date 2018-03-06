@@ -4,14 +4,19 @@ using import "digest.capnp".Digest;
 
 struct Store {
     url @0 :Text;
-    digest @1 :Digest;
 
     union {
-        levelDb @2 :Void;
-        ceph @3 :Void;
+        levelDb @1 :Void;
+        ceph @2 :Void;
     }
+}
+
+struct Remote {
+    name @0 :Text;
+    store @1 :Store;
 }
 
 struct Config {
     store @0 :Store;
+    remotes @1 :List(Remote);
 }

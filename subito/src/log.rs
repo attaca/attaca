@@ -1,33 +1,18 @@
-use std::{fmt, collections::HashSet};
+use std::{fmt, borrow::Borrow, collections::HashSet};
 
-use attaca::{HandleDigest, Store, digest::Digest,
-             object::{Commit, CommitBuilder, CommitRef, TreeRef}};
+use attaca::{digest::prelude::*, object::{Commit, CommitBuilder, CommitRef, TreeRef},
+             store::prelude::*};
 use failure::*;
 use futures::{stream, prelude::*};
 use hex;
 
 use Repository;
-use quantified::{QuantifiedOutput, QuantifiedRef};
+use state::Head;
 
 /// Show commit history sorted chronologically.
 #[derive(Default, Debug, StructOpt, Builder)]
 #[structopt(name = "log")]
 pub struct LogArgs {}
-
-impl<'r> QuantifiedOutput<'r> for LogArgs {
-    type Output = LogOut<'r>;
-}
-
-impl QuantifiedRef for LogArgs {
-    fn apply_ref<'r, S, D>(self, repository: &'r Repository<S, D>) -> Result<LogOut<'r>, Error>
-    where
-        S: Store,
-        D: Digest,
-        S::Handle: HandleDigest<D>,
-    {
-        Ok(repository.log(self))
-    }
-}
 
 #[must_use = "LogOut contains futures which must be driven to completion!"]
 pub struct LogOut<'r> {
@@ -42,17 +27,15 @@ impl<'r> fmt::Debug for LogOut<'r> {
     }
 }
 
-impl<S: Store, D: Digest> Repository<S, D>
-where
-    S::Handle: HandleDigest<D>,
-{
+impl<B: Backend> Repository<B> {
     pub fn log<'r>(&'r self, _args: LogArgs) -> LogOut<'r> {
         let entries = async_stream_block! {
             let state = self.get_state()?;
 
             let head = match state.head {
-                Some(head) => head,
-                None => return Ok(()),
+                Head::Empty => return Ok(()),
+                Head::Detached(head) => head,
+                Head::Branch(branch) => CommitRef::new(await!(self.store.load_branches())?[&branch].clone()),
             };
 
             let mut visited = HashSet::new();
@@ -72,18 +55,18 @@ where
                 let parent_stream =
                     stream::futures_ordered(commit.as_parents().to_owned().into_iter().map(
                         |commit_ref| {
-                            commit_ref.digest().map(|commit_digest| {
-                                CommitRef::new(hex::encode(commit_digest.as_inner().as_bytes()))
+                            commit_ref.id().map(|commit_digest| {
+                                CommitRef::new(hex::encode(commit_digest.as_inner().borrow().as_bytes()))
                             })
                         },
                     ));
                 let subtree_future = commit
                     .as_subtree()
-                    .digest()
-                    .map(|subtree_digest| TreeRef::new(hex::encode(subtree_digest.as_inner().as_bytes())));
+                    .id()
+                    .map(|subtree_digest| TreeRef::new(hex::encode(subtree_digest.as_inner().borrow().as_bytes())));
                 let digest_future = commit_ref
-                    .digest()
-                    .map(|commit_digest| CommitRef::new(hex::encode(commit_digest.as_inner().as_bytes())));
+                    .id()
+                    .map(|commit_digest| CommitRef::new(hex::encode(commit_digest.as_inner().borrow().as_bytes())));
 
                 let (digest, subtree, parents) = await!(
                     digest_future

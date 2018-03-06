@@ -1,18 +1,24 @@
-use std::{fmt, iter, any::Any, cmp::Ordering, collections::HashMap, hash::{Hash, Hasher},
-          io::{self, Read, Write}, sync::Arc};
+use std::{fmt, iter, any::Any, borrow::Borrow, cmp::Ordering, collections::HashMap,
+          hash::{Hash, Hasher}, io::{self, Read, Write}, sync::Arc};
 
 use failure::Error;
 use futures::{stream, prelude::*, sync::mpsc};
+use hex::ToHex;
+use uuid::Uuid;
 
 use canonical;
 use digest::prelude::*;
-use hex::ToHex;
+
+pub type LocalId<B> = <B as Backend>::Id;
+pub type OwnedLocalId<B> = <LocalId<B> as ToOwned>::Owned;
 
 pub type BoxedFuture<T, E> = Box<Future<Item = T, Error = E>>;
 
 pub type FutureContent<B> = BoxedFuture<Content<B>, Error>;
+pub type FutureId<B> = BoxedFuture<OwnedLocalId<B>, Error>;
 pub type FutureDigest<D> = BoxedFuture<D, Error>;
-pub type FutureResolve<B> = BoxedFuture<Option<Handle<B>>, Error>;
+pub type FutureResolveId<B> = BoxedFuture<Option<Handle<B>>, Error>;
+pub type FutureResolveDigest<B> = BoxedFuture<Option<Handle<B>>, Error>;
 pub type FutureLoadBranches<B> = BoxedFuture<HashMap<String, Handle<B>>, Error>;
 pub type FutureSwapBranches = BoxedFuture<(), Error>;
 pub type FutureFinish<B> = BoxedFuture<Handle<B>, Error>;
@@ -22,7 +28,8 @@ const FSCK_CHANNEL_SIZE: usize = 16;
 /// Convenience module reexporting all important traits.
 pub mod prelude {
     pub use super::{Backend, Builder, Content, FutureContent, FutureDigest, FutureFinish,
-                    FutureLoadBranches, FutureResolve, FutureSwapBranches, Handle, Store};
+                    FutureId, FutureLoadBranches, FutureResolveDigest, FutureResolveId,
+                    FutureSwapBranches, Handle, LocalId, OwnedLocalId, Store};
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -30,7 +37,7 @@ pub struct RawHandle(pub u64);
 
 #[derive(Debug, Default)]
 struct Inner<B: Backend> {
-    id: u64,
+    uuid: Uuid,
     backend: B,
 }
 
@@ -48,6 +55,13 @@ impl<B: Backend> Clone for Store<B> {
 }
 
 impl<B: Backend> Store<B> {
+    pub fn new(backend: B) -> Self {
+        let uuid = Uuid::from_bytes(&backend.uuid()).unwrap();
+        Self {
+            inner: Arc::new(Inner { uuid, backend }),
+        }
+    }
+
     pub fn builder(&self) -> Builder<B> {
         Builder {
             store: self.clone(),
@@ -55,10 +69,23 @@ impl<B: Backend> Store<B> {
         }
     }
 
-    pub fn resolve<D: Digest>(&self, digest: D) -> FutureResolve<B> {
+    pub fn resolve_id<I: ?Sized>(&self, id: &I) -> FutureResolveId<B>
+    where
+        I: Borrow<B::Id>,
+    {
+        let store = self.clone();
+        let future_maybe_id = store.inner.backend.resolve_id(id.borrow());
+        let blocking = async_block! {
+            let maybe_id = await!(future_maybe_id)?;
+            Ok(maybe_id.map(|id| Handle { store, id }))
+        };
+        Box::new(blocking)
+    }
+
+    pub fn resolve_digest<D: Digest>(&self, digest: D) -> FutureResolveDigest<B> {
         let store = self.clone();
         let blocking = async_block! {
-            let maybe_id = await!(store.inner.backend.resolve(D::SIGNATURE, digest.as_bytes()))?;
+            let maybe_id = await!(store.inner.backend.resolve_digest(D::SIGNATURE, digest.as_bytes()))?;
             Ok(maybe_id.map(|id| Handle { store, id }))
         };
         Box::new(blocking)
@@ -142,7 +169,7 @@ impl<B: Backend> Clone for Handle<B> {
 
 impl<B: Backend> PartialEq for Handle<B> {
     fn eq(&self, rhs: &Self) -> bool {
-        self.id == rhs.id && self.store.inner.id == rhs.store.inner.id
+        self.id == rhs.id && self.store.inner.uuid == rhs.store.inner.uuid
     }
 }
 
@@ -158,7 +185,7 @@ impl<B: Backend> Ord for Handle<B> {
     fn cmp(&self, rhs: &Self) -> Ordering {
         self.id
             .cmp(&rhs.id)
-            .then(self.store.inner.id.cmp(&rhs.store.inner.id))
+            .then(self.store.inner.uuid.cmp(&rhs.store.inner.uuid))
     }
 }
 
@@ -168,7 +195,7 @@ impl<B: Backend> Hash for Handle<B> {
         H: Hasher,
     {
         self.id.hash(hasher);
-        self.store.inner.id.hash(hasher);
+        self.store.inner.uuid.hash(hasher);
     }
 }
 
@@ -179,6 +206,15 @@ impl<B: Backend> Handle<B> {
         let blocking = async_block! {
             let content = await!(store.inner.backend.load(id))?;
             Ok(Content { store, content })
+        };
+        Box::new(blocking)
+    }
+
+    pub fn id(&self) -> FutureId<B> {
+        let store = self.store.clone();
+        let id = self.id;
+        let blocking = async_block! {
+            Ok(await!(store.inner.backend.id(id))?)
         };
         Box::new(blocking)
     }
@@ -215,9 +251,9 @@ impl<B: Backend> Extend<Handle<B>> for Builder<B> {
     where
         I: IntoIterator<Item = Handle<B>>,
     {
-        let store_id = self.store.inner.id;
+        let store_id = self.store.inner.uuid;
         self.builder.extend(iter.into_iter().map(|handle| {
-            assert!(handle.store.inner.id == store_id);
+            assert!(handle.store.inner.uuid == store_id);
             handle.id
         }));
     }
@@ -262,6 +298,8 @@ impl<D: Digest> ErasedDigest for D {
 }
 
 pub trait Backend: Send + Sync + 'static {
+    fn uuid(&self) -> [u8; 16];
+
     type Builder: Write + Extend<RawHandle> + 'static;
     type FutureFinish: Future<Item = RawHandle, Error = Error>;
     fn builder(&self) -> Self::Builder;
@@ -271,9 +309,20 @@ pub trait Backend: Send + Sync + 'static {
     type FutureContent: Future<Item = Self::Content, Error = Error>;
     fn load(&self, id: RawHandle) -> Self::FutureContent;
 
+    type Id: Id + ToOwned + ?Sized;
+    type FutureId: Future<Item = <Self::Id as ToOwned>::Owned, Error = Error>;
+    fn id(&self, id: RawHandle) -> Self::FutureId;
+
     type Digest: ErasedDigest;
     type FutureDigest: Future<Item = Self::Digest, Error = Error>;
     fn digest(&self, signature: DigestSignature, id: RawHandle) -> Self::FutureDigest;
+
+    type FutureResolveId: Future<Item = Option<RawHandle>, Error = Error>;
+    fn resolve_id(&self, bytes: &Self::Id) -> Self::FutureResolveId;
+
+    type FutureResolveDigest: Future<Item = Option<RawHandle>, Error = Error>;
+    fn resolve_digest(&self, signature: DigestSignature, bytes: &[u8])
+        -> Self::FutureResolveDigest;
 
     type FutureLoadBranches: Future<Item = HashMap<String, RawHandle>, Error = Error>;
     fn load_branches(&self) -> Self::FutureLoadBranches;
@@ -284,9 +333,6 @@ pub trait Backend: Send + Sync + 'static {
         previous: HashMap<String, RawHandle>,
         new: HashMap<String, RawHandle>,
     ) -> Self::FutureSwapBranches;
-
-    type FutureResolve: Future<Item = Option<RawHandle>, Error = Error>;
-    fn resolve(&self, signature: DigestSignature, bytes: &[u8]) -> Self::FutureResolve;
 }
 
 trait AnyBuilder: 'static {
@@ -386,6 +432,10 @@ pub struct BoxWrapped<B: Backend> {
 }
 
 impl<B: Backend> Backend for BoxWrapped<B> {
+    fn uuid(&self) -> [u8; 16] {
+        self.backend.uuid()
+    }
+
     type Builder = ErasedBuilder;
     type FutureFinish = Box<Future<Item = RawHandle, Error = Error>>;
     fn builder(&self) -> Self::Builder {
@@ -402,6 +452,16 @@ impl<B: Backend> Backend for BoxWrapped<B> {
         Box::new(self.backend.load(id).map(ErasedContent::new))
     }
 
+    type Id = [u8];
+    type FutureId = Box<Future<Item = Vec<u8>, Error = Error>>;
+    fn id(&self, id: RawHandle) -> Self::FutureId {
+        Box::new(
+            self.backend
+                .id(id)
+                .map(|id| Vec::from(id.borrow().as_ref())),
+        )
+    }
+
     type Digest = Box<Any + Send>;
     type FutureDigest = Box<Future<Item = Self::Digest, Error = Error>>;
     fn digest(&self, signature: DigestSignature, id: RawHandle) -> Self::FutureDigest {
@@ -410,6 +470,20 @@ impl<B: Backend> Backend for BoxWrapped<B> {
                 .digest(signature, id)
                 .map(|digest| -> Box<Any + Send> { Box::new(digest) }),
         )
+    }
+
+    type FutureResolveId = Box<Future<Item = Option<RawHandle>, Error = Error>>;
+    fn resolve_id(&self, bytes: &[u8]) -> Self::FutureResolveId {
+        Box::new(self.backend.resolve_id(B::Id::from_bytes(bytes).borrow()))
+    }
+
+    type FutureResolveDigest = Box<Future<Item = Option<RawHandle>, Error = Error>>;
+    fn resolve_digest(
+        &self,
+        signature: DigestSignature,
+        bytes: &[u8],
+    ) -> Self::FutureResolveDigest {
+        Box::new(self.backend.resolve_digest(signature, bytes))
     }
 
     type FutureLoadBranches = Box<Future<Item = HashMap<String, RawHandle>, Error = Error>>;
@@ -424,11 +498,6 @@ impl<B: Backend> Backend for BoxWrapped<B> {
         new: HashMap<String, RawHandle>,
     ) -> Self::FutureSwapBranches {
         Box::new(self.backend.swap_branches(old, new))
-    }
-
-    type FutureResolve = Box<Future<Item = Option<RawHandle>, Error = Error>>;
-    fn resolve(&self, signature: DigestSignature, bytes: &[u8]) -> Self::FutureResolve {
-        Box::new(self.backend.resolve(signature, bytes))
     }
 }
 
@@ -445,16 +514,23 @@ pub struct ErasedBackend {
             FutureFinish = Box<Future<Item = RawHandle, Error = Error>>,
             Content = ErasedContent,
             FutureContent = Box<Future<Item = ErasedContent, Error = Error>>,
+            Id = [u8],
+            FutureId = Box<Future<Item = Vec<u8>, Error = Error>>,
             Digest = Box<Any + Send>,
             FutureDigest = Box<Future<Item = Box<Any + Send>, Error = Error>>,
             FutureLoadBranches = Box<Future<Item = HashMap<String, RawHandle>, Error = Error>>,
             FutureSwapBranches = Box<Future<Item = (), Error = Error>>,
-            FutureResolve = Box<Future<Item = Option<RawHandle>, Error = Error>>,
+            FutureResolveId = Box<Future<Item = Option<RawHandle>, Error = Error>>,
+            FutureResolveDigest = Box<Future<Item = Option<RawHandle>, Error = Error>>,
         >,
     >,
 }
 
 impl Backend for ErasedBackend {
+    fn uuid(&self) -> [u8; 16] {
+        self.boxed.uuid()
+    }
+
     type Builder = ErasedBuilder;
     type FutureFinish = Box<Future<Item = RawHandle, Error = Error>>;
     fn builder(&self) -> Self::Builder {
@@ -470,10 +546,30 @@ impl Backend for ErasedBackend {
         self.boxed.load(id)
     }
 
+    type Id = [u8];
+    type FutureId = Box<Future<Item = Vec<u8>, Error = Error>>;
+    fn id(&self, id: RawHandle) -> Self::FutureId {
+        self.boxed.id(id)
+    }
+
     type Digest = Box<Any + Send>;
     type FutureDigest = Box<Future<Item = Self::Digest, Error = Error>>;
     fn digest(&self, signature: DigestSignature, id: RawHandle) -> Self::FutureDigest {
         self.boxed.digest(signature, id)
+    }
+
+    type FutureResolveId = Box<Future<Item = Option<RawHandle>, Error = Error>>;
+    fn resolve_id(&self, bytes: &[u8]) -> Self::FutureResolveId {
+        self.boxed.resolve_id(bytes)
+    }
+
+    type FutureResolveDigest = Box<Future<Item = Option<RawHandle>, Error = Error>>;
+    fn resolve_digest(
+        &self,
+        signature: DigestSignature,
+        bytes: &[u8],
+    ) -> Self::FutureResolveDigest {
+        self.boxed.resolve_digest(signature, bytes)
     }
 
     type FutureLoadBranches = Box<Future<Item = HashMap<String, RawHandle>, Error = Error>>;
@@ -488,11 +584,6 @@ impl Backend for ErasedBackend {
         new: HashMap<String, RawHandle>,
     ) -> Self::FutureSwapBranches {
         self.boxed.swap_branches(old, new)
-    }
-
-    type FutureResolve = Box<Future<Item = Option<RawHandle>, Error = Error>>;
-    fn resolve(&self, signature: DigestSignature, bytes: &[u8]) -> Self::FutureResolve {
-        self.boxed.resolve(signature, bytes)
     }
 }
 
@@ -699,6 +790,12 @@ pub mod dummy {
     #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct DummyDigest;
 
+    impl AsRef<[u8]> for DummyDigest {
+        fn as_ref(&self) -> &[u8] {
+            Default::default()
+        }
+    }
+
     impl Digest for DummyDigest {
         const SIGNATURE: DigestSignature = DigestSignature {
             name: "DUMMY",
@@ -713,26 +810,16 @@ pub mod dummy {
         fn from_bytes(_: &[u8]) -> Self {
             Default::default()
         }
-
-        fn as_bytes(&self) -> &[u8] {
-            Default::default()
-        }
-    }
-
-    impl ErasedDigest for DummyDigest {
-        fn into_digest<D: Digest>(self) -> Option<D> {
-            if D::SIGNATURE == Self::SIGNATURE {
-                Some(D::from_bytes(self.as_bytes()))
-            } else {
-                None
-            }
-        }
     }
 
     #[derive(Debug, Default)]
     pub struct DummyBackend;
 
     impl Backend for DummyBackend {
+        fn uuid(&self) -> [u8; 16] {
+            [0; 16]
+        }
+
         type Builder = DummyBuilder;
         type FutureFinish = Box<Future<Item = RawHandle, Error = Error>>;
         fn builder(&self) -> Self::Builder {
@@ -748,9 +835,29 @@ pub mod dummy {
             unimplemented!();
         }
 
+        type Id = Box<[u8]>;
+        type FutureId = Box<Future<Item = Self::Id, Error = Error>>;
+        fn id(&self, id: RawHandle) -> Self::FutureId {
+            unimplemented!();
+        }
+
         type Digest = DummyDigest;
         type FutureDigest = Box<Future<Item = Self::Digest, Error = Error>>;
         fn digest(&self, signature: DigestSignature, id: RawHandle) -> Self::FutureDigest {
+            unimplemented!();
+        }
+
+        type FutureResolveId = Box<Future<Item = Option<RawHandle>, Error = Error>>;
+        fn resolve_id(&self, bytes: &[u8]) -> Self::FutureResolveId {
+            unimplemented!();
+        }
+
+        type FutureResolveDigest = Box<Future<Item = Option<RawHandle>, Error = Error>>;
+        fn resolve_digest(
+            &self,
+            signature: DigestSignature,
+            bytes: &[u8],
+        ) -> Self::FutureResolveDigest {
             unimplemented!();
         }
 
@@ -765,11 +872,6 @@ pub mod dummy {
             previous: HashMap<String, RawHandle>,
             new: HashMap<String, RawHandle>,
         ) -> Self::FutureSwapBranches {
-            unimplemented!();
-        }
-
-        type FutureResolve = Box<Future<Item = Option<RawHandle>, Error = Error>>;
-        fn resolve(&self, signature: DigestSignature, bytes: &[u8]) -> Self::FutureResolve {
             unimplemented!();
         }
     }

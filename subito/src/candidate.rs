@@ -1,15 +1,16 @@
-use std::{fmt, ffi::OsStr, fs::File, path::PathBuf};
+use std::{fmt, borrow::Borrow, ffi::OsStr, fs::File, path::PathBuf};
 
-use attaca::{HandleDigest, Store, batch::{Batch as ObjectBatch, Operation as ObjectOperation},
-             digest::Digest, hierarchy::Hierarchy,
-             object::{self, CommitAuthor, CommitBuilder, ObjectRef, TreeBuilder}, path::ObjectPath};
+use attaca::{batch::{Batch as ObjectBatch, Operation as ObjectOperation}, digest::prelude::*,
+             hierarchy::Hierarchy,
+             object::{self, CommitAuthor, CommitBuilder, CommitRef, ObjectRef, TreeBuilder},
+             path::ObjectPath, store::prelude::*};
 use failure::{self, *};
 use futures::{stream, future::Either, prelude::*};
 use ignore::WalkBuilder;
 
 use {Repository, State};
 use cache::{Cache, Certainty, Status};
-use quantified::{QuantifiedOutput, QuantifiedRefMut};
+use state::Head;
 
 /// Save the virtual workspace as a child commit of the previous commit.
 #[derive(Debug, StructOpt, Builder)]
@@ -30,22 +31,6 @@ pub struct CommitArgs {
     /// Force a commit regardless of warnings.
     #[structopt(long = "force")]
     pub force: bool,
-}
-
-impl<'r> QuantifiedOutput<'r> for CommitArgs {
-    type Output = CommitOut<'r>;
-}
-
-impl QuantifiedRefMut for CommitArgs {
-    fn apply_mut<'r, S: Store, D: Digest>(
-        self,
-        repository: &'r mut Repository<S, D>,
-    ) -> Result<CommitOut<'r>, Error>
-    where
-        S::Handle: HandleDigest<D>,
-    {
-        Ok(repository.commit(self))
-    }
 }
 
 #[must_use = "CommitOut contains futures which must be driven to completion!"]
@@ -76,22 +61,6 @@ pub struct StageArgs {
     /// Do not track progress.
     #[structopt(short = "q", long = "quiet")]
     pub quiet: bool,
-}
-
-impl<'r> QuantifiedOutput<'r> for StageArgs {
-    type Output = StageOut<'r>;
-}
-
-impl QuantifiedRefMut for StageArgs {
-    fn apply_mut<'r, S: Store, D: Digest>(
-        self,
-        repository: &'r mut Repository<S, D>,
-    ) -> Result<StageOut<'r>, Error>
-    where
-        S::Handle: HandleDigest<D>,
-    {
-        Ok(repository.stage(self))
-    }
 }
 
 #[must_use = "StageOut contains futures which must be driven to completion!"]
@@ -143,13 +112,12 @@ impl BatchOp {
     }
 }
 
-impl<S: Store, D: Digest> Repository<S, D>
-where
-    S::Handle: HandleDigest<D>,
-{
+impl<B: Backend> Repository<B> {
     pub fn commit<'r>(&'r mut self, args: CommitArgs) -> CommitOut<'r> {
         let blocking = async_block! {
             let state = self.get_state()?;
+            let branches = await!(self.store.load_branches())?;
+
             let candidate = state.candidate.clone().ok_or_else(|| {
                 format_err!(
                     "No virtual workspace to commit. \
@@ -157,7 +125,12 @@ where
                 )
             })?;
 
-            let maybe_head = await!(state.head.clone().map(|head_ref| head_ref.fetch()))?;
+            let maybe_head_ref = match state.head {
+                Head::Empty => None,
+                Head::Detached(ref commit_ref) => Some(commit_ref.clone()),
+                Head::Branch(ref branch) => Some(CommitRef::new(branches[branch].clone())),
+            };
+            let maybe_head = await!(maybe_head_ref.as_ref().map(CommitRef::fetch))?;
 
             if let Some(ref head_commit) = maybe_head {
                 ensure!(
@@ -174,7 +147,7 @@ where
                 }
             } else {
                 let mut builder = CommitBuilder::new();
-                builder.parents(state.head.clone().into_iter());
+                builder.parents(maybe_head_ref.into_iter());
                 builder
             };
 
@@ -191,13 +164,21 @@ where
                 });
             }
 
-            let commit_ref = await!(commit_builder
-                .into_commit()?
-                .send(&self.store))?;
-            self.set_state(&State {
-                head: Some(commit_ref),
-                ..state
-            })?;
+            let commit_ref = await!(commit_builder.into_commit()?.send(&self.store))?;
+
+            match state.head {
+                Head::Empty | Head::Detached(_) => {
+                    self.set_state(&State {
+                        head: Head::Detached(commit_ref),
+                        ..state
+                    })?;
+                }
+                Head::Branch(branch) => {
+                    let mut new_branches = branches.clone();
+                    new_branches.insert(branch, commit_ref.into_inner());
+                    await!(self.store.swap_branches(branches, new_branches))?;
+                }
+            }
 
             Ok(())
         };
@@ -228,21 +209,18 @@ where
 
     #[async]
     fn do_process_file(
-        store: S,
-        cache: Cache<D>,
+        store: Store<B>,
+        cache: Cache<B>,
         absolute_path: PathBuf,
         object_path: ObjectPath,
-    ) -> Result<ObjectRef<S::Handle>, Error> {
+    ) -> Result<ObjectRef<Handle<B>>, Error> {
         let status = cache
             .status(&object_path)
             .context("Error during cache lookup for file")?;
 
         let pre_resolution = match status {
             Status::Extant(Certainty::Positive, ref snapshot) => {
-                let resolution = snapshot
-                    .as_object_ref()
-                    .cloned()
-                    .map(|odr| odr.resolve(&store));
+                let resolution = snapshot.as_object_ref().map(|odr| odr.resolve_id(&store));
                 resolution
             }
             _ => None,
@@ -261,9 +239,9 @@ where
                 let mut file = File::open(&absolute_path).context("Error opening local file")?;
                 let objref =
                     await!(object::share(file, store)).context("Error hashing/sending local file")?;
-                let digest = await!(objref.digest()).context("Error fetching object digest")?;
+                let id = await!(objref.id()).context("Error fetching object digest")?;
                 cache
-                    .resolve(snapshot, digest)
+                    .resolve(snapshot, id)
                     .context("Error during cache resolution for file")?;
 
                 Ok(objref)
@@ -274,11 +252,11 @@ where
 
     #[async]
     fn do_process(
-        store: S,
-        cache: Cache<D>,
+        store: Store<B>,
+        cache: Cache<B>,
         absolute_path: PathBuf,
         object_path: ObjectPath,
-    ) -> Result<Option<ObjectRef<S::Handle>>, Error> {
+    ) -> Result<Option<ObjectRef<Handle<B>>>, Error> {
         if !absolute_path.exists() {
             return Ok(None);
         }
@@ -293,7 +271,7 @@ where
             ))?;
             Ok(Some(objref))
         } else {
-            let mut object_batch = ObjectBatch::<S::Handle>::new();
+            let mut object_batch = ObjectBatch::<B>::new();
             // TODO #33
             let walk = WalkBuilder::new(&absolute_path).build();
 
@@ -327,7 +305,7 @@ where
         &'r self,
         absolute_path: PathBuf,
         object_path: ObjectPath,
-    ) -> impl Future<Item = Option<ObjectRef<S::Handle>>, Error = Error> {
+    ) -> impl Future<Item = Option<ObjectRef<Handle<B>>>, Error = Error> {
         Self::do_process(
             self.store.clone(),
             self.cache.clone(),
@@ -338,9 +316,9 @@ where
 
     fn do_process_operation<'r>(
         &'r self,
-        hierarchy: Hierarchy<S::Handle>,
+        hierarchy: Hierarchy<B>,
         batch_op: BatchOp,
-    ) -> Result<impl Future<Item = ObjectOperation<S::Handle>, Error = Error>, Error> {
+    ) -> Result<impl Future<Item = ObjectOperation<B>, Error = Error>, Error> {
         let BatchOp { path: raw_path, op } = batch_op;
 
         ensure!(
@@ -390,9 +368,9 @@ where
 
     fn process_operation<'r>(
         &'r self,
-        hierarchy: Hierarchy<S::Handle>,
+        hierarchy: Hierarchy<B>,
         batch_op: BatchOp,
-    ) -> impl Future<Item = ObjectOperation<S::Handle>, Error = Error> {
+    ) -> impl Future<Item = ObjectOperation<B>, Error = Error> {
         self.do_process_operation(hierarchy, batch_op)
             .into_future()
             .flatten()
@@ -404,7 +382,13 @@ where
     {
         async_block! {
             let state = self.get_state()?;
-            let hierarchy = match state.head {
+            let branches = await!(self.store.load_branches())?;
+            let maybe_head_ref = match state.head {
+                Head::Empty => None,
+                Head::Detached(ref commit_ref) => Some(commit_ref.clone()),
+                Head::Branch(ref branch) => Some(CommitRef::new(branches[branch].clone())),
+            };
+            let hierarchy = match maybe_head_ref {
                 Some(head_ref) => Hierarchy::from(
                     await!(head_ref.fetch())
                         .context("Error while fetching head")?
@@ -418,7 +402,7 @@ where
                     .into_iter()
                     .map(|batch_op| self.process_operation(hierarchy.clone(), batch_op)),
             );
-            let batch: ObjectBatch<S::Handle> =
+            let batch: ObjectBatch<B> =
                 await!(queue.fold(ObjectBatch::new(), |batch, op| batch.add(op)))
                     .context("Error while batching stage operations")?;
             await!(self.stage_objects(batch)).context("Error while staging objects")?;
@@ -429,7 +413,7 @@ where
 
     pub fn stage_objects<'r>(
         &'r mut self,
-        batch: ObjectBatch<S::Handle>,
+        batch: ObjectBatch<B>,
     ) -> impl Future<Item = (), Error = Error> + 'r {
         async_block! {
             let state = self.get_state().context("Error while fetching state")?;
@@ -442,7 +426,7 @@ where
 
             let new_candidate_built = await!(batch.run(self.store.clone(), tree_builder))
                 .context("Error running batch on candidate")?;
-            let candidate = if new_candidate_built.is_empty() && state.head.is_none() {
+            let candidate = if new_candidate_built.is_empty() && state.head.is_empty() {
                 None
             } else {
                 Some(await!(new_candidate_built.as_tree().send(&self.store))

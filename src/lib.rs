@@ -27,6 +27,7 @@ extern crate nom;
 extern crate ntriple;
 extern crate parking_lot;
 extern crate sha3;
+extern crate uuid;
 
 pub mod batch;
 pub mod canonical;

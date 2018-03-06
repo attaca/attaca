@@ -1,164 +1,226 @@
-use std::io::{BufRead, Write};
+use std::{collections::HashMap, io::{BufRead, Write}};
 
-use attaca::{Handle, HandleDigest, Store, digest::Digest, object::{CommitRef, TreeRef}};
+use attaca::{digest::prelude::*, object::{CommitRef, TreeRef}, store::prelude::*};
 use capnp::{message, serialize_packed};
 use failure::*;
-use futures::prelude::*;
+use futures::{stream, prelude::*};
 
 #[derive(Debug, Clone)]
-pub struct State<H: Handle> {
-    pub candidate: Option<TreeRef<H>>,
-    pub head: Option<CommitRef<H>>,
-    pub active_branch: Option<String>,
+pub enum Head<H> {
+    Empty,
+    Detached(CommitRef<H>),
+    Branch(String),
 }
 
-impl<H: Handle> Default for State<H> {
+impl<H> Default for Head<H> {
     fn default() -> Self {
-        Self {
-            candidate: None,
-            head: None,
-            active_branch: None,
+        Head::Empty
+    }
+}
+
+impl<H> Head<H> {
+    pub fn is_empty(&self) -> bool {
+        match *self {
+            Head::Empty => true,
+            _ => false,
+        }
+    }
+
+    fn resolve_id<B: Backend>(
+        &self,
+        store: &Store<B>,
+    ) -> Box<Future<Item = Option<Head<Handle<B>>>, Error = Error>>
+    where
+        H: ::std::borrow::Borrow<B::Id>,
+    {
+        match *self {
+            Head::Empty => Box::new(Ok(Some(Head::Empty)).into_future()),
+            Head::Detached(ref commit_id) => Box::new(
+                commit_id
+                    .resolve_id(store)
+                    .map(|opt| opt.map(Head::Detached)),
+            ),
+            Head::Branch(ref branch) => {
+                Box::new(Ok(Some(Head::Branch(branch.clone()))).into_future())
+            }
         }
     }
 }
 
-impl<H: Handle> State<H> {
-    pub fn decode<R, S, D>(mut reader: R, store: S) -> impl Future<Item = Self, Error = Error>
+#[derive(Debug, Clone)]
+pub struct State<H> {
+    pub candidate: Option<TreeRef<H>>,
+    pub head: Head<H>,
+    pub remote_refs: HashMap<String, HashMap<String, CommitRef<H>>>,
+}
+
+impl<H> Default for State<H> {
+    fn default() -> Self {
+        Self {
+            candidate: None,
+            head: Head::Empty,
+            remote_refs: HashMap::new(),
+        }
+    }
+}
+
+#[async]
+fn resolve_refs<B: Backend>(
+    raw: Vec<(String, Vec<(String, OwnedLocalId<B>)>)>,
+    store: Store<B>,
+) -> Result<HashMap<String, HashMap<String, CommitRef<Handle<B>>>>, Error> {
+    let mut remote_refs = HashMap::new();
+    for (remote_name, branch_ids) in raw {
+        let mut branches = HashMap::new();
+        for (branch_name, commit_id) in branch_ids {
+            let commit_handle =
+                await!(store.resolve_id(&commit_id))?.ok_or_else(|| format_err!("Missing ref!"))?;
+            let commit_ref = CommitRef::new(commit_handle);
+            branches.insert(branch_name, commit_ref);
+        }
+        remote_refs.insert(remote_name, branches);
+    }
+
+    Ok(remote_refs)
+}
+
+impl<B: Backend> State<Handle<B>> {
+    pub fn decode<R>(mut reader: R, store: Store<B>) -> impl Future<Item = Self, Error = Error>
     where
         R: BufRead,
-        S: Store<Handle = H>,
-        D: Digest,
-        H: HandleDigest<D>,
     {
-        use state_capnp::state::{self, active_branch, candidate, head};
+        use state_capnp::state::{self, candidate, head};
 
         async_block! {
             let future_head;
             let future_candidate;
-            let active_branch;
+            let future_remote_refs;
 
             {
                 let message_reader =
                     serialize_packed::read_message(&mut reader, message::ReaderOptions::new())?;
                 let state = message_reader.get_root::<state::Reader>()?;
 
-                let digest = state.get_digest()?;
-                let name = digest.get_name()?;
-                let size = digest.get_size() as usize;
-
-                ensure!(
-                    name == D::NAME && size == D::SIZE,
-                    "Digest mismatch: expected {}/{}, got {}/{}",
-                    D::NAME,
-                    D::SIZE,
-                    name,
-                    size
-                    );
-
-                let head_digest = match state.get_head().which()? {
-                    head::Some(bytes_res) => {
-                        let bytes = bytes_res?;
-                        ensure!(
-                            bytes.len() == D::SIZE,
-                            "Invalid head digest: expected {} bytes, found {}",
-                            D::SIZE,
-                            bytes.len()
-                            );
-                        Some(D::from_bytes(bytes))
+                let head_id = match state.get_head().which()? {
+                    head::Empty(()) => Head::Empty,
+                    head::Detached(bytes_res) => {
+                        Head::Detached(CommitRef::new(LocalId::<B>::from_bytes(bytes_res?)))
                     }
-                    head::None(()) => None,
+                    head::Branch(name) => Head::Branch(String::from(name?)),
                 };
-                future_head = head_digest.map(|dg| {
-                    store
-                        .resolve(&dg)
-                        .and_then(|rs| rs.ok_or_else(|| format_err!("Head does not exist!")))
-                        .map(CommitRef::new)
-                });
-                let candidate_digest = match state.get_candidate().which()? {
+
+                let candidate_id = match state.get_candidate().which()? {
                     candidate::Some(bytes_res) => {
-                        let bytes = bytes_res?;
-                        ensure!(
-                            bytes.len() == D::SIZE,
-                            "Invalid candidate digest: expected {} bytes, found {}",
-                            D::SIZE,
-                            bytes.len()
-                            );
-                        Some(D::from_bytes(bytes))
+                        Some(TreeRef::new(LocalId::<B>::from_bytes(bytes_res?)))
                     }
                     candidate::None(()) => None,
                 };
-                future_candidate = candidate_digest.map(|dg| {
-                    store
-                        .resolve(&dg)
+
+                let remote_refs = state
+                    .get_remote_refs()?
+                    .iter()
+                    .map(|remote| {
+                        let branches = remote
+                            .get_branches()?
+                            .iter()
+                            .map(|branch| {
+                                let name = String::from(branch.get_name()?);
+                                let commit_id = LocalId::<B>::from_bytes(branch.get_commit_id()?);
+                                Ok((name, commit_id))
+                            })
+                            .collect::<Result<Vec<_>, Error>>()?;
+
+                        Ok((String::from(remote.get_name()?), branches))
+                    })
+                    .collect::<Result<Vec<_>, Error>>()?;
+
+                future_head = head_id
+                    .resolve_id(&store)
+                    .and_then(|rs| rs.ok_or_else(|| format_err!("Head does not exist!")));
+                future_candidate = candidate_id.map(|id| {
+                    id.resolve_id(&store)
                         .and_then(|rs| rs.ok_or_else(|| format_err!("Candidate does not exist!")))
-                        .map(TreeRef::new)
                 });
-                active_branch = match state.get_active_branch().which()? {
-                    active_branch::Some(name) => Some(String::from(name?)),
-                    active_branch::None(()) => None,
-                };
+                future_remote_refs = resolve_refs(remote_refs, store.clone());
             }
 
-            let (candidate, head) = await!(future_candidate.join(future_head))?;
+            let (candidate, head, remote_refs) =
+                await!(future_candidate.join3(future_head, future_remote_refs))?;
+
             Ok(State {
                 candidate,
                 head,
-                active_branch,
+                remote_refs,
             })
         }
     }
 
-    pub fn encode<'b, W: Write + 'b, D: Digest>(
+    pub fn encode<'b, W: Write + 'b>(
         &self,
         mut buf: W,
-    ) -> impl Future<Item = (), Error = Error> + 'b
-    where
-        H: HandleDigest<D>,
-    {
+    ) -> impl Future<Item = (), Error = Error> + 'b {
         use state_capnp::state;
 
         let state = self.clone();
         async_block! {
-            let joined_future = state.candidate
-                .as_ref()
-                .map(TreeRef::as_inner)
-                .map(HandleDigest::digest)
-                .join(
-                    state.head
-                        .as_ref()
-                        .map(CommitRef::as_inner)
-                        .map(HandleDigest::digest),
-                );
-            let (candidate_digest, head_digest) = await!(joined_future)?;
+            let head = match state.head {
+                Head::Empty => Head::Empty,
+                Head::Detached(commit_ref) => Head::Detached(await!(commit_ref.id())?),
+                Head::Branch(branch) => Head::Branch(branch),
+            };
+
+            let candidate = match state.candidate {
+                Some(tree_ref) => Some(await!(tree_ref.id())?.into_inner()),
+                None => None,
+            };
+
+            let mut remote_refs = HashMap::new();
+            for (remote_name, remote_branches) in state.remote_refs {
+                let mut branches = HashMap::new();
+                for (branch_name, commit_ref) in remote_branches {
+                    let commit_id = await!(commit_ref.id())?.into_inner();
+                    branches.insert(branch_name, commit_id);
+                }
+                remote_refs.insert(remote_name, branches);
+            }
 
             let mut message = message::Builder::new_default();
 
             {
                 let mut state_builder = message.init_root::<state::Builder>();
                 {
-                    let mut digest = state_builder.borrow().get_digest()?;
-                    digest.set_name(D::NAME);
-                    digest.set_size(D::SIZE as u32);
-                }
-                {
-                    let mut candidate = state_builder.borrow().get_candidate();
-                    match candidate_digest {
-                        Some(ref digest) => candidate.set_some(digest.as_bytes()),
-                        None => candidate.set_none(()),
+                    let mut candidate_builder = state_builder.borrow().get_candidate();
+                    {
+                        use std::borrow::Borrow;
+                        match candidate {
+                            Some(id) => candidate_builder.set_some(id.borrow().as_bytes()),
+                            None => candidate_builder.set_none(()),
+                        }
                     }
                 }
                 {
-                    let mut head = state_builder.borrow().get_head();
-                    match head_digest {
-                        Some(ref digest) => head.set_some(digest.as_bytes()),
-                        None => head.set_none(()),
+                    let mut head_builder = state_builder.borrow().get_head();
+                    {
+                        use std::borrow::Borrow;
+                        match head {
+                            Head::Empty => head_builder.set_empty(()),
+                            Head::Detached(id) => head_builder.set_detached(id.as_inner().borrow().as_bytes()),
+                            Head::Branch(branch) => head_builder.set_branch(&branch),
+                        }
                     }
                 }
                 {
-                    let mut active_branch = state_builder.borrow().get_active_branch();
-                    match state.active_branch {
-                        Some(ref name) => active_branch.set_some(name),
-                        None => active_branch.set_none(()),
+                    let mut remote_refs_builder =
+                        state_builder.init_remote_refs(remote_refs.len() as u32);
+                    for (i, (remote_name, branches)) in remote_refs.into_iter().enumerate() {
+                        let mut remote_builder = remote_refs_builder.borrow().get(i as u32);
+                        remote_builder.set_name(&remote_name);
+                        let mut remote_branches_builder = remote_builder.init_branches(branches.len() as u32);
+                        for (i, (branch_name, commit_id)) in branches.into_iter().enumerate() {
+                            let mut branch_builder = remote_branches_builder.borrow().get(i as u32);
+                            branch_builder.set_name(&branch_name);
+                            branch_builder.set_commit_id({ use std::borrow::Borrow; commit_id.borrow().as_bytes() });
+                        }
                     }
                 }
             }

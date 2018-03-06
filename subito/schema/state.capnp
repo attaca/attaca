@@ -1,22 +1,26 @@
 @0xbbef9cd0d77d3105;
 
-using import "digest.capnp".Digest;
+struct Branch {
+    name @0 :Text;
+    commitId @1 :Data;
+}
+
+struct RemoteRefs {
+    name @0 :Text;
+    branches @1 :List(Branch);
+}
 
 struct State {
-    digest @0 :Digest;
-
     candidate :union {
-        none @1 :Void;
-        some @2 :Data;
+        none @0 :Void;
+        some @1 :Data;
     }
 
     head :union {
-        none @3 :Void;
-        some @4 :Data;
+        empty @2 :Void;
+        detached @3 :Data;
+        branch @4 :Text;
     }
 
-    activeBranch :union {
-        none @5 :Void;
-        some @6 :Text;
-    }
+    remoteRefs @5 :List(RemoteRefs);
 }

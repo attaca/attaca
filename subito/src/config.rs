@@ -1,6 +1,6 @@
-use std::io::{BufRead, Write};
+use std::{collections::HashMap, io::{BufRead, Write}};
 
-use attaca::{HandleDigest, Store, digest::Digest};
+use attaca::store::prelude::*;
 use capnp::{message, serialize_packed};
 use failure::*;
 use leveldb::{kv::KV, options::{ReadOptions, WriteOptions}};
@@ -14,19 +14,18 @@ use config_capnp::*;
 #[derive(Debug, Clone, Copy)]
 pub enum StoreKind {
     LevelDb,
-    Ceph,
 }
 
 #[derive(Debug, Clone)]
 pub struct StoreConfig {
     pub url: Url,
     pub kind: StoreKind,
-    pub digest: (String, usize),
 }
 
 #[derive(Debug, Clone)]
 pub struct Config {
     pub store: StoreConfig,
+    pub remotes: HashMap<String, StoreConfig>,
 }
 
 impl Config {
@@ -39,18 +38,32 @@ impl Config {
             let url = Url::parse(store_reader.get_url()?)?;
             let kind = match store_reader.which()? {
                 store::LevelDb(()) => StoreKind::LevelDb,
-                store::Ceph(()) => StoreKind::Ceph,
+                store::Ceph(()) => unimplemented!(),
             };
-            let digest = {
-                let digest_reader = store_reader.get_digest()?;
-                let name = String::from(digest_reader.get_name()?);
-                let size = digest_reader.get_size() as usize;
-                (name, size)
-            };
-            StoreConfig { url, kind, digest }
+            StoreConfig { url, kind }
         };
 
-        Ok(Config { store })
+        let remotes = {
+            let remotes_reader = config_reader.get_remotes()?;
+            remotes_reader
+                .iter()
+                .map(|remote_reader| {
+                    let name = String::from(remote_reader.get_name()?);
+                    let store = {
+                        let store_reader = remote_reader.get_store()?;
+                        let url = Url::parse(store_reader.get_url()?)?;
+                        let kind = match store_reader.which()? {
+                            store::LevelDb(()) => StoreKind::LevelDb,
+                            store::Ceph(()) => unimplemented!(),
+                        };
+                        StoreConfig { url, kind }
+                    };
+                    Ok((name, store))
+                })
+                .collect::<Result<HashMap<_, _>, Error>>()?
+        };
+
+        Ok(Config { store, remotes })
     }
 
     pub fn encode<W: Write>(&self, writer: &mut W) -> Result<(), Error> {
@@ -62,12 +75,24 @@ impl Config {
                 let mut store_builder = config_builder.borrow().init_store();
                 match self.store.kind {
                     StoreKind::LevelDb => store_builder.set_level_db(()),
-                    StoreKind::Ceph => store_builder.set_ceph(()),
                 }
                 store_builder.set_url(self.store.url.as_str());
-                let mut digest_builder = store_builder.init_digest();
-                digest_builder.set_name(&self.store.digest.0);
-                digest_builder.set_size(self.store.digest.1 as u32);
+            }
+            {
+                let mut remotes_builder = config_builder
+                    .borrow()
+                    .init_remotes(self.remotes.len() as u32);
+                for (i, (name, remote)) in self.remotes.iter().enumerate() {
+                    let mut remote_builder = remotes_builder.borrow().get(i as u32);
+                    remote_builder.set_name(name);
+                    {
+                        let mut store_builder = remote_builder.get_store()?;
+                        match remote.kind {
+                            StoreKind::LevelDb => store_builder.set_level_db(()),
+                        }
+                        store_builder.set_url(remote.url.as_str());
+                    }
+                }
             }
         }
 
@@ -77,10 +102,7 @@ impl Config {
     }
 }
 
-impl<S: Store, D: Digest> Repository<S, D>
-where
-    S::Handle: HandleDigest<D>,
-{
+impl<B: Backend> Repository<B> {
     pub fn get_config(&self) -> Result<Config, Error> {
         let raw_config = self.db
             .read()

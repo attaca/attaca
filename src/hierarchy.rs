@@ -9,9 +9,17 @@ use object::{FutureTree, ObjectRef, Tree, TreeRef};
 use path::ObjectPath;
 use store::prelude::*;
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Hierarchy<B: Backend> {
     root: Option<Arc<RwLock<Node<B>>>>,
+}
+
+impl<B: Backend> Clone for Hierarchy<B> {
+    fn clone(&self) -> Self {
+        Self {
+            root: self.root.clone(),
+        }
+    }
 }
 
 impl<B: Backend> From<TreeRef<Handle<B>>> for Hierarchy<B> {

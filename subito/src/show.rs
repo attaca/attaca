@@ -1,12 +1,12 @@
 use std::{fmt, collections::BTreeMap};
 
-use attaca::{HandleDigest, Store, digest::Digest, object::ObjectRef};
+use attaca::{digest::prelude::*, object::{CommitRef, ObjectRef}, store::prelude::*};
 use failure::Error;
 use futures::prelude::*;
 use hex;
 
 use Repository;
-use quantified::{QuantifiedOutput, QuantifiedRef};
+use state::Head;
 
 #[derive(Debug, Clone, StructOpt)]
 pub enum ShowCommand {
@@ -42,21 +42,6 @@ pub struct ShowArgs {
     pub command: Option<ShowCommand>,
 }
 
-impl<'r> QuantifiedOutput<'r> for ShowArgs {
-    type Output = ShowOut<'r>;
-}
-
-impl QuantifiedRef for ShowArgs {
-    fn apply_ref<'r, S, D>(self, repository: &'r Repository<S, D>) -> Result<ShowOut<'r>, Error>
-    where
-        S: Store,
-        D: Digest,
-        S::Handle: HandleDigest<D>,
-    {
-        Ok(repository.show(self))
-    }
-}
-
 pub enum Show {
     Small {
         size: usize,
@@ -84,14 +69,16 @@ impl<'r> fmt::Debug for ShowOut<'r> {
     }
 }
 
-impl<S: Store, D: Digest> Repository<S, D>
-where
-    S::Handle: HandleDigest<D>,
-{
+impl<B: Backend> Repository<B> {
     pub fn show<'r>(&'r self, _args: ShowArgs) -> ShowOut<'r> {
         let blocking = async_block! {
             let state = self.get_state()?;
-            let subtree = await!(await!(state.head.unwrap().fetch())?.as_subtree().fetch())?;
+            let head = match state.head {
+                Head::Empty => unimplemented!(),
+                Head::Detached(commit_ref) => commit_ref,
+                Head::Branch(branch) => CommitRef::new(await!(self.store.load_branches())?[&branch].clone()),
+            };
+            let subtree = await!(await!(head.fetch())?.as_subtree().fetch())?;
 
             for (name, objref) in subtree {
                 match objref {

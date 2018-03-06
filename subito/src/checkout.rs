@@ -1,8 +1,8 @@
 use std::{fmt, usize, collections::{BTreeSet, HashMap}, fs::{self, OpenOptions}, path::PathBuf,
           sync::Arc};
 
-use attaca::{HandleDigest, Store, digest::Digest, hierarchy::Hierarchy,
-             object::{Object, ObjectRef, TreeRef}, path::ObjectPath};
+use attaca::{digest::prelude::*, hierarchy::Hierarchy,
+             object::{CommitRef, Object, ObjectRef, TreeRef}, path::ObjectPath, store::prelude::*};
 use failure::*;
 use futures::{stream, prelude::*};
 use ignore::WalkBuilder;
@@ -10,7 +10,7 @@ use memmap::MmapMut;
 
 use Repository;
 use cache::{Cache, Certainty, Status};
-use quantified::{QuantifiedOutput, QuantifiedRefMut};
+use state::Head;
 
 const LARGE_CHILD_LOOKAHEAD_BUFFER_SIZE: usize = 32;
 
@@ -21,22 +21,6 @@ pub struct CheckoutArgs {
     /// Paths files to checkout. If left empty, the whole tree is checked out.
     #[structopt(name = "PATH", parse(from_os_str))]
     pub paths: Vec<PathBuf>,
-}
-
-impl<'r> QuantifiedOutput<'r> for CheckoutArgs {
-    type Output = CheckoutOut<'r>;
-}
-
-impl QuantifiedRefMut for CheckoutArgs {
-    fn apply_mut<'r, S: Store, D: Digest>(
-        self,
-        repository: &'r mut Repository<S, D>,
-    ) -> Result<CheckoutOut<'r>, Error>
-    where
-        S::Handle: HandleDigest<D>,
-    {
-        Ok(repository.checkout(self))
-    }
 }
 
 #[must_use = "CheckoutOut contains futures which must be driven to completion!"]
@@ -52,24 +36,21 @@ impl<'r> fmt::Debug for CheckoutOut<'r> {
     }
 }
 
-impl<S: Store, D: Digest> Repository<S, D>
-where
-    S::Handle: HandleDigest<D>,
-{
+impl<B: Backend> Repository<B> {
     #[async]
     fn do_checkout_data(
-        store: S,
-        cache: Cache<D>,
+        store: Store<B>,
+        cache: Cache<B>,
         base_path: Arc<PathBuf>,
         data_path: ObjectPath,
-        data_ref: ObjectRef<S::Handle>,
+        data_ref: ObjectRef<Handle<B>>,
     ) -> Result<(), Error> {
         let pre = match cache.status(&data_path)? {
             Status::Extant(Certainty::Positive, snapshot) => {
                 let maybe_pre_ref = await!(
                     snapshot
                         .as_object_ref()
-                        .map(|pre_digest| pre_digest.resolve(&store))
+                        .map(|pre_digest| pre_digest.resolve_id(&store))
                 )?;
 
                 match maybe_pre_ref.and_then(|x| x) {
@@ -199,11 +180,11 @@ where
 
     #[async]
     fn do_checkout_tree(
-        store: S,
-        cache: Cache<D>,
+        store: Store<B>,
+        cache: Cache<B>,
         base_path: Arc<PathBuf>,
         tree_path: ObjectPath,
-        tree_ref: TreeRef<S::Handle>,
+        tree_ref: TreeRef<Handle<B>>,
     ) -> Result<(), Error> {
         let tree = await!(tree_ref.fetch())?;
 
@@ -281,11 +262,11 @@ where
 
     #[async(boxed)]
     fn do_checkout(
-        store: S,
-        cache: Cache<D>,
+        store: Store<B>,
+        cache: Cache<B>,
         base_path: Arc<PathBuf>,
         object_path: ObjectPath,
-        object_ref: ObjectRef<S::Handle>,
+        object_ref: ObjectRef<Handle<B>>,
     ) -> Result<(), Error> {
         match object_ref {
             ObjectRef::Small(_) | ObjectRef::Large(_) => await!(Self::do_checkout_data(
@@ -306,17 +287,15 @@ where
         }
     }
 
-    fn checkout<'r>(&'r mut self, args: CheckoutArgs) -> CheckoutOut<'r> {
+    pub fn checkout<'r>(&'r mut self, args: CheckoutArgs) -> CheckoutOut<'r> {
         let blocking = async_block! {
             let state = self.get_state()?;
-            let subtree = Hierarchy::from(
-                await!(
-                    state
-                        .head
-                        .ok_or_else(|| format_err!("No previous commit to checkout from!"))?
-                        .fetch()
-                )?.as_subtree().clone(),
-            );
+            let head_ref = match state.head {
+                Head::Empty => bail!("No previous commit to checkout from!"),
+                Head::Detached(commit_ref) => commit_ref,
+                Head::Branch(branch) => CommitRef::new(await!(self.store.load_branches())?[&branch].clone()),
+            };
+            let subtree = Hierarchy::from(await!(head_ref.fetch())?.as_subtree().clone());
 
             // Checkout the previous subtree in its entirety if there are no paths specified.
             let paths = if args.paths.is_empty() {

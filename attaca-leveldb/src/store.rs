@@ -1,13 +1,15 @@
-use std::{fmt, str, collections::HashMap, io::{self, BufRead, Cursor, Read, Write}, path::Path,
+use std::{fmt, mem, str, collections::HashMap, io::{self, BufRead, Cursor, Read, Write}, path::Path,
           sync::RwLock};
 
-use attaca::{canonical, Init, Open, digest::{Sha3Digest, prelude::*}, store::{RawHandle, prelude::*}};
+use attaca::{canonical, Init, Open, digest::{Sha3Digest, prelude::*},
+             store::{RawHandle, prelude::*}};
 use capnp::{message, serialize_packed};
 use failure::*;
 use futures::{future::FutureResult, prelude::*};
 use leb128;
 use leveldb::{database::Database, kv::KV, options::{Options, ReadOptions, WriteOptions}};
 use url::Url;
+use uuid::Uuid;
 
 use Key;
 
@@ -75,7 +77,7 @@ impl Open for LevelDbBackend {
 
     fn open_path(path: &Path) -> Result<Self, Error> {
         let db = Database::open(&path, Options::new())?;
-        Ok(Self::new(db))
+        Self::new(db)
     }
 }
 
@@ -100,7 +102,9 @@ impl Init for LevelDbBackend {
                 ..Options::new()
             },
         )?;
-        Ok(Self::new(db))
+        let uuid = Uuid::new_v4();
+        db.put(WriteOptions::new(), &Key::uuid(), uuid.as_bytes())?;
+        Self::new(db)
     }
 }
 
@@ -150,6 +154,7 @@ impl Iterator for LevelDbContent {
 }
 
 struct Inner {
+    uuid: Uuid,
     db: Database<Key>,
 
     ids: HashMap<Sha3Digest, RawHandle>,
@@ -172,14 +177,18 @@ pub struct LevelDbBackend {
 }
 
 impl LevelDbBackend {
-    fn new(db: Database<Key>) -> Self {
-        Self {
+    fn new(db: Database<Key>) -> Result<Self, Error> {
+        let uuid = Uuid::from_bytes(&db.get(ReadOptions::new(), &Key::uuid())?.unwrap())?;
+
+        Ok(Self {
             inner: RwLock::new(Inner {
+                uuid,
                 db,
+
                 ids: HashMap::new(),
                 handles: HashMap::new(),
             }),
-        }
+        })
     }
 
     // This function returns `Ok` if the ID is fresh and `Err` if it is not.
@@ -217,7 +226,7 @@ impl LevelDbBackend {
         canonical::encode(&mut hasher, &blob, &refs).unwrap();
         let digest = hasher.finish();
 
-        let _ = inner;
+        mem::drop(inner);
 
         match self.reserve(digest) {
             Ok(id) => {
@@ -252,7 +261,7 @@ impl LevelDbBackend {
 
         // Discard the read lock so we don't deadlock ourselves, because `reserve` may attempt to
         // take a write lock.
-        let _ = inner;
+        mem::drop(inner);
         let refs: Vec<_> = ref_digests
             .into_iter()
             .map(|digest| self.reserve(digest).unwrap_or_else(|e| e))
@@ -264,10 +273,43 @@ impl LevelDbBackend {
         })
     }
 
+    fn do_id(&self, id: RawHandle) -> Result<Sha3Digest, Error> {
+        Ok(self.inner.read().unwrap().handles[&id])
+    }
+
     fn do_digest(&self, signature: DigestSignature, id: RawHandle) -> Result<Sha3Digest, Error> {
         ensure!(signature == Sha3Digest::SIGNATURE, "bad digest");
 
         Ok(self.inner.read().unwrap().handles[&id])
+    }
+
+    fn do_resolve_id(&self, digest: &Sha3Digest) -> Result<Option<RawHandle>, Error> {
+        let id = self.reserve(*digest).unwrap_or_else(|e| e);
+        let inner = self.inner.read().unwrap();
+        let db_contains_digest = inner
+            .db
+            .get(ReadOptions::new(), &Key::blob(digest.as_bytes()))?
+            .is_some();
+
+        if db_contains_digest {
+            Ok(Some(id))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn do_resolve_digest(
+        &self,
+        signature: DigestSignature,
+        bytes: &[u8],
+    ) -> Result<Option<RawHandle>, Error> {
+        ensure!(
+            signature == Sha3Digest::SIGNATURE,
+            "unsupported digest {:?}",
+            signature
+        );
+
+        self.do_resolve_id(&Sha3Digest::from_bytes(bytes))
     }
 
     fn do_load_branches(&self) -> Result<HashMap<String, RawHandle>, Error> {
@@ -319,31 +361,13 @@ impl LevelDbBackend {
 
         Ok(())
     }
-
-    fn do_resolve(&self, signature: DigestSignature, bytes: &[u8]) -> Result<Option<RawHandle>, Error> {
-        ensure!(
-            signature == Sha3Digest::SIGNATURE,
-            "unsupported digest {:?}",
-            signature
-        );
-
-        let digest = Sha3Digest::from_bytes(bytes);
-        let id = self.reserve(digest).unwrap_or_else(|e| e);
-        let inner = self.inner.read().unwrap();
-        let db_contains_digest = inner
-            .db
-            .get(ReadOptions::new(), &Key::blob(digest.as_bytes()))?
-            .is_some();
-
-        if db_contains_digest {
-            Ok(Some(id))
-        } else {
-            Ok(None)
-        }
-    }
 }
 
 impl Backend for LevelDbBackend {
+    fn uuid(&self) -> [u8; 16] {
+        *self.inner.read().unwrap().uuid.as_bytes()
+    }
+
     type Builder = LevelDbBuilder;
     type FutureFinish = FutureResult<RawHandle, Error>;
 
@@ -365,11 +389,32 @@ impl Backend for LevelDbBackend {
         self.do_load(id).into_future()
     }
 
+    type Id = Sha3Digest;
+    type FutureId = FutureResult<Self::Id, Error>;
+
+    fn id(&self, id: RawHandle) -> Self::FutureId {
+        self.do_id(id).into_future()
+    }
+
     type Digest = Sha3Digest;
     type FutureDigest = FutureResult<Self::Digest, Error>;
 
     fn digest(&self, signature: DigestSignature, id: RawHandle) -> Self::FutureDigest {
         self.do_digest(signature, id).into_future()
+    }
+
+    type FutureResolveId = FutureResult<Option<RawHandle>, Error>;
+    fn resolve_id(&self, digest: &Sha3Digest) -> Self::FutureResolveDigest {
+        self.do_resolve_id(digest).into_future()
+    }
+
+    type FutureResolveDigest = FutureResult<Option<RawHandle>, Error>;
+    fn resolve_digest(
+        &self,
+        signature: DigestSignature,
+        bytes: &[u8],
+    ) -> Self::FutureResolveDigest {
+        self.do_resolve_digest(signature, bytes).into_future()
     }
 
     type FutureLoadBranches = FutureResult<HashMap<String, RawHandle>, Error>;
@@ -386,10 +431,5 @@ impl Backend for LevelDbBackend {
         new: HashMap<String, RawHandle>,
     ) -> Self::FutureSwapBranches {
         self.do_swap_branches(previous, new).into_future()
-    }
-
-    type FutureResolve = FutureResult<Option<RawHandle>, Error>;
-    fn resolve(&self, signature: DigestSignature, bytes: &[u8]) -> Self::FutureResolve {
-        self.do_resolve(signature, bytes).into_future()
     }
 }

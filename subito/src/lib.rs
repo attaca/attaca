@@ -1,15 +1,15 @@
 #![recursion_limit = "128"]
 #![feature(proc_macro, conservative_impl_trait, generators)]
 
-extern crate attaca;
+pub extern crate attaca;
 extern crate attaca_leveldb;
 extern crate capnp;
 extern crate db_key;
 #[macro_use]
 extern crate derive_builder;
 #[macro_use]
-extern crate failure;
-extern crate futures_await as futures;
+pub extern crate failure;
+pub extern crate futures_await as futures;
 extern crate hex;
 extern crate ignore;
 extern crate itertools;
@@ -21,6 +21,15 @@ extern crate smallvec;
 #[macro_use]
 extern crate structopt;
 extern crate url;
+
+pub mod reexports {
+    pub use attaca;
+    pub use failure;
+    pub use futures;
+    pub use leveldb::{database::Database, kv::KV, options::{Options, ReadOptions}};
+
+    pub use super::db::Key;
+}
 
 #[allow(dead_code)]
 mod cache_capnp {
@@ -47,24 +56,89 @@ mod state_capnp {
     include!(concat!(env!("OUT_DIR"), "/state_capnp.rs"));
 }
 
+#[macro_export]
+macro_rules! unpack_digests {
+    ($submac:ident!($($args:tt)*)($($dty:ty),*)) => { $submac!($($args)* , $($dty),*) };
+}
+
+#[macro_export]
+macro_rules! digests {
+    ($($dty:ty),* $(,)*) => {
+        #[macro_export]
+        macro_rules! all_digests {
+            ($submac:ident ! $arg:tt) => { unpack_digests!($submac!$arg($($dty),*)) };
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! digest_names {
+    (@inner, $($dty:ty),*) => {
+        &[$(<$dty>::SIGNATURE.name),*]
+    };
+    () => {
+        all_digests!(digest_names!(@inner))
+    };
+}
+
+#[macro_export]
+macro_rules! unpack_backends {
+    ($submac:ident!($($args:tt)*)($($lcname:ident, $ccname:ident : $dty:ty),*)) => { $submac!($($args)* , $($lcname, $ccname : $dty),*) };
+}
+
+#[macro_export]
+macro_rules! backends {
+    ($($lcname:ident, $ccname:ident : $dty:ty),* $(,)*) => {
+        #[macro_export]
+        macro_rules! all_backends {
+            ($submac:ident!$arg:tt) => { unpack_backends!($submac!$arg($($lcname, $ccname : $dty),*)) };
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! backend_names {
+    (@inner, $($lcname:ident, $ccname:ident : $ignore:ty),*) => {
+        &[$(stringify!($name)),*]
+    };
+    () => {
+        all_backends!(backend_names!(@inner));
+    };
+}
+
+digests! {
+    ::attaca::digest::Sha3Digest,
+}
+
+backends! {
+    leveldb, LevelDb : ::attaca_leveldb::LevelDbBackend,
+}
+
 mod cache;
 mod db;
 mod state;
 
+pub mod branch;
 pub mod candidate;
 pub mod checkout;
 pub mod config;
+pub mod fetch;
 pub mod fsck;
-pub mod init;
-pub mod log;
-pub mod quantified;
+pub mod remote;
 pub mod show;
 pub mod status;
+pub mod log;
+
+#[macro_use]
+pub mod clone;
+#[macro_use]
+pub mod init;
+#[macro_use]
+pub mod open;
 
 use std::{env, fmt, io::Cursor, path::PathBuf, sync::{Arc, RwLock}};
 
-use attaca::{HandleDigest, Store, digest::{Digest, Sha3Digest}};
-use attaca_leveldb::LevelStore;
+use attaca::{Open, digest::{Sha3Digest, prelude::*}, store::prelude::*};
 use failure::Error;
 use futures::prelude::*;
 use leveldb::{database::Database, kv::KV, options::{Options, ReadOptions, WriteOptions}};
@@ -72,112 +146,28 @@ use leveldb::{database::Database, kv::KV, options::{Options, ReadOptions, WriteO
 use cache::Cache;
 use db::Key;
 use state::State;
-use quantified::{Quantified, QuantifiedOutput, QuantifiedRef, QuantifiedRefMut};
 
+pub use branch::BranchArgs;
 pub use candidate::{CommitArgs, StageArgs};
 pub use checkout::CheckoutArgs;
+pub use clone::CloneArgs;
+pub use fetch::FetchArgs;
 pub use fsck::FsckArgs;
-pub use init::{init, open, search, InitArgs};
+pub use init::InitArgs;
 pub use log::LogArgs;
+pub use remote::RemoteArgs;
 pub use show::ShowArgs;
 pub use status::StatusArgs;
 
-/// The "universe" of possible repository types. This is a generic type intended to close over all
-/// possible constructible repositories.
-///
-/// This is constructed as a nested enum, consisting of `Universe` and `PerDigest`. `Universe`
-/// dispatches over the digest type of the repository while `PerDigest` dispatches over the
-/// repository type.
-///
-/// This would not be necessary if we had existential types of the form:
-///
-/// `exists<S: Store, D: Digest> where S::Handle: HandleDigest<D>, Repository<S, D>`.
-#[derive(Debug)]
-pub enum Universe {
-    Sha3(PerDigest<Sha3Digest>),
-}
-
-impl Universe {
-    pub fn apply<'r, Q: Quantified>(
-        self,
-        quant: Q,
-    ) -> Result<<Q as QuantifiedOutput<'r>>::Output, Error> {
-        match self {
-            Universe::Sha3(pd) => pd.apply(quant),
-        }
-    }
-
-    pub fn apply_ref<'r, Q: QuantifiedRef>(
-        &'r self,
-        quant: Q,
-    ) -> Result<<Q as QuantifiedOutput<'r>>::Output, Error> {
-        match *self {
-            Universe::Sha3(ref pd) => pd.apply_ref(quant),
-        }
-    }
-
-    pub fn apply_mut<'r, Q: QuantifiedRefMut>(
-        &'r mut self,
-        quant: Q,
-    ) -> Result<<Q as QuantifiedOutput<'r>>::Output, Error> {
-        match *self {
-            Universe::Sha3(ref mut pd) => pd.apply_mut(quant),
-        }
-    }
-}
-
-/// The subset of possible repository types for a given digest.
-///
-/// Not all variants of this enum for any given `D: Digest` may be constructible.
-#[derive(Debug)]
-pub enum PerDigest<D: Digest> {
-    LevelDb(Repository<LevelStore, D>),
-}
-
-impl<D: Digest> PerDigest<D> {
-    pub fn apply<'r, Q: Quantified>(
-        self,
-        quant: Q,
-    ) -> Result<<Q as QuantifiedOutput<'r>>::Output, Error> {
-        match self {
-            PerDigest::LevelDb(rp) => quant.apply(rp),
-        }
-    }
-
-    pub fn apply_ref<'r, Q: QuantifiedRef>(
-        &'r self,
-        quant: Q,
-    ) -> Result<<Q as QuantifiedOutput<'r>>::Output, Error> {
-        match *self {
-            PerDigest::LevelDb(ref rp) => quant.apply_ref(rp),
-        }
-    }
-
-    pub fn apply_mut<'r, Q: QuantifiedRefMut>(
-        &'r mut self,
-        quant: Q,
-    ) -> Result<<Q as QuantifiedOutput<'r>>::Output, Error> {
-        match *self {
-            PerDigest::LevelDb(ref mut rp) => quant.apply_mut(rp),
-        }
-    }
-}
-
-pub struct Repository<S: Store, D: Digest>
-where
-    S::Handle: HandleDigest<D>,
-{
-    store: S,
+pub struct Repository<B: Backend> {
+    store: Store<B>,
     db: Arc<RwLock<Database<Key>>>,
 
-    cache: Cache<D>,
+    cache: Cache<B>,
     path: Arc<PathBuf>,
 }
 
-impl<S: Store + fmt::Debug, D: Digest> fmt::Debug for Repository<S, D>
-where
-    S::Handle: HandleDigest<D>,
-{
+impl<B: Backend + fmt::Debug> fmt::Debug for Repository<B> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("Repository")
             .field("store", &self.store)
@@ -187,31 +177,15 @@ where
     }
 }
 
-impl<S: Store, D: Digest> Repository<S, D>
-where
-    S::Handle: HandleDigest<D>,
-{
-    pub fn new(path: PathBuf, db: Database<Key>, store: S) -> Self {
-        let db = Arc::new(RwLock::new(db));
-        let cache = Cache::from(db.clone());
-
-        Self {
-            store,
-            db,
-
-            cache,
-            path: Arc::new(path),
-        }
-    }
-
+impl<B: Backend + Open> Repository<B> {
     pub fn open(path: PathBuf) -> Result<Self, Error> {
         let db = Database::open(&path.join(".attaca/workspace"), Options::new())?;
 
         // TODO: Load from URL, absolute, or relative path instead of this default. Add a database
         // key to facilitate this.
-        let store = S::open_path(&path.join(".attaca/store"))?;
+        let backend = B::open_path(&path.join(".attaca/store"))?;
 
-        Ok(Self::new(path, db, store))
+        Ok(Self::new(path, db, backend))
     }
 
     pub fn search() -> Result<Option<Self>, Error> {
@@ -225,8 +199,24 @@ where
 
         Ok(Some(Self::open(wd)?))
     }
+}
 
-    fn set_state(&self, state: &State<S::Handle>) -> Result<(), Error> {
+impl<B: Backend> Repository<B> {
+    pub fn new(path: PathBuf, db: Database<Key>, backend: B) -> Self {
+        let store = Store::new(backend);
+        let db = Arc::new(RwLock::new(db));
+        let cache = Cache::from(db.clone());
+
+        Self {
+            store,
+            db,
+
+            cache,
+            path: Arc::new(path),
+        }
+    }
+
+    fn set_state(&self, state: &State<Handle<B>>) -> Result<(), Error> {
         let mut buf = Vec::new();
         state.encode(&mut buf).wait()?;
         self.db
@@ -237,13 +227,13 @@ where
         Ok(())
     }
 
-    fn get_state(&self) -> Result<State<S::Handle>, Error> {
+    fn get_state(&self) -> Result<State<Handle<B>>, Error> {
         match self.db
             .read()
             .unwrap()
             .get(ReadOptions::new(), &Key::state())?
         {
-            Some(bytes) => State::decode::<_, S, D>(Cursor::new(bytes), self.store.clone()).wait(),
+            Some(bytes) => State::decode(Cursor::new(bytes), self.store.clone()).wait(),
             None => {
                 let state = State::default();
                 self.set_state(&state)?;

@@ -3,7 +3,11 @@ authors = ["Sean Leffler <sean@errno.com>"]
 name = "attaca-leveldb"
 version = "0.1.0"
 
+[build-dependencies]
+capnpc = "0.8.8"
+
 [dependencies]
+capnp = "0.8.15"
 chashmap = "2.2.0"
 db-key = "0.0.5"
 failure = "0.1.1"
@@ -17,6 +21,10 @@ url = "1.6.0"
 
 [dependencies.attaca]
 path = ".."
+
+[dependencies.uuid]
+version = "0.6.1"
+features = ["v4"]
 
 [dev-dependencies]
 proptest = "0.5.0"
