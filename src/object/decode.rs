@@ -184,11 +184,6 @@ pub fn tree<B: Backend>(mut content: Content<B>) -> Result<Tree<Handle<B>>, Erro
     content.read_to_end(&mut data)?;
     let refs = content.map(|r| r.borrow().to_owned()).collect::<Vec<_>>();
 
-    println!(
-        "Decoding tree...\n{}",
-        String::from_utf8_lossy(&data)
-    );
-
     let ir: IResult<_, _> = terminated!(
         data.as_slice(),
         fold_many0!(
@@ -199,7 +194,6 @@ pub fn tree<B: Backend>(mut content: Content<B>) -> Result<Tree<Handle<B>>, Erro
                 let reference = refs.get(hd)
                     .cloned()
                     .ok_or_else(|| failure::err_msg("Bad handle index!"))?;
-                println!("{}, {}, {:?}", name, hd, entry);
                 acc.insert(
                     String::from(name),
                     match entry {
