@@ -871,23 +871,20 @@ impl<H> LargeBuilder<H> {
     }
 
     pub fn push(&mut self, objref: ObjectRef<H>) {
-        match objref {
+        let objsize = match objref {
             ObjectRef::Small(ref small_ref) => {
                 assert!(self.0.depth == 1);
-                let start = self.0.size;
-                let end = self.0.size + small_ref.size();
-                self.0.size += small_ref.size();
-                self.0.entries.insert(start, (end, objref));
+                small_ref.size()
             }
             ObjectRef::Large(ref large_ref) => {
                 assert!(self.0.depth == large_ref.depth() + 1);
-                let start = self.0.size;
-                let end = self.0.size + large_ref.size();
-                self.0.size += large_ref.size();
-                self.0.entries.insert(start, (end, objref));
+                large_ref.size()
             }
             _ => unreachable!(),
-        }
+        };
+        let start = self.0.size;
+        self.0.size += objsize;
+        self.0.entries.insert(start, (self.0.size, objref));
     }
 }
 
@@ -1364,14 +1361,16 @@ impl<H> CommitBuilder<H> {
     where
         I: IntoIterator<Item = CommitRef<H>>,
     {
-        let parents = match *self {
-            CommitBuilder::Complete(ref mut commit) => &mut commit.parents,
-            CommitBuilder::Incomplete {
-                ref mut parents, ..
-            } => parents,
-        };
-        parents.clear();
-        parents.extend(iterable);
+        {
+            let parents = match *self {
+                CommitBuilder::Complete(ref mut commit) => &mut commit.parents,
+                CommitBuilder::Incomplete {
+                    ref mut parents, ..
+                } => parents,
+            };
+            parents.clear();
+            parents.extend(iterable);
+        }
         self
     }
 
@@ -1462,8 +1461,6 @@ pub fn share<R: Read, B: Backend>(
 mod tests {
     use super::*;
     use store::dummy::*;
-
-    use std::io::Cursor;
 
     use proptest::prelude::*;
 

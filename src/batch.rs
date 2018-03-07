@@ -203,7 +203,7 @@ impl<B: Backend> BatchIter<B> {
     fn run(
         self,
         store: Store<B>,
-        tree_builder: TreeBuilder<Handle<B>>,
+        mut tree_builder: TreeBuilder<Handle<B>>,
     ) -> Result<TreeBuilder<Handle<B>>, Error> {
         for (name, batched_op) in self {
             match batched_op {

@@ -86,10 +86,25 @@ impl<R: Read> State<R> {
         let mut acc = 0u64;
 
         loop {
-            let (old, new) = self.fill_buffer()?; // Fill the buffer with new bytes from the source.
-            sink.write_all(new)?; // Write the newly filled buffer into the sink.
+            let read_bytes = {
+                let (old, new) = self.fill_buffer()?; // Fill the buffer with new bytes from the source.
+                sink.write_all(new)?; // Write the newly filled buffer into the sink.
 
-            let read_bytes = new.len();
+                for &b in new {
+                    acc = acc.wrapping_add(b as u64); // Insert new values into the rolling hash.
+                }
+
+                if chunk_strides >= p.strides_per_window {
+                    // If we've read enough bytes to fill the split window, we may begin removing old bytes
+                    // from the rolling hash and checking for splits.
+                    for &b in old {
+                        acc = acc.wrapping_sub(b as u64);
+                    }
+                }
+
+                new.len()
+            };
+
             if read_bytes < p.stride {
                 let pre_chunk_bytes = self.total * p.stride;
                 let total_bytes = pre_chunk_bytes + chunk_strides * p.stride + read_bytes;
@@ -98,18 +113,6 @@ impl<R: Read> State<R> {
             }
 
             chunk_strides += 1; // At this point, we've read a full stride.
-
-            for &b in new {
-                acc = acc.wrapping_add(b as u64); // Insert new values into the rolling hash.
-            }
-
-            if chunk_strides > p.strides_per_window {
-                // If we've read enough bytes to fill the split window, we may begin removing old bytes
-                // from the rolling hash and checking for splits.
-                for &b in old {
-                    acc = acc.wrapping_sub(b as u64);
-                }
-            }
 
             // Truncate the accumulator, treating it as modulo some power of two.
             acc &= (1 << p.log2_modulus) - 1;

@@ -796,6 +796,12 @@ pub mod dummy {
         }
     }
 
+    impl Id for DummyDigest {
+        fn from_bytes(_: &[u8]) -> Self {
+            Default::default()
+        }
+    }
+
     impl Digest for DummyDigest {
         const SIGNATURE: DigestSignature = DigestSignature {
             name: "DUMMY",
@@ -804,10 +810,6 @@ pub mod dummy {
 
         type Writer = DummyDigestWriter;
         fn writer() -> Self::Writer {
-            Default::default()
-        }
-
-        fn from_bytes(_: &[u8]) -> Self {
             Default::default()
         }
     }
@@ -835,8 +837,8 @@ pub mod dummy {
             unimplemented!();
         }
 
-        type Id = Box<[u8]>;
-        type FutureId = Box<Future<Item = Self::Id, Error = Error>>;
+        type Id = [u8];
+        type FutureId = Box<Future<Item = Vec<u8>, Error = Error>>;
         fn id(&self, id: RawHandle) -> Self::FutureId {
             unimplemented!();
         }
