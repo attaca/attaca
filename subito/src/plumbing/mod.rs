@@ -1,3 +1,5 @@
+mod checkout;
+
 use std::collections::HashMap;
 
 use attaca::{Open, object::CommitRef, store::{self, prelude::*}};
@@ -8,6 +10,8 @@ use Repository;
 use config::StoreKind;
 use state::Head;
 use syntax::{LocalRef, Ref};
+
+pub use self::checkout::*;
 
 pub type Branches<B> = HashMap<String, CommitRef<Handle<B>>>;
 
@@ -65,10 +69,7 @@ impl<B: Backend> Repository<B> {
 
     // NB eventually get_state will end up async since it talks to the local store, which is why
     // this is async.
-    pub fn load_remote_branches<S: Into<String>>(
-        this: &Self,
-        remote_name: S,
-    ) -> FutureBranches<B> {
+    pub fn load_remote_branches<S: Into<String>>(this: &Self, remote_name: S) -> FutureBranches<B> {
         let remote = remote_name.into();
         let blocking = async_block! {
             let mut state = this.get_state()?;
@@ -161,4 +162,5 @@ impl<B: Backend> Repository<B> {
 
         Box::new(blocking)
     }
+
 }
