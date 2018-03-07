@@ -1,12 +1,40 @@
-# `attaca` - prototype for a distributed version control system for extremely large quantities of data
+# Attaca/Subito: distributed version control for extremely large files and repositories
 
-This tool is under development and not in working condition!
+## What is this?
+
+Attaca is a generic content addressable storage system with support for
+upgradeable hashes and hashsplitting, providing both futureproofing and
+improved sharing of stored data. On top of it is Subito, a Git-like distributed
+version control system using Attaca as an object store.
+
+## Why is this?
+
+There are currently few utilities out there to version ridiculously large
+files; for example, a data scientist might want to version their fifty- or one
+hundred-gigabyte dataset alongside their scripts and analysis code. Most
+solutions to this problem are thrown together haphazardly or hacked together
+out of existing version control solutions which were never designed to handle
+the load. Attaca - and Subito - aim to handle the load efficiently and
+robustly.
+
+## How do I build it?
 
 A working installation of Rust and Cargo are required to build/install. These
 can be acquired through [rustup](https://www.rustup.rs/). Rust nightly is
-needed to build this tool for the several nightly features: `offset_to`,
-`proc_macro`, `conservative_impl_trait`, and `generators`. The latter three are
-required for the `futures-await` crate. Rustup can be configured to override
+needed to build this tool for the several nightly features: 
+
+```rust
+#![feature(proc_macro, conservative_impl_trait, generators, from_utf8_error_as_bytes)]
+```
+
+The first three are the main reason we use Rust nightly; they are necessary to
+make use of the Rust `futures-await` crate, which provides procedural
+macro-based async/await syntax. The latter is useful for extracting error data
+from attempts to convert arbitrary bytes to UTF-8, and will probably be
+stabilized very shortly, long before `proc_macro`, `conservative_impl_trait`,
+and `generators`.
+
+Rustup can be configured to override
 the local Rust version for building this crate; installation and override will
 look something like this:
 
@@ -23,15 +51,17 @@ rustup override set nightly-2018-02-14
 
 Other dependencies are:
 
-- librados-2. *Make sure to install Ceph Kraken or later!*
-- Cap'n Proto.
+- librados-2 *N.B. make sure to install Ceph Kraken or later!*
+- capnp
+- libsnappy
+- libleveldb
 
 Installation might look something like this:
 
 ```
 # Ubuntu (tested on 14.04 LTS)
 sudo apt-add-repository "deb https://download.ceph.com/debian-luminous/ `lsb_release -sc` main"
-sudo apt-get install librados-dev capnproto
+sudo apt-get install librados-dev capnproto libleveldb-dev libsnappy-dev
 
 # Fedora (tested on Fedora 24)
 dnf install librados2-devel capnproto
@@ -44,20 +74,51 @@ dependencies are installed, `attaca` can be compiled and installed with:
 cargo install
 ```
 
-## Commands
+## How do I use it?
 
-```
-attaca init                         # Initialize a repository in the current directory.
-attaca remote add <NAME> --ceph --ceph-mon-host 127.0.0.1 --ceph-user admin --ceph-pool rbd
-                                    # Add a new remote from bare Ceph options.
-attaca remote add <NAME> --ceph --ceph-conf ./ceph.conf
-                                    # Add a new remote from a ceph.conf file.
-attaca remote list                  # List all remotes for the current repository.
-attaca test chunk   <INPUT>         # Hashsplit a file and print chunk statistics.
-attaca test marshal <INPUT>         # Split and marshal a file, and then write its chunks to disk in the local blob store.
-attaca test suite noop              # Test the "suite" machinery - with no options this will result in spinning up and then shutting down a local RADOS cluster for testing.
-attaca test suite write_all <INPUT> # Test hashsplitting, chunking, and then sending a file into a local RADOS cluster.
-attaca utils read <HASH> [--dump]   # Get information about a specific object, and/or dump the whole object to stdout.
-```
+Attaca/Subito are *not* currently recommended for use or anywhere near
+feature-complete! However, they *do* have some functionality as of now.
 
-For more information, try running the above with `--help` or as `attaca help [SUBCOMMAND]`.
+Subito's command line interface looks quite Git-like, with a few major
+differences. Here are some of the commands we currently support. Note that they
+are without exception all missing some major functionality:
+
+- `subito init` works at a bare minimum.
+- `subito stage` and `subito unstage` act very similarly to `git add` and `git
+  reset`. These are responsible for modifying the "candidate tree", also called
+  the "virtual workspace". In Git this is the index, but with Subito, the index
+  is itself a tree in the object store. Among other things, this opens up some
+  interesting possibilities for undo-tracking.
+- `subito commit` acts very similarly to `git commit`.
+- `subito checkout` acts very similarly to `git checkout`.
+- `subito fetch` is mainly exposed for debugging purposes, but it's there, and
+  it fills the same niche as `git fetch`.
+- `subito show` works for showing information about subtrees of refs pointing
+  to commits.
+- `subito fsck` works for checking integrity. Currently the only hash supported
+  is SHA3-256, but more will come (but only the hashes supported by a given
+  repository may be verified, because generating hashes on the fly instead of
+  checking expected hashes would not help with verification.)
+- `subito remote` allows adding and listing remotes.
+- `subito branch` allows creating and listing branches.
+- `subito status` shows information *only about the differences between the
+  candidate tree and previous commit.* It will soon show information about
+  changed local files, but likely not untracked files.
+
+## What are all these crates?
+
+| Crate name | Description |
+| ---------- | ----------- |
+| `attaca` | Core traits and generic functionality for Attaca stores. As of 3/6/17 this also contains VCS-specific functionality which will soon be removed and spliced into an `attaca-vcs` crate. |
+| `attaca-leveldb` | Implements a small Attaca backend over a LevelDB database. |
+| `attaca-rados` | Implements an Attaca backend over the RADOS API of a Ceph cluster. |
+| `attaca-test` | Generic test batteries for Attaca backends. (highly WIP) |
+| `subito` | A Git-like distributed version control system built on top of an Attaca store with some additional capabilities. |
+
+## Why the names?
+
+"Attaca" is a musical term used in classical music to indicate that a performer
+should not pause or break in between movements of a given piece. "Subito" means
+"suddenly". When written together as "attaca subito", the combined term
+indicates that the start of the next movement is intended to come especially
+surprisingly quickly.
