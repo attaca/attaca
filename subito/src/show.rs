@@ -7,53 +7,14 @@ use hex;
 
 use Repository;
 use state::Head;
-
-#[derive(Debug, Clone, StructOpt)]
-pub enum ShowCommand {
-    /// Display information about the supplied object assuming it is a small object.
-    #[structopt(name = "small")]
-    Small,
-
-    /// Display information about the supplied object assuming it is a large object.
-    #[structopt(name = "large")]
-    Large,
-
-    #[structopt(name = "tree")]
-    Tree,
-
-    #[structopt(name = "commit")]
-    Commit,
-}
+use syntax::Ref;
 
 /// Show information about specific objects in the repository. TODO: currently a stub
 #[derive(Debug, Clone, StructOpt, Builder)]
 #[structopt(name = "show")]
 pub struct ShowArgs {
-    /// The object to lookup.
-    #[structopt(name = "OBJECT", required = true, parse(try_from_str = "hex::decode"))]
-    pub object: Option<Vec<u8>>,
-
-    /// Dump the binary contents of the associated handle instead of interpreting the object
-    /// directly.
-    #[structopt(long = "dump")]
-    pub dump: bool,
-
-    #[structopt(subcommand)]
-    pub command: Option<ShowCommand>,
-}
-
-pub enum Show {
-    Small {
-        size: usize,
-    },
-    Large {
-        size: usize,
-    },
-    Tree {
-        entries: BTreeMap<String, ObjectRef<Vec<u8>>>,
-    },
-    Commit,
-    Dump(Vec<u8>),
+    #[structopt(name = "REF", default_value = "HEAD")]
+    refr: Ref,
 }
 
 #[must_use = "ShowOut contains futures which must be driven to completion!"]
@@ -70,15 +31,10 @@ impl<'r> fmt::Debug for ShowOut<'r> {
 }
 
 impl<B: Backend> Repository<B> {
-    pub fn show<'r>(&'r self, _args: ShowArgs) -> ShowOut<'r> {
+    pub fn show<'r>(&'r self, args: ShowArgs) -> ShowOut<'r> {
         let blocking = async_block! {
-            let state = self.get_state()?;
-            let head = match state.head {
-                Head::Empty => unimplemented!(),
-                Head::Detached(commit_ref) => commit_ref,
-                Head::Branch(branch) => CommitRef::new(await!(self.store.load_branches())?[&branch].clone()),
-            };
-            let subtree = await!(await!(head.fetch())?.as_subtree().fetch())?;
+            let resolved_ref = await!(Self::resolve(self, args.refr))?;
+            let subtree = await!(await!(resolved_ref.fetch())?.as_subtree().fetch())?;
 
             for (name, objref) in subtree {
                 match objref {

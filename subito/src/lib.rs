@@ -13,10 +13,13 @@ pub extern crate futures_await as futures;
 extern crate hex;
 extern crate ignore;
 extern crate itertools;
+#[macro_use]
+extern crate lazy_static;
 extern crate leveldb;
 extern crate memmap;
 #[macro_use]
 extern crate nix;
+extern crate regex;
 extern crate smallvec;
 #[macro_use]
 extern crate structopt;
@@ -124,9 +127,11 @@ pub mod checkout;
 pub mod config;
 pub mod fetch;
 pub mod fsck;
+pub mod plumbing;
 pub mod remote;
 pub mod show;
 pub mod status;
+pub mod syntax;
 pub mod log;
 
 #[macro_use]

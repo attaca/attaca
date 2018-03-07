@@ -49,6 +49,8 @@ pub fn large<B: Backend>(builder: &mut Builder<B>, object: &Large<Handle<B>>) ->
 pub fn tree<B: Backend>(builder: &mut Builder<B>, object: &Tree<Handle<B>>) -> Result<(), Error> {
     let mut handles = HashMap::new();
 
+    println!("Encoding tree...");
+
     for (name, reference) in &object.entries {
         let handle = reference.as_inner();
         let id = match handles.get(handle) {
@@ -78,6 +80,8 @@ pub fn tree<B: Backend>(builder: &mut Builder<B>, object: &Tree<Handle<B>>) -> R
         write!(builder, "{}:", buf.len())?;
         builder.write_all(&buf)?;
         write!(builder, ",\n")?;
+
+        println!("{}", String::from_utf8_lossy(&buf));
     }
 
     Ok(())

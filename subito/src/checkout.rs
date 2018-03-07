@@ -11,6 +11,7 @@ use memmap::MmapMut;
 use Repository;
 use cache::{Cache, Certainty, Status};
 use state::Head;
+use syntax::Ref;
 
 const LARGE_CHILD_LOOKAHEAD_BUFFER_SIZE: usize = 32;
 
@@ -18,8 +19,12 @@ const LARGE_CHILD_LOOKAHEAD_BUFFER_SIZE: usize = 32;
 #[derive(Debug, StructOpt, Builder)]
 #[structopt(name = "checkout")]
 pub struct CheckoutArgs {
+    /// The ref to checkout from. Defaults to the current HEAD.
+    #[structopt(name = "REF", default_value = "HEAD")]
+    pub refr: Ref,
+
     /// Paths files to checkout. If left empty, the whole tree is checked out.
-    #[structopt(name = "PATH", parse(from_os_str))]
+    #[structopt(name = "PATHS", last = true, parse(from_os_str))]
     pub paths: Vec<PathBuf>,
 }
 
@@ -105,7 +110,13 @@ impl<B: Backend> Repository<B> {
                 .create_new(true)
                 .open(&absolute_path)?
         };
+
         file.set_len(size)?;
+        if size == 0 {
+            // NB mmap will error if we try to map a zero byte file.
+            return Ok(());
+        }
+
         let mut mmap = unsafe { MmapMut::map_mut(&file)? };
 
         match await!(data.join(pre))? {
@@ -289,13 +300,8 @@ impl<B: Backend> Repository<B> {
 
     pub fn checkout<'r>(&'r mut self, args: CheckoutArgs) -> CheckoutOut<'r> {
         let blocking = async_block! {
-            let state = self.get_state()?;
-            let head_ref = match state.head {
-                Head::Empty => bail!("No previous commit to checkout from!"),
-                Head::Detached(commit_ref) => commit_ref,
-                Head::Branch(branch) => CommitRef::new(await!(self.store.load_branches())?[&branch].clone()),
-            };
-            let subtree = Hierarchy::from(await!(head_ref.fetch())?.as_subtree().clone());
+            let commit_ref = await!(Self::resolve(self, args.refr))?;
+            let subtree = Hierarchy::from(await!(commit_ref.fetch())?.as_subtree().clone());
 
             // Checkout the previous subtree in its entirety if there are no paths specified.
             let paths = if args.paths.is_empty() {
