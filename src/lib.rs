@@ -1,6 +1,6 @@
 //! # `attaca` - distributed, resilient version control with a git-like interface
 
-#![feature(proc_macro, conservative_impl_trait, generators, from_utf8_error_as_bytes, get_type_id)]
+#![feature(proc_macro, conservative_impl_trait, generators, from_utf8_error_as_bytes)]
 #![recursion_limit = "256"]
 
 #[cfg(not(target_pointer_width = "64"))]
