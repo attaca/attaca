@@ -128,7 +128,7 @@ impl<B: Backend> Repository<B> {
             let maybe_head_ref = match state.head {
                 Head::Empty => None,
                 Head::Detached(ref commit_ref) => Some(commit_ref.clone()),
-                Head::Branch(ref branch) => Some(CommitRef::new(branches[branch].clone())),
+                Head::Branch(ref branch) => branches.get(branch.as_str()).cloned().map(CommitRef::new),
             };
             let maybe_head = await!(maybe_head_ref.as_ref().map(CommitRef::fetch))?;
 
@@ -175,7 +175,7 @@ impl<B: Backend> Repository<B> {
                 }
                 Head::Branch(branch) => {
                     let mut new_branches = branches.clone();
-                    new_branches.insert(branch, commit_ref.into_inner());
+                    new_branches.insert(branch.into_string(), commit_ref.into_inner());
                     await!(self.store.swap_branches(branches, new_branches))?;
                 }
             }
@@ -386,7 +386,7 @@ impl<B: Backend> Repository<B> {
             let maybe_head_ref = match state.head {
                 Head::Empty => None,
                 Head::Detached(ref commit_ref) => Some(commit_ref.clone()),
-                Head::Branch(ref branch) => Some(CommitRef::new(branches[branch].clone())),
+                Head::Branch(ref branch) => branches.get(branch.as_str()).cloned().map(CommitRef::new),
             };
             let hierarchy = match maybe_head_ref {
                 Some(head_ref) => Hierarchy::from(
@@ -402,9 +402,9 @@ impl<B: Backend> Repository<B> {
                     .into_iter()
                     .map(|batch_op| self.process_operation(hierarchy.clone(), batch_op)),
             );
-            let batch: ObjectBatch<B> =
-                await!(queue.fold(ObjectBatch::new(), |batch, op| batch.add(op)))
-                    .context("Error while batching stage operations")?;
+            let batch: ObjectBatch<B> = await!(
+                queue.fold(ObjectBatch::new(), |batch, op| batch.add(op))
+            ).context("Error while batching stage operations")?;
             await!(self.stage_objects(batch)).context("Error while staging objects")?;
 
             Ok(())

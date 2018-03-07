@@ -8,7 +8,9 @@ use url::Url;
 
 use Repository;
 use config::StoreKind;
+use plumbing;
 use state::State;
+use syntax::Name;
 
 /// Fetch objects from a remote repository.
 #[derive(Debug, Clone, StructOpt, Builder)]
@@ -16,7 +18,7 @@ use state::State;
 pub struct FetchArgs {
     /// Name of the remote to fetch objects and branches from.
     #[structopt(name = "REMOTE")]
-    remote: String,
+    remote: Name,
 }
 
 pub struct FetchOut<'r> {
@@ -26,7 +28,7 @@ pub struct FetchOut<'r> {
 impl<B: Backend> Repository<B> {
     pub fn fetch<'r>(&'r mut self, args: FetchArgs) -> FetchOut<'r> {
         FetchOut {
-            blocking: Box::new(Repository::fetch_by_name(self, args.remote).map(|_| ())),
+            blocking: Box::new(plumbing::fetch::remote(self, args.remote).map(|_| ())),
         }
     }
 }

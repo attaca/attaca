@@ -5,11 +5,14 @@ use capnp::{message, serialize_packed};
 use failure::*;
 use futures::{stream, prelude::*};
 
+use plumbing::Branches;
+use syntax::Name;
+
 #[derive(Debug, Clone)]
 pub enum Head<H> {
     Empty,
     Detached(CommitRef<H>),
-    Branch(String),
+    Branch(Name),
 }
 
 impl<H> Default for Head<H> {
@@ -51,7 +54,7 @@ impl<H> Head<H> {
 pub struct State<H> {
     pub candidate: Option<TreeRef<H>>,
     pub head: Head<H>,
-    pub remote_refs: HashMap<String, HashMap<String, CommitRef<H>>>,
+    pub remote_refs: HashMap<Name, HashMap<Name, CommitRef<H>>>,
 }
 
 impl<H> Default for State<H> {
@@ -66,9 +69,9 @@ impl<H> Default for State<H> {
 
 #[async]
 fn resolve_refs<B: Backend>(
-    raw: Vec<(String, Vec<(String, OwnedLocalId<B>)>)>,
+    raw: Vec<(Name, Vec<(Name, OwnedLocalId<B>)>)>,
     store: Store<B>,
-) -> Result<HashMap<String, HashMap<String, CommitRef<Handle<B>>>>, Error> {
+) -> Result<HashMap<Name, Branches<B>>, Error> {
     let mut remote_refs = HashMap::new();
     for (remote_name, branch_ids) in raw {
         let mut branches = HashMap::new();
@@ -106,7 +109,7 @@ impl<B: Backend> State<Handle<B>> {
                     head::Detached(bytes_res) => {
                         Head::Detached(CommitRef::new(LocalId::<B>::from_bytes(bytes_res?)))
                     }
-                    head::Branch(name) => Head::Branch(String::from(name?)),
+                    head::Branch(name) => Head::Branch(name?.parse()?),
                 };
 
                 let candidate_id = match state.get_candidate().which()? {
@@ -124,13 +127,13 @@ impl<B: Backend> State<Handle<B>> {
                             .get_branches()?
                             .iter()
                             .map(|branch| {
-                                let name = String::from(branch.get_name()?);
+                                let name = branch.get_name()?.parse()?;
                                 let commit_id = LocalId::<B>::from_bytes(branch.get_commit_id()?);
                                 Ok((name, commit_id))
                             })
                             .collect::<Result<Vec<_>, Error>>()?;
 
-                        Ok((String::from(remote.get_name()?), branches))
+                        Ok((remote.get_name()?.parse()?, branches))
                     })
                     .collect::<Result<Vec<_>, Error>>()?;
 
@@ -205,7 +208,7 @@ impl<B: Backend> State<Handle<B>> {
                         match head {
                             Head::Empty => head_builder.set_empty(()),
                             Head::Detached(id) => head_builder.set_detached(id.as_inner().borrow().as_bytes()),
-                            Head::Branch(branch) => head_builder.set_branch(&branch),
+                            Head::Branch(branch) => head_builder.set_branch(&*branch),
                         }
                     }
                 }

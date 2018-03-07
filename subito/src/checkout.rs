@@ -10,10 +10,9 @@ use memmap::MmapMut;
 
 use Repository;
 use cache::{Cache, Certainty, Status};
-use state::Head;
+use state::{Head, State};
 use syntax::Ref;
-
-const LARGE_CHILD_LOOKAHEAD_BUFFER_SIZE: usize = 32;
+use plumbing;
 
 /// Copy files from the repository into the local workspace.
 #[derive(Debug, StructOpt, Builder)]
@@ -44,25 +43,27 @@ impl<'r> fmt::Debug for CheckoutOut<'r> {
 impl<B: Backend> Repository<B> {
     pub fn checkout<'r>(&'r mut self, args: CheckoutArgs) -> CheckoutOut<'r> {
         let blocking = async_block! {
-            // Checkout the previous subtree in its entirety if there are no paths specified.
             let paths = if args.paths.is_empty() {
-                vec![ObjectPath::new()]
+                // If there are no paths specified, we checkout an entire branch and update the
+                // HEAD (unless the HEAD is being checked out. Because that's silly.)
+                await!(plumbing::checkout::by_ref(self, args.refr))?;
             } else {
-                args.paths
+                // If there are paths specified, we do not update HEAD.
+                let paths = args.paths
                     .into_iter()
                     .map(ObjectPath::from_path)
-                    .collect::<Result<_, _>>()?
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                let commit_ref = await!(plumbing::resolve(self, args.refr))?;
+                let tree_ref = await!(commit_ref.fetch())?.as_subtree().clone();
+
+                await!(plumbing::checkout::subpaths_from_tree(
+                    self,
+                    tree_ref,
+                    ObjectPath::new(),
+                    paths,
+                ))?;
             };
-
-            let commit_ref = await!(Self::resolve(self, args.refr))?;
-            let tree_ref = await!(commit_ref.fetch())?.as_subtree().clone();
-
-            await!(Self::checkout_paths_from_tree(
-                self,
-                tree_ref,
-                ObjectPath::new(),
-                paths,
-            ))?;
 
             Ok(())
         };

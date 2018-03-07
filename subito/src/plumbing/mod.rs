@@ -1,4 +1,7 @@
-mod checkout;
+pub mod branch;
+pub mod checkout;
+pub mod fetch;
+pub mod remote;
 
 use std::collections::HashMap;
 
@@ -8,159 +11,165 @@ use futures::prelude::*;
 
 use Repository;
 use config::StoreKind;
-use state::Head;
-use syntax::{LocalRef, Ref};
+use state::{Head, State};
+use syntax::{Name, Ref};
 
-pub use self::checkout::*;
-
-pub type Branches<B> = HashMap<String, CommitRef<Handle<B>>>;
+pub type Branches<B> = HashMap<Name, CommitRef<Handle<B>>>;
 
 pub type FutureBranches<'r, B> = Box<Future<Item = Branches<B>, Error = Error> + 'r>;
 pub type FutureCommitRef<'r, B> = Box<Future<Item = CommitRef<Handle<B>>, Error = Error> + 'r>;
+pub type FutureOptionCommitRef<'r, B> =
+    Box<Future<Item = Option<CommitRef<Handle<B>>>, Error = Error> + 'r>;
 pub type FutureUnit<'r> = Box<Future<Item = (), Error = Error> + 'r>;
 
-macro_rules! dispatch_fetch {
-    (@inner $this:expr, $remote:expr, $($lcname:ident, $ccname:ident : $type:ty),*) => {
-        {
-            match $remote.kind {
-                $(StoreKind::$ccname => await!(Self::fetch_by_backend($this, <$type>::open($remote.url.as_str())?))?,)*
-            }
-        }
+// NB eventually get_state will end up async since it talks to the local store, which is why
+// this is async.
+pub fn load_remote_branches<B: Backend>(
+    this: &Repository<B>,
+    remote_name: Name,
+) -> FutureBranches<B> {
+    let remote = remote_name.into();
+    let blocking = async_block! {
+        let mut state = this.get_state()?;
+        let branches = state
+            .remote_refs
+            .remove(&remote)
+            .ok_or_else(|| format_err!("no branches for remote"))?;
+        Ok(branches)
     };
-    ($this:expr, $remote:expr) => {
-        all_backends!(dispatch_fetch!(@inner $this, $remote))
-    };
+
+    Box::new(blocking)
 }
 
-impl<B: Backend> Repository<B> {
-    pub fn fetch_by_name<S: Into<String>>(this: &mut Self, remote_name: S) -> FutureBranches<B> {
-        let remote = remote_name.into();
-        let blocking = async_block! {
-            let new_branches = {
-                let config = this.get_config()?;
-                let remote = config.remotes[&remote].clone();
-                dispatch_fetch!(this, remote)
-            };
-            let mut state = this.get_state()?;
-            state.remote_refs.insert(remote, new_branches.clone());
-            this.set_state(&state)?;
-            Ok(new_branches)
-        };
+pub fn load_branches<B: Backend>(this: &Repository<B>) -> FutureBranches<B> {
+    let blocking = async_block! {
+        let handles = await!(this.store.load_branches())?;
+        let branches = handles
+            .into_iter()
+            .map(|(name, handle)| Ok((Name::from_string(name)?, CommitRef::new(handle))))
+            .collect::<Result<_, Error>>()?;
+        Ok(branches)
+    };
 
-        Box::new(blocking)
+    Box::new(blocking)
+}
+
+pub fn swap_branches<B: Backend>(
+    this: &mut Repository<B>,
+    previous: Branches<B>,
+    new: Branches<B>,
+) -> FutureUnit {
+    let blocking = async_block! {
+        let previous_handles = previous
+            .into_iter()
+            .map(|(name, commit_ref)| (name.into_string(), commit_ref.into_inner()))
+            .collect();
+        let new_handles = new.into_iter()
+            .map(|(name, commit_ref)| (name.into_string(), commit_ref.into_inner()))
+            .collect();
+        await!(this.store.swap_branches(previous_handles, new_handles))?;
+        Ok(())
+    };
+
+    Box::new(blocking)
+}
+
+pub fn resolve_opt<B: Backend>(this: &Repository<B>, refr: Ref) -> FutureOptionCommitRef<B> {
+    match refr {
+        Ref::Head => resolve_head_opt(this),
+        Ref::Local(local_ref) => resolve_local_opt(this, local_ref),
+        Ref::Remote(remote, local_ref) => resolve_remote_opt(this, remote, local_ref),
     }
+}
 
-    pub fn fetch_by_backend<C: Backend>(this: &mut Self, remote_backend: C) -> FutureBranches<B> {
-        let blocking = async_block! {
-            let remote = Store::new(remote_backend);
-            let branches = await!(remote.load_branches())?;
-
-            let mut new_branches = HashMap::new();
-            for (branch_name, commit_handle) in branches {
-                let commit_ref = CommitRef::new(await!(store::copy(commit_handle, this.store.clone()))?);
-                new_branches.insert(branch_name, commit_ref);
-            }
-
-            Ok(new_branches)
-        };
-
-        Box::new(blocking)
+pub fn resolve<B: Backend>(this: &Repository<B>, refr: Ref) -> FutureCommitRef<B> {
+    match refr {
+        Ref::Local(local_ref) => resolve_local(this, local_ref),
+        Ref::Remote(remote, local_ref) => resolve_remote(this, remote, local_ref),
+        Ref::Head => resolve_head(this),
     }
+}
 
-    // NB eventually get_state will end up async since it talks to the local store, which is why
-    // this is async.
-    pub fn load_remote_branches<S: Into<String>>(this: &Self, remote_name: S) -> FutureBranches<B> {
-        let remote = remote_name.into();
-        let blocking = async_block! {
-            let mut state = this.get_state()?;
-            let branches = state
-                .remote_refs
-                .remove(&remote)
-                .ok_or_else(|| format_err!("no branches for remote"))?;
-            Ok(branches)
-        };
+pub fn resolve_local_opt<B: Backend>(
+    this: &Repository<B>,
+    local_ref: Name,
+) -> FutureOptionCommitRef<B> {
+    let blocking = async_block! {
+        Ok(await!(load_branches(this))?.get(&local_ref).cloned())
+    };
 
-        Box::new(blocking)
-    }
+    Box::new(blocking)
+}
 
-    pub fn load_branches(this: &Self) -> FutureBranches<B> {
-        let blocking = async_block! {
-            let handles = await!(this.store.load_branches())?;
-            let branches = handles
-                .into_iter()
-                .map(|(name, handle)| (name, CommitRef::new(handle)))
-                .collect();
-            Ok(branches)
-        };
+pub fn resolve_local<B: Backend>(this: &Repository<B>, local_ref: Name) -> FutureCommitRef<B> {
+    Box::new(
+        resolve_local_opt(this, local_ref.clone()).and_then(|maybe_ref| {
+            maybe_ref.ok_or_else(move || format_err!("no such branch {}", local_ref))
+        }),
+    )
+}
 
-        Box::new(blocking)
-    }
+pub fn resolve_remote_opt<B: Backend>(
+    this: &Repository<B>,
+    remote_name: Name,
+    branch_name: Name,
+) -> FutureOptionCommitRef<B> {
+    let blocking = async_block! {
+        let branches = await!(load_remote_branches(this, remote_name))?;
+        Ok(branches.get(&branch_name).cloned())
+    };
 
-    pub fn swap_branches(this: &mut Self, previous: Branches<B>, new: Branches<B>) -> FutureUnit {
-        let blocking = async_block! {
-            let previous_handles = previous
-                .into_iter()
-                .map(|(name, commit_ref)| (name, commit_ref.into_inner()))
-                .collect();
-            let new_handles = new.into_iter()
-                .map(|(name, commit_ref)| (name, commit_ref.into_inner()))
-                .collect();
-            await!(this.store.swap_branches(previous_handles, new_handles))?;
-            Ok(())
-        };
+    Box::new(blocking)
+}
 
-        Box::new(blocking)
-    }
+pub fn resolve_remote<B: Backend>(
+    this: &Repository<B>,
+    remote_name: Name,
+    branch_name: Name,
+) -> FutureCommitRef<B> {
+    let blocking = async_block! {
+        let branches = await!(load_remote_branches(this, remote_name.clone()))?;
+        Ok(branches
+            .get(&branch_name)
+            .ok_or_else(|| format_err!("no such branch {} on remote {}", branch_name, remote_name.clone()))?
+            .clone())
+    };
 
-    pub fn resolve(this: &Self, refr: Ref) -> FutureCommitRef<B> {
-        match refr {
-            Ref::Local(local_ref) => Self::resolve_local(this, local_ref),
-            Ref::Remote(remote, local_ref) => Self::resolve_remote(this, remote, local_ref),
-            Ref::Head => Self::resolve_head(this),
+    Box::new(blocking)
+}
+
+pub fn resolve_head_opt<B: Backend>(this: &Repository<B>) -> FutureOptionCommitRef<B> {
+    let blocking = async_block! {
+        let state = this.get_state()?; // NB soon to be async
+        match state.head {
+            Head::Empty => Ok(None),
+            Head::Detached(commit_ref) => Ok(Some(commit_ref)),
+            Head::Branch(branch) => await!(resolve_local_opt(this, branch)),
         }
-    }
+    };
 
-    pub fn resolve_local(this: &Self, local_ref: LocalRef) -> FutureCommitRef<B> {
-        let blocking = async_block! {
-            match local_ref {
-                LocalRef::Branch(branch) => Ok(await!(Self::load_branches(this))?[&branch].clone()),
-            }
-        };
+    Box::new(blocking)
+}
 
-        Box::new(blocking)
-    }
+pub fn resolve_head<B: Backend>(this: &Repository<B>) -> FutureCommitRef<B> {
+    let blocking = async_block! {
+        let state = this.get_state()?; // NB soon to be async
+        match state.head {
+            Head::Empty => bail!("empty head"),
+            Head::Detached(commit_ref) => Ok(commit_ref),
+            Head::Branch(branch) => await!(resolve_local(this, branch)),
+        }
+    };
 
-    pub fn resolve_remote<S: Into<String>>(
-        this: &Self,
-        remote_name: S,
-        local_ref: LocalRef,
-    ) -> FutureCommitRef<B> {
-        let remote = remote_name.into();
-        let blocking = async_block! {
-            let branches = await!(Self::load_remote_branches(this, &*remote))?;
+    Box::new(blocking)
+}
 
-            match local_ref {
-                LocalRef::Branch(branch) => Ok(branches
-                    .get(&branch)
-                    .ok_or_else(|| format_err!("no such branch {} on remote {}", branch, remote))?
-                    .clone()),
-            }
-        };
+pub fn set_head<B: Backend>(this: &mut Repository<B>, head: Head<Handle<B>>) -> FutureUnit {
+    let blocking = async_block! {
+        let state = this.get_state()?;
+        this.set_state(&State { head, ..state })?;
+        Ok(())
+    };
 
-        Box::new(blocking)
-    }
-
-    pub fn resolve_head(this: &Self) -> FutureCommitRef<B> {
-        let blocking = async_block! {
-            let state = this.get_state()?; // NB soon to be async
-            match state.head {
-                Head::Empty => bail!("empty head"),
-                Head::Detached(commit_ref) => Ok(commit_ref),
-                Head::Branch(branch) => await!(Self::resolve_local(this, LocalRef::Branch(branch))),
-            }
-        };
-
-        Box::new(blocking)
-    }
-
+    Box::new(blocking)
 }

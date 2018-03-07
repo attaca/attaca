@@ -6,6 +6,7 @@ use futures::prelude::*;
 use hex;
 
 use Repository;
+use plumbing;
 use state::Head;
 use syntax::Ref;
 
@@ -33,7 +34,7 @@ impl<'r> fmt::Debug for ShowOut<'r> {
 impl<B: Backend> Repository<B> {
     pub fn show<'r>(&'r self, args: ShowArgs) -> ShowOut<'r> {
         let blocking = async_block! {
-            let resolved_ref = await!(Self::resolve(self, args.refr))?;
+            let resolved_ref = await!(plumbing::resolve(self, args.refr))?;
             let subtree = await!(await!(resolved_ref.fetch())?.as_subtree().fetch())?;
 
             for (name, objref) in subtree {

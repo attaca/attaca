@@ -56,7 +56,7 @@ impl<B: Backend> Repository<B> {
             let maybe_head = match state.head {
                 Head::Empty => None,
                 Head::Detached(commit_ref) => Some(commit_ref.as_inner().clone()),
-                Head::Branch(branch) => Some(await!(self.store.load_branches())?[&branch].clone()),
+                Head::Branch(branch) => await!(self.store.load_branches())?.get(branch.as_str()).cloned(),
             };
 
             if let Some(head) = maybe_head {

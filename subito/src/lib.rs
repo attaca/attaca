@@ -135,9 +135,9 @@ pub mod syntax;
 pub mod log;
 
 #[macro_use]
-pub mod clone;
-#[macro_use]
 pub mod init;
+#[macro_use]
+pub mod clone;
 #[macro_use]
 pub mod open;
 
@@ -155,13 +155,14 @@ use state::State;
 pub use branch::BranchArgs;
 pub use candidate::{CommitArgs, StageArgs};
 pub use checkout::CheckoutArgs;
-pub use clone::CloneArgs;
+pub use clone::{clone, CloneArgs};
 pub use fetch::FetchArgs;
 pub use fsck::FsckArgs;
 pub use init::InitArgs;
 pub use log::LogArgs;
 pub use remote::RemoteArgs;
 pub use show::ShowArgs;
+pub use state::Head;
 pub use status::StatusArgs;
 
 pub struct Repository<B: Backend> {

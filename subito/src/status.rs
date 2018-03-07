@@ -17,7 +17,7 @@ pub struct StatusArgs {}
 
 #[must_use = "StatusOut contains futures which must be driven to completion!"]
 pub struct StatusOut<'r> {
-    pub head: Box<Future<Item = Option<String>, Error = Error> + 'r>,
+    pub head: Box<Future<Item = Head<String>, Error = Error> + 'r>,
     pub candidate: Box<Future<Item = Option<String>, Error = Error> + 'r>,
     pub staged: Box<Stream<Item = Change, Error = Error> + 'r>,
 }
@@ -46,15 +46,15 @@ impl<B: Backend> Repository<B> {
             let shared = shared.clone();
             async_block! {
                 let commit_ref = match await!(shared)?.head {
-                    Head::Empty => return Ok(None),
+                    Head::Empty => return Ok(Head::Empty),
+                    Head::Branch(ref branch) => return Ok(Head::Branch(branch.clone())),
                     Head::Detached(ref commit_ref) => {
                         commit_ref.as_inner().clone()
                     }
-                    Head::Branch(ref branch) => return Ok(Some(String::from("branch/") + branch)),
                 };
                 let head_id = await!(commit_ref.id())?;
                 let head_hex = hex::encode(head_id.borrow().as_bytes());
-                Ok(Some(head_hex))
+                Ok(Head::Detached(CommitRef::new(head_hex)))
             }
         };
         let candidate = {
@@ -67,8 +67,8 @@ impl<B: Backend> Repository<B> {
             }
         };
         let staged = async_stream_block! {
-            let shared_head = await!(shared)?;
-            let staged_changes = Self::staged_changes(self.store.clone(), (*shared_head).clone());
+            let shared_state = await!(shared)?;
+            let staged_changes = Self::staged_changes(self.store.clone(), (*shared_state).clone());
             #[async]
             for change in staged_changes {
                 stream_yield!(change);
@@ -188,9 +188,10 @@ impl<B: Backend> Repository<B> {
         let maybe_head = match state.head {
             Head::Empty => None,
             Head::Detached(commit_ref) => Some(commit_ref),
-            Head::Branch(branch) => Some(CommitRef::new(
-                await!(store.load_branches())?[&branch].clone(),
-            )),
+            Head::Branch(branch) => await!(store.load_branches())?
+                .get(branch.as_str())
+                .cloned()
+                .map(CommitRef::new),
         };
 
         match (maybe_head, state.candidate) {

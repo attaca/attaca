@@ -10,10 +10,12 @@ use Repository;
 use config::{Config, StoreConfig, StoreKind};
 use db::Key;
 use init::{InitArgs, InitStore};
+use plumbing;
+use syntax::{Name, Ref};
 
 /// Create a local repository by cloning data from a remote repository. The default store type is `leveldb`.
 #[derive(Debug, Clone, StructOpt, Builder)]
-#[structopt(name = "init")]
+#[structopt(name = "clone")]
 pub struct CloneArgs {
     /// URL of the repository to clone.
     #[structopt(name = "URL", parse(try_from_str = "Url::parse"))]
@@ -28,7 +30,7 @@ pub struct CloneArgs {
 }
 
 pub struct CloneOut {
-    blocking: Box<Future<Item = (), Error = Error>>,
+    pub blocking: Box<Future<Item = (), Error = Error>>,
 }
 
 #[macro_export]
@@ -48,7 +50,7 @@ macro_rules! clone {
                         let head;
                         let candidate;
 
-                        {
+                        let repository = {
                             use $crate::reexports::futures::prelude::*;
                             let store =
                                 Store::new(<$type as $crate::reexports::attaca::Open>
@@ -59,13 +61,7 @@ macro_rules! clone {
                                 store::copy(branches["master"].clone(), repository.store.clone()).wait()?;
                             let head = CommitRef::new(local_master);
                             let candidate = head.fetch().wait()?.as_subtree().clone();
-                        }
-
-                        repository.set_state(State {
-                            head: Some(head),
-                            candidate: Some(candidate),
-                            active_branch: Some(String::from("master")),
-                        })?;
+                        };
 
                         {
                             #[allow(unused_mut)]
@@ -84,4 +80,34 @@ macro_rules! clone {
     ($args:expr, $repo:ident, $generic:expr) => {
         all_backends!(clone!(@inner $args, $repo, $generic))
     };
+}
+
+pub fn clone(args: CloneArgs) -> CloneOut {
+    let init_args = InitArgs {
+        path: args.path,
+        store: args.store,
+    };
+    let url = args.url;
+    let blocking = init!(init_args, repository, clone_from(repository, url));
+
+    CloneOut {
+        blocking: Box::new(blocking.into_future().flatten()),
+    }
+}
+
+fn clone_from<B: Backend>(
+    mut this: Repository<B>,
+    url: Url,
+) -> Box<Future<Item = (), Error = Error>> {
+    let blocking = async_block! {
+        let origin = "origin".parse::<Name>()?;
+        let master = "master".parse::<Name>()?;
+        // NB wait here because of issues w/ borrowing in generators.
+        plumbing::remote::add(&mut this, origin.clone(), url).wait()?;
+        plumbing::fetch::remote(&mut this, origin.clone()).wait()?;
+        plumbing::checkout::by_ref(&mut this, Ref::Remote(origin, master)).wait()?;
+        Ok(())
+    };
+
+    Box::new(blocking)
 }

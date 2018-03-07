@@ -8,10 +8,17 @@ use url::Url;
 use Repository;
 use config::{StoreConfig, StoreKind};
 use state::{Head, State};
+use syntax::Name;
+
+#[derive(Debug, Clone, StructOpt, Builder)]
+#[structopt(name = "branch")]
+pub struct BranchArgs {
+    #[structopt(subcommand)]
+    cmd: Option<BranchCommand>,
+}
 
 #[derive(Debug, Clone, StructOpt)]
-#[structopt(name = "branch")]
-pub enum BranchArgs {
+pub enum BranchCommand {
     #[structopt(name = "create")]
     Create(BranchCreateArgs),
 
@@ -19,18 +26,24 @@ pub enum BranchArgs {
     List(BranchListArgs),
 }
 
+impl Default for BranchCommand {
+    fn default() -> Self {
+        BranchCommand::List(BranchListArgs::default())
+    }
+}
+
 #[derive(Debug, Clone, StructOpt, Builder)]
 #[structopt(name = "create")]
 pub struct BranchCreateArgs {
     #[structopt(name = "BRANCH")]
-    name: String,
+    name: Name,
 }
 
-#[derive(Debug, Clone, StructOpt, Builder)]
+#[derive(Debug, Clone, Default, StructOpt, Builder)]
 #[structopt(name = "list")]
 pub struct BranchListArgs {
     #[structopt(long = "remote", short = "r")]
-    remote: Option<String>,
+    remote: Option<Name>,
 }
 
 pub struct BranchOut<'r> {
@@ -39,9 +52,9 @@ pub struct BranchOut<'r> {
 
 impl<B: Backend> Repository<B> {
     pub fn branch<'r>(&'r mut self, args: BranchArgs) -> BranchOut<'r> {
-        match args {
-            BranchArgs::Create(create_args) => self.branch_create(create_args),
-            BranchArgs::List(list_args) => self.branch_list(list_args),
+        match args.cmd.unwrap_or_default() {
+            BranchCommand::Create(create_args) => self.branch_create(create_args),
+            BranchCommand::List(list_args) => self.branch_list(list_args),
         }
     }
 
@@ -49,14 +62,14 @@ impl<B: Backend> Repository<B> {
         let blocking = async_block! {
             let state = self.get_state()?;
             let branches = await!(self.store.load_branches())?;
-            ensure!(!branches.contains_key(&args.name), "branch already exists");
+            ensure!(!branches.contains_key(args.name.as_str()), "branch already exists");
             let commit_ref = match state.head {
                 Head::Empty => bail!("no prior commits"),
                 Head::Detached(commit_ref) => commit_ref.into_inner(),
-                Head::Branch(branch) => branches[&branch].clone(),
+                Head::Branch(branch) => branches[branch.as_str()].clone(),
             };
             let mut new_branches = branches.clone();
-            new_branches.insert(args.name, commit_ref);
+            new_branches.insert(args.name.into_string(), commit_ref);
             await!(self.store.swap_branches(branches, new_branches))?;
             Ok(())
         };
@@ -86,10 +99,11 @@ impl<B: Backend> Repository<B> {
                     let branches = await!(self.store.load_branches())?;
                     // TODO better and more flexible output instead of just printlning everything
                     for (branch_name, _) in branches {
-                        if Some(&branch_name) == maybe_branch.as_ref() {
-                            println!("=> {}", branch_name);
-                        } else {
-                            println!("   {}", branch_name);
+                        match maybe_branch {
+                            Some(ref name) if name.as_str() == &branch_name => {
+                                println!("=> {}", branch_name)
+                            }
+                            _ => println!("   {}", branch_name),
                         }
                     }
                 }

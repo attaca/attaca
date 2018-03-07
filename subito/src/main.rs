@@ -21,7 +21,7 @@ use clap::App;
 use failure::Error;
 use futures::prelude::*;
 use structopt::StructOpt;
-use subito::{BranchArgs, CheckoutArgs, CloneArgs, CommitArgs, FetchArgs, FsckArgs, InitArgs,
+use subito::{BranchArgs, CheckoutArgs, CloneArgs, CommitArgs, FetchArgs, FsckArgs, Head, InitArgs,
              LogArgs, RemoteArgs, ShowArgs, StageArgs, StatusArgs};
 
 fn main() {
@@ -41,6 +41,7 @@ fn run() -> Result<(), Error> {
     let app = App::from_yaml(yml)
         .subcommand(BranchArgs::clap())
         .subcommand(CheckoutArgs::clap())
+        .subcommand(CloneArgs::clap())
         .subcommand(CommitArgs::clap())
         .subcommand(FetchArgs::clap())
         .subcommand(FsckArgs::clap())
@@ -60,7 +61,10 @@ fn run() -> Result<(), Error> {
             let args = CheckoutArgs::from_clap(sub_m);
             search!(repository, repository.checkout(args).blocking.wait())?
         }
-        // ("clone", Some(sub_m)) => clone!(CloneArgs::from_clap(sub_m), repository, Ok(()))?,
+        ("clone", Some(sub_m)) => {
+            subito::clone(CloneArgs::from_clap(sub_m)).blocking.wait()?;
+            Ok(())
+        }
         ("fetch", Some(sub_m)) => {
             let args = FetchArgs::from_clap(sub_m);
             search!(repository, repository.fetch(args).blocking.wait())?
@@ -142,12 +146,17 @@ fn run() -> Result<(), Error> {
             search!(repository, {
                 let status = repository.status(args);
                 let (head, cand) = status.head.join(status.candidate).wait()?;
-                let head_display = head.as_ref().map(|s| &s[..8]);
+
+                let head_display = match head {
+                    Head::Empty => None,
+                    Head::Detached(commit) => Some(format!("commit {}", &commit.as_inner()[..8])),
+                    Head::Branch(branch) => Some(format!("branch {}", branch)),
+                };
                 let cand_display = cand.as_ref().map(|s| &s[..8]);
 
                 match (head_display, cand_display) {
-                    (Some(h), Some(c)) => println!("On commit {} with virtual workspace {}", h, c),
-                    (Some(h), None) => println!("On commit {} without any virtual workspace", h),
+                    (Some(h), Some(c)) => println!("On {} with virtual workspace {}", h, c),
+                    (Some(h), None) => println!("On {} without any virtual workspace", h),
                     (None, Some(c)) => println!("No prior commit with virtual workspace {}", c),
                     (None, None) => println!("No prior commit or virtual workspace"),
                 }

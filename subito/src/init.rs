@@ -54,7 +54,7 @@ macro_rules! init {
                     $args.path
                         .map(Ok)
                         .unwrap_or_else(::std::env::current_dir)
-                        .map_err(failure::err_msg)
+                        .map_err($crate::reexports::failure::err_msg)
                         .and_then(|path| {
                             #[allow(unused_mut)]
                             let mut $repo =

@@ -35,7 +35,7 @@ impl<B: Backend> Repository<B> {
             let head = match state.head {
                 Head::Empty => return Ok(()),
                 Head::Detached(head) => head,
-                Head::Branch(branch) => CommitRef::new(await!(self.store.load_branches())?[&branch].clone()),
+                Head::Branch(branch) => CommitRef::new(await!(self.store.load_branches())?[branch.as_str()].clone()),
             };
 
             let mut visited = HashSet::new();
