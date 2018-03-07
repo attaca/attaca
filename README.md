@@ -14,8 +14,8 @@ files; for example, a data scientist might want to version their fifty- or one
 hundred-gigabyte dataset alongside their scripts and analysis code. Most
 solutions to this problem are thrown together haphazardly or hacked together
 out of existing version control solutions which were never designed to handle
-the load. Attaca - and Subito - aim to handle the load efficiently and
-robustly.
+the load. Attaca - and Subito - are intended for data management of this scale,
+in an efficient, robust, and ergonomic manner.
 
 ## How do I build it?
 
