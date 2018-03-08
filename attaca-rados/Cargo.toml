@@ -1,6 +1,27 @@
 [package]
+authors = ["Sean Leffler <sean@errno.com>"]
 name = "attaca-rados"
 version = "0.1.0"
-authors = ["Sean Leffler <sean@errno.com>"]
+
+[build-dependencies]
+capnpc = "0.8.8"
 
 [dependencies]
+base64 = "0.9.0"
+bytes = "0.4.6"
+capnp = "0.8.15"
+failure = "0.1.1"
+futures-await = "0.1.0"
+leb128 = "0.2.2"
+rad = "0.5.0"
+url = "1.7.0"
+
+[dependencies.attaca]
+path = ".."
+
+[dependencies.owning_ref]
+git = "https://github.com/sdleffler/owning-ref-rs"
+
+[dependencies.uuid]
+features = ["v4"]
+version = "0.6.1"
