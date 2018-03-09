@@ -27,6 +27,7 @@ pub fn create<B: Backend>(this: &mut Repository<B>, name: Name) -> FutureUnit {
         let mut new_branches = branches.clone();
         new_branches.insert((*name).to_owned(), commit_ref);
         await!(this.store.swap_branches(branches, new_branches))?;
+
         Ok(())
     };
 
@@ -41,6 +42,31 @@ pub fn delete<B: Backend>(this: &mut Repository<B>, name: Name) -> FutureUnit {
         let mut new_branches = branches.clone();
         new_branches.remove(name.as_str());
         await!(this.store.swap_branches(branches, new_branches))?;
+
+        let mut state = this.get_state()?;
+        state.upstreams.remove(&name);
+        this.set_state(&state)?;
+
+        Ok(())
+    };
+
+    Box::new(blocking)
+}
+
+/// Set a branch upstream.
+pub fn set_upstream<B: Backend>(
+    this: &mut Repository<B>,
+    name: Name,
+    maybe_upstream: Option<(Name, Name)>,
+) -> FutureUnit {
+    let blocking = async_block! {
+        let mut state = this.get_state()?;
+        match maybe_upstream {
+            Some(upstream) => { state.upstreams.insert(name, upstream); }
+            None => { state.upstreams.remove(&name); }
+        }
+        this.set_state(&state)?;
+
         Ok(())
     };
 
