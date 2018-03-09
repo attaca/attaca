@@ -8,6 +8,7 @@ use url::Url;
 use Repository;
 use config::{StoreConfig, StoreKind};
 use state::{Head, State};
+use plumbing;
 use syntax::Name;
 
 #[derive(Debug, Clone, StructOpt, Builder)]
@@ -59,23 +60,8 @@ impl<B: Backend> Repository<B> {
     }
 
     pub fn branch_create<'r>(&'r mut self, args: BranchCreateArgs) -> BranchOut<'r> {
-        let blocking = async_block! {
-            let state = self.get_state()?;
-            let branches = await!(self.store.load_branches())?;
-            ensure!(!branches.contains_key(args.name.as_str()), "branch already exists");
-            let commit_ref = match state.head {
-                Head::Empty => bail!("no prior commits"),
-                Head::Detached(commit_ref) => commit_ref.into_inner(),
-                Head::Branch(branch) => branches[branch.as_str()].clone(),
-            };
-            let mut new_branches = branches.clone();
-            new_branches.insert(args.name.into_string(), commit_ref);
-            await!(self.store.swap_branches(branches, new_branches))?;
-            Ok(())
-        };
-
         BranchOut {
-            blocking: Box::new(blocking),
+            blocking: plumbing::branch::create(self, args.name),
         }
     }
 
