@@ -84,9 +84,9 @@ impl<B: Backend> Repository<B> {
             let state = self.get_state()?;
             match args.remote {
                 Some(remote) => {
-                    ensure!(state.remote_refs.contains_key(&remote), "no such remote");
+                    ensure!(state.remote_branches.contains_key(&remote), "no such remote");
 
-                    for (branch_name, _) in &state.remote_refs[&remote] {
+                    for (branch_name, _) in &state.remote_branches[&remote] {
                         println!("   {}", branch_name);
                     }
                 }

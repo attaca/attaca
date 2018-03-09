@@ -7,7 +7,7 @@ struct Store {
 
     union {
         levelDb @1 :Void;
-        ceph @2 :Void;
+        rados @2 :Void;
     }
 }
 

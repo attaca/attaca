@@ -1,6 +1,7 @@
 use std::{env, path::PathBuf};
 
 use attaca_leveldb::LevelDbBackend;
+use attaca_rados::RadosBackend;
 use failure::*;
 use leveldb::{database::Database, kv::KV, options::{Options, ReadOptions}};
 
@@ -50,6 +51,10 @@ macro_rules! open {
 
 pub fn leveldb(config: Config) -> Result<LevelDbBackend, Error> {
     Ok(LevelDbBackend::open(config.store.url.as_str())?)
+}
+
+pub fn rados(config: Config) -> Result<RadosBackend, Error> {
+    Ok(RadosBackend::open(config.store.url.as_str())?)
 }
 
 #[macro_export]

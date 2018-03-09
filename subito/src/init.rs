@@ -2,6 +2,7 @@ use std::{env, fs, path::{Path, PathBuf}};
 
 use attaca::{Init, Open, digest::prelude::*, store::prelude::*};
 use attaca_leveldb::LevelDbBackend;
+use attaca_rados::RadosBackend;
 use failure::*;
 use leveldb::{database::Database, kv::KV, options::{Options, ReadOptions, WriteOptions}};
 use url::{self, Url};
@@ -22,10 +23,14 @@ pub struct InitArgs {
     pub store: Option<InitStore>,
 }
 
+// TODO allow init from URL instead of store-specific init.
 #[derive(Debug, Clone, StructOpt)]
 pub enum InitStore {
     #[structopt(name = "leveldb")]
     LevelDb(InitLevelDb),
+
+    #[structopt(name = "rados")]
+    Rados(InitRados),
 }
 
 impl Default for InitStore {
@@ -43,6 +48,16 @@ pub struct InitLevelDb {
     /// Fail unless the LevelDB repository already exists.
     #[structopt(name = "no-init", long = "no-init", raw(requires = r#""URL""#))]
     no_init: bool,
+}
+
+#[derive(Debug, Clone, Default, StructOpt)]
+pub struct InitRados {
+    /// Path to a ceph.conf file to read when connecting to the RADOS cluster.
+    #[structopt(name = "CONF", parse(from_os_str))]
+    ceph_conf: PathBuf,
+
+    #[structopt(long = "pool", default_value = r#"attaca"#)]
+    pool: String,
 }
 
 #[macro_export]
@@ -108,6 +123,27 @@ pub fn leveldb<P: AsRef<Path>>(
     let store_config = StoreConfig {
         url,
         kind: StoreKind::LevelDb,
+    };
+
+    Ok((store_config, backend))
+}
+
+pub fn rados<P: AsRef<Path>>(
+    path: P,
+    args: InitRados,
+) -> Result<(StoreConfig, RadosBackend), Error> {
+    let InitRados { ceph_conf, pool } = args;
+
+    let mut url = Url::from_file_path(ceph_conf.canonicalize()?)
+        .map_err(|_| format_err!("bad ceph.conf path"))?;
+    url.set_scheme("ceph").unwrap();
+    url.query_pairs_mut().append_pair("pool", &pool);
+
+    let backend = RadosBackend::open(url.as_str())?;
+
+    let store_config = StoreConfig {
+        url,
+        kind: StoreKind::Rados,
     };
 
     Ok((store_config, backend))

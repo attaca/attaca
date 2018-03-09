@@ -14,6 +14,7 @@ use config_capnp::*;
 #[derive(Debug, Clone, Copy)]
 pub enum StoreKind {
     LevelDb,
+    Rados,
 }
 
 #[derive(Debug, Clone)]
@@ -28,6 +29,7 @@ pub struct Config {
     pub remotes: HashMap<String, StoreConfig>,
 }
 
+// TODO codegen match statements/sets for this through the all_backends! macro.
 impl Config {
     pub fn decode<R: BufRead>(reader: &mut R) -> Result<Self, Error> {
         let message_reader = serialize_packed::read_message(reader, message::ReaderOptions::new())?;
@@ -38,7 +40,7 @@ impl Config {
             let url = Url::parse(store_reader.get_url()?)?;
             let kind = match store_reader.which()? {
                 store::LevelDb(()) => StoreKind::LevelDb,
-                store::Ceph(()) => unimplemented!(),
+                store::Rados(()) => StoreKind::Rados,
             };
             StoreConfig { url, kind }
         };
@@ -54,7 +56,7 @@ impl Config {
                         let url = Url::parse(store_reader.get_url()?)?;
                         let kind = match store_reader.which()? {
                             store::LevelDb(()) => StoreKind::LevelDb,
-                            store::Ceph(()) => unimplemented!(),
+                            store::Rados(()) => StoreKind::Rados,
                         };
                         StoreConfig { url, kind }
                     };
@@ -75,6 +77,7 @@ impl Config {
                 let mut store_builder = config_builder.borrow().init_store();
                 match self.store.kind {
                     StoreKind::LevelDb => store_builder.set_level_db(()),
+                    StoreKind::Rados => store_builder.set_rados(()),
                 }
                 store_builder.set_url(self.store.url.as_str());
             }
@@ -89,6 +92,7 @@ impl Config {
                         let mut store_builder = remote_builder.get_store()?;
                         match remote.kind {
                             StoreKind::LevelDb => store_builder.set_level_db(()),
+                            StoreKind::Rados => store_builder.set_rados(()),
                         }
                         store_builder.set_url(remote.url.as_str());
                     }

@@ -1,16 +1,20 @@
 @0xbbef9cd0d77d3105;
 
-struct Branch {
-    name @0 :Text;
-    commitId @1 :Data;
-}
+struct Map(Key, Value) {
+    entries @0 :List(Entry);
 
-struct RemoteRefs {
-    name @0 :Text;
-    branches @1 :List(Branch);
+    struct Entry {
+        key @0 :Key;
+        value @1 :Value;
+    }
 }
 
 struct State {
+    struct RemoteRef {
+        remote @0 :Text;
+        branch @1 :Text;
+    }
+
     candidate :union {
         none @0 :Void;
         some @1 :Data;
@@ -22,5 +26,6 @@ struct State {
         branch @4 :Text;
     }
 
-    remoteRefs @5 :List(RemoteRefs);
+    remoteBranches @5 :Map(Text, Map(Text, Data));
+    upstreams @6 :Map(Text, RemoteRef);
 }

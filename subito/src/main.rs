@@ -3,6 +3,7 @@
 
 extern crate attaca;
 extern crate attaca_leveldb;
+extern crate attaca_rados;
 #[macro_use]
 extern crate clap;
 #[macro_use]

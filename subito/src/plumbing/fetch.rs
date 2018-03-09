@@ -21,7 +21,7 @@ pub fn remote<B: Backend>(this: &mut Repository<B>, remote_name: Name) -> Future
             dispatch_fetch!(this, remote)
         };
         let mut state = this.get_state()?;
-        state.remote_refs.insert(remote_name, new_branches.clone());
+        state.remote_branches.insert(remote_name, new_branches.clone());
         this.set_state(&state)?;
         Ok(new_branches)
     };

@@ -928,6 +928,7 @@ version = "0.0.1"
 dependencies = [
  "attaca 0.1.0",
  "attaca-leveldb 0.1.0",
+ "attaca-rados 0.1.0",
  "capnp 0.8.15 (registry+https://github.com/rust-lang/crates.io-index)",
  "capnpc 0.8.8 (registry+https://github.com/rust-lang/crates.io-index)",
  "clap 2.30.0 (registry+https://github.com/rust-lang/crates.io-index)",

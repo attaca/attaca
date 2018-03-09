@@ -3,6 +3,7 @@
 
 pub extern crate attaca;
 extern crate attaca_leveldb;
+extern crate attaca_rados;
 extern crate capnp;
 extern crate db_key;
 #[macro_use]
@@ -115,6 +116,7 @@ digests! {
 
 backends! {
     leveldb, LevelDb : ::attaca_leveldb::LevelDbBackend,
+    rados, Rados : ::attaca_rados::RadosBackend,
 }
 
 mod cache;

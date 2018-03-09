@@ -32,7 +32,7 @@ pub fn load_remote_branches<B: Backend>(
     let blocking = async_block! {
         let mut state = this.get_state()?;
         let branches = state
-            .remote_refs
+            .remote_branches
             .remove(&remote)
             .ok_or_else(|| format_err!("no branches for remote"))?;
         Ok(branches)

@@ -54,7 +54,8 @@ impl<H> Head<H> {
 pub struct State<H> {
     pub candidate: Option<TreeRef<H>>,
     pub head: Head<H>,
-    pub remote_refs: HashMap<Name, HashMap<Name, CommitRef<H>>>,
+    pub remote_branches: HashMap<Name, HashMap<Name, CommitRef<H>>>,
+    pub upstreams: HashMap<Name, (Name, Name)>,
 }
 
 impl<H> Default for State<H> {
@@ -62,7 +63,8 @@ impl<H> Default for State<H> {
         Self {
             candidate: None,
             head: Head::Empty,
-            remote_refs: HashMap::new(),
+            remote_branches: HashMap::new(),
+            upstreams: HashMap::new(),
         }
     }
 }
@@ -95,11 +97,7 @@ impl<B: Backend> State<Handle<B>> {
         use state_capnp::state::{self, candidate, head};
 
         async_block! {
-            let future_head;
-            let future_candidate;
-            let future_remote_refs;
-
-            {
+            let (blocking, upstreams) = {
                 let message_reader =
                     serialize_packed::read_message(&mut reader, message::ReaderOptions::new())?;
                 let state = message_reader.get_root::<state::Reader>()?;
@@ -119,41 +117,63 @@ impl<B: Backend> State<Handle<B>> {
                     candidate::None(()) => None,
                 };
 
-                let remote_refs = state
-                    .get_remote_refs()?
+                let remote_branches = state
+                    .get_remote_branches()?
+                    .get_entries()?
                     .iter()
-                    .map(|remote| {
-                        let branches = remote
-                            .get_branches()?
+                    .map(|entry| {
+                        let remote = entry.get_key()?.parse()?;
+                        let branches = entry
+                            .get_value()?
+                            .get_entries()?
                             .iter()
-                            .map(|branch| {
-                                let name = branch.get_name()?.parse()?;
-                                let commit_id = LocalId::<B>::from_bytes(branch.get_commit_id()?);
+                            .map(|entry| {
+                                let name = entry.get_key()?.parse()?;
+                                let commit_id = LocalId::<B>::from_bytes(entry.get_value()?);
                                 Ok((name, commit_id))
                             })
                             .collect::<Result<Vec<_>, Error>>()?;
 
-                        Ok((remote.get_name()?.parse()?, branches))
+                        Ok((remote, branches))
                     })
                     .collect::<Result<Vec<_>, Error>>()?;
 
-                future_head = head_id
+                let upstreams = state
+                    .get_upstreams()?
+                    .get_entries()?
+                    .iter()
+                    .map(|entry| {
+                        let name = entry.get_key()?.parse::<Name>()?;
+                        let remote_ref = entry.get_value()?;
+                        let remote = remote_ref.get_remote()?.parse::<Name>()?;
+                        let branch = remote_ref.get_branch()?.parse::<Name>()?;
+
+                        Ok((name, (remote, branch)))
+                    })
+                    .collect::<Result<_, Error>>()?;
+
+                let future_head = head_id
                     .resolve_id(&store)
                     .and_then(|rs| rs.ok_or_else(|| format_err!("Head does not exist!")));
-                future_candidate = candidate_id.map(|id| {
+
+                let future_candidate = candidate_id.map(|id| {
                     id.resolve_id(&store)
                         .and_then(|rs| rs.ok_or_else(|| format_err!("Candidate does not exist!")))
                 });
-                future_remote_refs = resolve_refs(remote_refs, store.clone());
-            }
 
-            let (candidate, head, remote_refs) =
-                await!(future_candidate.join3(future_head, future_remote_refs))?;
+                let future_remote_branches = resolve_refs(remote_branches, store.clone());
+                let blocking = future_candidate.join3(future_head, future_remote_branches);
+
+                (blocking, upstreams)
+            };
+
+            let (candidate, head, remote_branches) = await!(blocking)?;
 
             Ok(State {
                 candidate,
                 head,
-                remote_refs,
+                remote_branches,
+                upstreams,
             })
         }
     }
@@ -177,15 +197,19 @@ impl<B: Backend> State<Handle<B>> {
                 None => None,
             };
 
-            let mut remote_refs = HashMap::new();
-            for (remote_name, remote_branches) in state.remote_refs {
-                let mut branches = HashMap::new();
-                for (branch_name, commit_ref) in remote_branches {
-                    let commit_id = await!(commit_ref.id())?.into_inner();
-                    branches.insert(branch_name, commit_id);
+            let remote_branch_ids = {
+                let mut remote_branch_ids = HashMap::new();
+                for (remote_name, branches) in state.remote_branches {
+                    let mut branch_ids = HashMap::new();
+                    for (branch_name, commit_ref) in branches {
+                        let commit_id = await!(commit_ref.id())?.into_inner();
+                        branch_ids.insert(branch_name, commit_id);
+                    }
+                    remote_branch_ids.insert(remote_name, branch_ids);
                 }
-                remote_refs.insert(remote_name, branches);
-            }
+
+                remote_branch_ids
+            };
 
             let mut message = message::Builder::new_default();
 
@@ -213,17 +237,27 @@ impl<B: Backend> State<Handle<B>> {
                     }
                 }
                 {
-                    let mut remote_refs_builder =
-                        state_builder.init_remote_refs(remote_refs.len() as u32);
-                    for (i, (remote_name, branches)) in remote_refs.into_iter().enumerate() {
-                        let mut remote_builder = remote_refs_builder.borrow().get(i as u32);
-                        remote_builder.set_name(&remote_name);
-                        let mut remote_branches_builder = remote_builder.init_branches(branches.len() as u32);
-                        for (i, (branch_name, commit_id)) in branches.into_iter().enumerate() {
-                            let mut branch_builder = remote_branches_builder.borrow().get(i as u32);
-                            branch_builder.set_name(&branch_name);
-                            branch_builder.set_commit_id({ use std::borrow::Borrow; commit_id.borrow().as_bytes() });
+                    let mut entries =
+                        state_builder.borrow().get_remote_branches()?.init_entries(remote_branch_ids.len() as u32);
+                    for (i, (remote_name, branch_ids)) in remote_branch_ids.into_iter().enumerate() {
+                        let mut entry = entries.borrow().get(i as u32);
+                        entry.set_key(remote_name.as_str())?;
+                        let mut entries = entry.get_value()?.init_entries(branch_ids.len() as u32);
+                        for (i, (branch_name, commit_id)) in branch_ids.into_iter().enumerate() {
+                            let mut entry = entries.borrow().get(i as u32);
+                            entry.set_key(branch_name.as_str())?;
+                            entry.set_value({ use std::borrow::Borrow; commit_id.borrow().as_bytes() })?;
                         }
+                    }
+                }
+                {
+                    let mut entries = state_builder.borrow().get_upstreams()?.init_entries(state.upstreams.len() as u32);
+                    for (i, (name, (remote, branch))) in state.upstreams.into_iter().enumerate() {
+                        let mut entry = entries.borrow().get(i as u32);
+                        entry.set_key(name.as_str())?;
+                        let mut remote_ref = entry.get_value()?;
+                        remote_ref.set_remote(remote.as_str());
+                        remote_ref.set_branch(branch.as_str());
                     }
                 }
             }
