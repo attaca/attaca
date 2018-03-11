@@ -22,24 +22,10 @@ pub fn remote<B: Backend>(this: &mut Repository<B>, remote_name: Name) -> Future
         };
 
         let mut state = this.get_state()?;
-
         state
             .remote_branches
-            .insert(remote_name.clone(), new_remote_branches.clone());
-
+            .insert(remote_name, new_remote_branches.clone());
         this.set_state(&state)?;
-
-        let tracking_branches = state
-            .upstreams
-            .into_iter()
-            .filter(|&(_, ref remote_ref)| remote_ref.remote == remote_name)
-            .map(|(branch, remote_ref)| (branch, new_remote_branches[&remote_ref.branch].clone()))
-            .collect::<Vec<_>>();
-
-        let branches = await!(load_branches(this))?;
-        let mut new_branches = branches.clone();
-        new_branches.extend(tracking_branches);
-        await!(swap_branches(this, branches, new_branches))?;
 
         Ok(new_remote_branches)
     };
