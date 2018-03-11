@@ -152,10 +152,18 @@ impl<B: Backend> Iterator for Content<B> {
     }
 }
 
-#[derive(Debug)]
 pub struct Handle<B: Backend> {
     store: Store<B>,
     id: RawHandle,
+}
+
+impl<B: Backend> fmt::Debug for Handle<B> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("Handle")
+            .field("id", &self.id.0)
+            .field("store_id", &self.store.inner.uuid)
+            .finish()
+    }
 }
 
 impl<B: Backend> Clone for Handle<B> {
