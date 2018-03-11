@@ -17,7 +17,11 @@ pub fn remote<B: Backend>(this: &mut Repository<B>, remote_name: Name) -> Future
     let blocking = async_block! {
         let new_remote_branches = {
             let config = this.get_config()?;
-            let remote = config.remotes[remote_name.as_str()].clone();
+            let remote = config
+                .remotes
+                .get(remote_name.as_str())
+                .ok_or_else(|| format_err!("no such remote"))?
+                .clone();
             dispatch_fetch!(this, remote)
         };
 
