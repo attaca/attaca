@@ -12,7 +12,7 @@ use futures::prelude::*;
 use Repository;
 use config::StoreKind;
 use state::{Head, State};
-use syntax::{Name, Ref};
+use syntax::{Name, Ref, BranchRef};
 
 pub type Branches<B> = HashMap<Name, CommitRef<Handle<B>>>;
 
@@ -77,16 +77,16 @@ pub fn swap_branches<B: Backend>(
 pub fn resolve_opt<B: Backend>(this: &Repository<B>, refr: Ref) -> FutureOptionCommitRef<B> {
     match refr {
         Ref::Head => resolve_head_opt(this),
-        Ref::Local(local_ref) => resolve_local_opt(this, local_ref),
-        Ref::Remote(remote, local_ref) => resolve_remote_opt(this, remote, local_ref),
+        Ref::Branch(BranchRef::Local(branch)) => resolve_local_opt(this, branch),
+        Ref::Branch(BranchRef::Remote(remote_ref)) => resolve_remote_opt(this, remote_ref.remote, remote_ref.branch),
     }
 }
 
 pub fn resolve<B: Backend>(this: &Repository<B>, refr: Ref) -> FutureCommitRef<B> {
     match refr {
-        Ref::Local(local_ref) => resolve_local(this, local_ref),
-        Ref::Remote(remote, local_ref) => resolve_remote(this, remote, local_ref),
         Ref::Head => resolve_head(this),
+        Ref::Branch(BranchRef::Local(branch)) => resolve_local(this, branch),
+        Ref::Branch(BranchRef::Remote(remote_ref)) => resolve_remote(this, remote_ref.remote, remote_ref.branch),
     }
 }
 

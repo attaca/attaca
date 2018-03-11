@@ -330,7 +330,7 @@ pub fn by_ref<B: Backend>(this: &mut Repository<B>, refr: Ref) -> FutureUnit {
     let blocking = async_block! {
         match refr {
             Ref::Head => Ok(()),
-            Ref::Local(name) => {
+            Ref::Branch(BranchRef::Local(name)) => {
                 if let Some(commit_ref) =
                     await!(resolve_local_opt(this, name.clone()))?
                 {
@@ -350,8 +350,8 @@ pub fn by_ref<B: Backend>(this: &mut Repository<B>, refr: Ref) -> FutureUnit {
 
                 Ok(())
             }
-            Ref::Remote(remote_name, branch_name) => {
-                let commit_ref = await!(resolve_remote(this, remote_name, branch_name))?;
+            Ref::Branch(BranchRef::Remote(remote_ref)) => {
+                let commit_ref = await!(resolve_remote(this, remote_ref.remote, remote_ref.branch))?;
                 let tree_ref = await!(commit_ref.fetch())?.as_subtree().clone();
                 await!(checkout_path_from_tree(
                     this,

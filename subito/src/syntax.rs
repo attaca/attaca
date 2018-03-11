@@ -1,7 +1,7 @@
 use std::{fmt, borrow::Cow, ops::Deref, str::FromStr, sync::Arc};
 
 use failure::*;
-use regex::Regex;
+use regex::{Regex, RegexSet};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Name(Arc<String>);
@@ -51,18 +51,88 @@ impl Name {
 }
 
 #[derive(Debug, Clone)]
-pub enum Ref {
+pub struct RemoteRef {
+    pub remote: Name,
+    pub branch: Name,
+}
+
+impl fmt::Display for RemoteRef {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}/{}", self.remote, self.branch)
+    }
+}
+
+impl FromStr for RemoteRef {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        lazy_static! {
+            static ref RE: Regex = Regex::new(r"^(\w+)/(\w+)$").unwrap();
+        }
+
+        let cap = RE.captures(s)
+            .ok_or_else(|| format_err!("could not parse {} as a ref!", s))?;
+        Ok(Self {
+            remote: cap[1].parse()?,
+            branch: cap[2].parse()?,
+        })
+    }
+}
+
+impl RemoteRef {
+    pub fn new(remote: Name, branch: Name) -> Self {
+        Self { remote, branch }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum BranchRef {
     Local(Name),
-    Remote(Name, Name),
+    Remote(RemoteRef),
+}
+
+impl fmt::Display for BranchRef {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match *self {
+            BranchRef::Local(ref name) => name.fmt(f),
+            BranchRef::Remote(ref remote_ref) => remote_ref.fmt(f),
+        }
+    }
+}
+
+impl FromStr for BranchRef {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        lazy_static! {
+            static ref RE_SET: RegexSet = RegexSet::new(&[
+                r"^\w+$",
+                r"^\w+/\w+$",
+            ]).unwrap();
+        }
+
+        let matches = RE_SET.matches(s);
+        if matches.matched(0) {
+            Ok(BranchRef::Local(s.parse()?))
+        } else if matches.matched(1) {
+            Ok(BranchRef::Remote(s.parse()?))
+        } else {
+            bail!("Unable to parse branch ref as local branch or remote ref");
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum Ref {
     Head,
+    Branch(BranchRef),
 }
 
 impl fmt::Display for Ref {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
-            Ref::Local(ref name) => name.fmt(f),
-            Ref::Remote(ref remote, ref name) => write!(f, "{}/{}", remote, name),
             Ref::Head => f.pad("HEAD"),
+            Ref::Branch(ref branch_ref) => branch_ref.fmt(f),
         }
     }
 }
@@ -74,17 +144,9 @@ impl FromStr for Ref {
         if s == "HEAD" {
             Ok(Ref::Head)
         } else {
-            lazy_static! {
-                static ref RE: Regex = Regex::new(r"^(?:(?P<r>\w+)/)?(?P<b>\w+)$").unwrap();
-            }
-
-            let cap = RE.captures(s)
-                .ok_or_else(|| format_err!("could not parse {} as a ref!", s))?;
-            let name = cap.name("b").unwrap().as_str().parse()?;
-            match cap.name("r") {
-                Some(remote) => Ok(Ref::Remote(remote.as_str().parse()?, name)),
-                None => Ok(Ref::Local(name)),
-            }
+            let branch_ref = s.parse()
+                .map_err(|e| format_err!("Unable to parse as HEAD, or as branch ref ({})", e))?;
+            Ok(Ref::Branch(branch_ref))
         }
     }
 }

@@ -6,7 +6,7 @@ use failure::*;
 use futures::{stream, prelude::*};
 
 use plumbing::Branches;
-use syntax::Name;
+use syntax::{Name, RemoteRef};
 
 #[derive(Debug, Clone)]
 pub enum Head<H> {
@@ -55,7 +55,7 @@ pub struct State<H> {
     pub candidate: Option<TreeRef<H>>,
     pub head: Head<H>,
     pub remote_branches: HashMap<Name, HashMap<Name, CommitRef<H>>>,
-    pub upstreams: HashMap<Name, (Name, Name)>,
+    pub upstreams: HashMap<Name, RemoteRef>,
 }
 
 impl<H> Default for State<H> {
@@ -148,7 +148,7 @@ impl<B: Backend> State<Handle<B>> {
                         let remote = remote_ref.get_remote()?.parse::<Name>()?;
                         let branch = remote_ref.get_branch()?.parse::<Name>()?;
 
-                        Ok((name, (remote, branch)))
+                        Ok((name, RemoteRef::new(remote, branch)))
                     })
                     .collect::<Result<_, Error>>()?;
 
@@ -252,12 +252,12 @@ impl<B: Backend> State<Handle<B>> {
                 }
                 {
                     let mut entries = state_builder.borrow().get_upstreams()?.init_entries(state.upstreams.len() as u32);
-                    for (i, (name, (remote, branch))) in state.upstreams.into_iter().enumerate() {
+                    for (i, (name, remote_ref)) in state.upstreams.into_iter().enumerate() {
                         let mut entry = entries.borrow().get(i as u32);
                         entry.set_key(name.as_str())?;
-                        let mut remote_ref = entry.get_value()?;
-                        remote_ref.set_remote(remote.as_str());
-                        remote_ref.set_branch(branch.as_str());
+                        let mut value = entry.get_value()?;
+                        value.set_remote(remote_ref.remote.as_str());
+                        value.set_branch(remote_ref.branch.as_str());
                     }
                 }
             }

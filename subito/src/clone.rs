@@ -11,7 +11,7 @@ use config::{Config, StoreConfig, StoreKind};
 use db::Key;
 use init::{InitArgs, InitStore};
 use plumbing;
-use syntax::{Name, Ref};
+use syntax::{BranchRef, Name, Ref, RemoteRef};
 
 /// Create a local repository by cloning data from a remote repository. The default store type is `leveldb`.
 #[derive(Debug, Clone, StructOpt, Builder)]
@@ -105,7 +105,7 @@ fn clone_from<B: Backend>(
         // NB wait here because of issues w/ borrowing in generators.
         plumbing::remote::add(&mut this, origin.clone(), url).wait()?;
         plumbing::fetch::remote(&mut this, origin.clone()).wait()?;
-        plumbing::checkout::by_ref(&mut this, Ref::Remote(origin, master)).wait()?;
+        plumbing::checkout::by_ref(&mut this, Ref::Branch(BranchRef::Remote(RemoteRef::new(origin, master)))).wait()?;
         Ok(())
     };
 

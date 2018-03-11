@@ -43,7 +43,7 @@ impl<'r> fmt::Debug for CheckoutOut<'r> {
 impl<B: Backend> Repository<B> {
     pub fn checkout<'r>(&'r mut self, args: CheckoutArgs) -> CheckoutOut<'r> {
         let blocking = async_block! {
-            let paths = if args.paths.is_empty() {
+            if args.paths.is_empty() {
                 // If there are no paths specified, we checkout an entire branch and update the
                 // HEAD (unless the HEAD is being checked out. Because that's silly.)
                 await!(plumbing::checkout::by_ref(self, args.refr))?;
@@ -63,7 +63,7 @@ impl<B: Backend> Repository<B> {
                     ObjectPath::new(),
                     paths,
                 ))?;
-            };
+            }
 
             Ok(())
         };
