@@ -32,10 +32,18 @@ impl<B: Backend> Repository<B> {
         let entries = async_stream_block! {
             let state = self.get_state()?;
 
-            let head = match state.head {
-                Head::Empty => return Ok(()),
-                Head::Detached(head) => head,
-                Head::Branch(branch) => CommitRef::new(await!(self.store.load_branches())?[branch.as_str()].clone()),
+            let maybe_head = match state.head {
+                Head::Empty => None,
+                Head::Detached(head) => Some(head),
+                Head::Branch(branch) => await!(self.store.load_branches())?
+                    .get(branch.as_str())
+                    .cloned()
+                    .map(CommitRef::new),
+            };
+
+            let head = match maybe_head {
+                Some(head) => head,
+                None => return Ok(()),
             };
 
             let mut visited = HashSet::new();
@@ -56,23 +64,21 @@ impl<B: Backend> Repository<B> {
                     stream::futures_ordered(commit.as_parents().to_owned().into_iter().map(
                         |commit_ref| {
                             commit_ref.id().map(|commit_digest| {
-                                CommitRef::new(hex::encode(commit_digest.as_inner().borrow().as_bytes()))
+                                CommitRef::new(hex::encode(
+                                    commit_digest.as_inner().borrow().as_bytes(),
+                                ))
                             })
                         },
                     ));
-                let subtree_future = commit
-                    .as_subtree()
-                    .id()
-                    .map(|subtree_digest| TreeRef::new(hex::encode(subtree_digest.as_inner().borrow().as_bytes())));
-                let digest_future = commit_ref
-                    .id()
-                    .map(|commit_digest| CommitRef::new(hex::encode(commit_digest.as_inner().borrow().as_bytes())));
+                let subtree_future = commit.as_subtree().id().map(|subtree_digest| {
+                    TreeRef::new(hex::encode(subtree_digest.as_inner().borrow().as_bytes()))
+                });
+                let digest_future = commit_ref.id().map(|commit_digest| {
+                    CommitRef::new(hex::encode(commit_digest.as_inner().borrow().as_bytes()))
+                });
 
-                let (digest, subtree, parents) = await!(
-                    digest_future
-
-                        .join3(subtree_future, parent_stream.collect())
-                )?;
+                let (digest, subtree, parents) =
+                    await!(digest_future.join3(subtree_future, parent_stream.collect()))?;
                 builder.subtree(subtree);
                 builder.parents(parents);
                 builder.author(commit.as_author().clone());
