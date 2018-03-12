@@ -129,12 +129,14 @@ pub mod checkout;
 pub mod config;
 pub mod fetch;
 pub mod fsck;
+pub mod log;
 pub mod plumbing;
+pub mod pull;
+pub mod push;
 pub mod remote;
 pub mod show;
 pub mod status;
 pub mod syntax;
-pub mod log;
 
 #[macro_use]
 pub mod init;
@@ -145,7 +147,7 @@ pub mod open;
 
 use std::{env, fmt, io::Cursor, path::PathBuf, sync::{Arc, RwLock}};
 
-use attaca::{Open, digest::{Sha3Digest, prelude::*}, store::prelude::*};
+use attaca::{Open, store::prelude::*};
 use failure::Error;
 use futures::prelude::*;
 use leveldb::{database::Database, kv::KV, options::{Options, ReadOptions, WriteOptions}};
@@ -162,6 +164,8 @@ pub use fetch::FetchArgs;
 pub use fsck::FsckArgs;
 pub use init::InitArgs;
 pub use log::LogArgs;
+pub use pull::PullArgs;
+pub use push::PushArgs;
 pub use remote::RemoteArgs;
 pub use show::ShowArgs;
 pub use state::Head;

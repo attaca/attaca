@@ -1,5 +1,7 @@
 use super::*;
 
+use attaca::Open;
+
 macro_rules! dispatch_push {
     (@inner $this:expr, $remote:expr, $branch:expr, $($lcname:ident, $ccname:ident : $type:ty),*) => {
         {

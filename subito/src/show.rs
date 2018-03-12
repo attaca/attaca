@@ -1,13 +1,11 @@
-use std::{fmt, collections::BTreeMap};
+use std::fmt;
 
-use attaca::{digest::prelude::*, object::{CommitRef, ObjectRef}, store::prelude::*};
+use attaca::{object::ObjectRef, store::prelude::*};
 use failure::Error;
 use futures::prelude::*;
-use hex;
 
 use Repository;
 use plumbing;
-use state::Head;
 use syntax::Ref;
 
 /// Show information about specific objects in the repository. TODO: currently a stub

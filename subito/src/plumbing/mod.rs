@@ -6,14 +6,14 @@ pub mod remote;
 
 use std::collections::HashMap;
 
-use attaca::{Open, object::CommitRef, store::{self, prelude::*}};
+use attaca::{object::{CommitRef, TreeRef}, store::{self, prelude::*}};
 use failure::*;
 use futures::prelude::*;
 
 use Repository;
 use config::StoreKind;
 use state::{Head, State};
-use syntax::{Name, Ref, BranchRef};
+use syntax::{BranchRef, Name, Ref};
 
 pub type Branches<B> = HashMap<Name, CommitRef<Handle<B>>>;
 
@@ -79,7 +79,9 @@ pub fn resolve_opt<B: Backend>(this: &Repository<B>, refr: Ref) -> FutureOptionC
     match refr {
         Ref::Head => resolve_head_opt(this),
         Ref::Branch(BranchRef::Local(branch)) => resolve_local_opt(this, branch),
-        Ref::Branch(BranchRef::Remote(remote_ref)) => resolve_remote_opt(this, remote_ref.remote, remote_ref.branch),
+        Ref::Branch(BranchRef::Remote(remote_ref)) => {
+            resolve_remote_opt(this, remote_ref.remote, remote_ref.branch)
+        }
     }
 }
 
@@ -87,7 +89,9 @@ pub fn resolve<B: Backend>(this: &Repository<B>, refr: Ref) -> FutureCommitRef<B
     match refr {
         Ref::Head => resolve_head(this),
         Ref::Branch(BranchRef::Local(branch)) => resolve_local(this, branch),
-        Ref::Branch(BranchRef::Remote(remote_ref)) => resolve_remote(this, remote_ref.remote, remote_ref.branch),
+        Ref::Branch(BranchRef::Remote(remote_ref)) => {
+            resolve_remote(this, remote_ref.remote, remote_ref.branch)
+        }
     }
 }
 
@@ -169,6 +173,19 @@ pub fn set_head<B: Backend>(this: &mut Repository<B>, head: Head<Handle<B>>) -> 
     let blocking = async_block! {
         let state = this.get_state()?;
         this.set_state(&State { head, ..state })?;
+        Ok(())
+    };
+
+    Box::new(blocking)
+}
+
+pub fn set_candidate<B: Backend>(
+    this: &mut Repository<B>,
+    candidate: Option<TreeRef<Handle<B>>>,
+) -> FutureUnit {
+    let blocking = async_block! {
+        let state = this.get_state()?;
+        this.set_state(&State { candidate, ..state })?;
         Ok(())
     };
 

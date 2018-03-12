@@ -1,17 +1,15 @@
-use std::{env, fs, collections::BTreeMap, path::{Path, PathBuf}};
+use std::path::PathBuf;
 
-use attaca::{Init, Open, Store, digest::prelude::*, store::prelude::*};
+use attaca::store::prelude::*;
 use failure::*;
 use futures::prelude::*;
-use leveldb::{database::Database, kv::KV, options::{Options, ReadOptions}};
-use url::{self, Url};
+use url::Url;
 
 use Repository;
-use config::{Config, StoreConfig, StoreKind};
-use db::Key;
 use init::{InitArgs, InitStore};
 use plumbing;
-use syntax::{BranchRef, Name, Ref, RemoteRef};
+use state::Head;
+use syntax::{Name, RemoteRef};
 
 /// Create a local repository by cloning data from a remote repository. The default store type is `leveldb`.
 #[derive(Debug, Clone, StructOpt, Builder)]
@@ -99,13 +97,21 @@ fn clone_from<B: Backend>(
     mut this: Repository<B>,
     url: Url,
 ) -> Box<Future<Item = (), Error = Error>> {
+    use plumbing::branch::Exists;
+
     let blocking = async_block! {
         let origin = "origin".parse::<Name>()?;
         let master = "master".parse::<Name>()?;
         // NB wait here because of issues w/ borrowing in generators.
         plumbing::remote::add(&mut this, origin.clone(), url).wait()?;
         plumbing::fetch::remote(&mut this, origin.clone()).wait()?;
-        plumbing::checkout::by_ref(&mut this, Ref::Branch(BranchRef::Remote(RemoteRef::new(origin, master)))).wait()?;
+        let commit_ref = plumbing::resolve_remote(&mut this, origin.clone(), master.clone()).wait()?;
+        let tree_ref = commit_ref.fetch().wait()?.as_subtree().clone();
+        plumbing::branch::create(&mut this, Exists::Error, master.clone(), commit_ref).wait()?;
+        plumbing::branch::set_upstream(&mut this, master.clone(), Some(RemoteRef::new(origin.clone(), master.clone()))).wait()?;
+        plumbing::checkout::tree(&mut this, tree_ref).wait()?;
+        plumbing::set_head(&mut this, Head::Branch(master.clone())).wait()?;
+
         Ok(())
     };
 

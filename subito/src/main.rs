@@ -23,7 +23,7 @@ use failure::Error;
 use futures::prelude::*;
 use structopt::StructOpt;
 use subito::{BranchArgs, CheckoutArgs, CloneArgs, CommitArgs, FetchArgs, FsckArgs, Head, InitArgs,
-             LogArgs, RemoteArgs, ShowArgs, StageArgs, StatusArgs};
+             LogArgs, PullArgs, PushArgs, RemoteArgs, ShowArgs, StageArgs, StatusArgs};
 
 fn main() {
     match run() {
@@ -48,6 +48,8 @@ fn run() -> Result<(), Error> {
         .subcommand(FsckArgs::clap())
         .subcommand(LogArgs::clap())
         .subcommand(InitArgs::clap())
+        .subcommand(PullArgs::clap())
+        .subcommand(PushArgs::clap())
         .subcommand(RemoteArgs::clap())
         .subcommand(ShowArgs::clap())
         .subcommand(StatusArgs::clap());
@@ -119,6 +121,14 @@ fn run() -> Result<(), Error> {
             Ok(())
         })?,
         ("init", Some(sub_m)) => init!(InitArgs::from_clap(sub_m), _repository, Ok(()))?,
+        ("push", Some(sub_m)) => {
+            let args = PushArgs::from_clap(sub_m);
+            search!(repository, repository.push(args).blocking.wait())?
+        }
+        ("pull", Some(sub_m)) => {
+            let args = PullArgs::from_clap(sub_m);
+            search!(repository, repository.pull(args).blocking.wait())?
+        }
         ("stage", Some(sub_m)) => {
             let mut args = StageArgs::from_clap(sub_m);
             args.quiet = true;

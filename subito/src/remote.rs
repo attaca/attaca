@@ -1,13 +1,10 @@
-use std::collections::HashMap;
-
-use attaca::{Open, object::CommitRef, store::{self, prelude::*}};
+use attaca::store::prelude::*;
 use failure::Error;
 use futures::prelude::*;
 use url::Url;
 
 use Repository;
 use config::{StoreConfig, StoreKind};
-use state::State;
 
 /// Manipulate remotes of a repository.
 #[derive(Debug, Clone, StructOpt)]
@@ -70,7 +67,7 @@ impl<B: Backend> Repository<B> {
     pub fn remote_list<'r>(&'r mut self, args: RemoteListArgs) -> Result<(), Error> {
         let RemoteListArgs {} = args;
 
-        let mut config = self.get_config()?;
+        let config = self.get_config()?;
         // TODO log this somehow instead of just printlning it, or maybe stream it to some
         // receiving end through `RemoteOut`.
         for (remote_name, remote_config) in &config.remotes {

@@ -3,11 +3,9 @@ use std::{env, path::PathBuf};
 use attaca_leveldb::LevelDbBackend;
 use attaca_rados::RadosBackend;
 use failure::*;
-use leveldb::{database::Database, kv::KV, options::{Options, ReadOptions}};
 
-use {Open, Repository};
-use config::{Config, StoreConfig, StoreKind};
-use db::Key;
+use Open;
+use config::Config;
 
 #[macro_export]
 macro_rules! open {

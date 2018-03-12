@@ -1,13 +1,9 @@
-use std::collections::HashMap;
-
-use attaca::{Open, object::CommitRef, store::{self, prelude::*}};
+use attaca::store::prelude::*;
 use failure::Error;
 use futures::prelude::*;
-use url::Url;
 
 use Repository;
-use config::{StoreConfig, StoreKind};
-use state::{Head, State};
+use state::Head;
 use plumbing::{self, branch};
 use syntax::{BranchRef, Name, RemoteRef};
 
@@ -45,7 +41,9 @@ impl<B: Backend> Repository<B> {
                 #[async]
                 for branch_ref in plumbing::branch::iterate(self, Some(branch::Type::Local)) {
                     match branch_ref {
-                        BranchRef::Local(ref name) if Some(name) == maybe_head_branch.as_ref() => print!("* "),
+                        BranchRef::Local(ref name) if Some(name) == maybe_head_branch.as_ref() => {
+                            print!("* ")
+                        }
                         _ => print!("  "),
                     }
 
@@ -62,13 +60,38 @@ impl<B: Backend> Repository<B> {
 
                 Ok(())
             } else {
-                let name = args.name.or(maybe_head_branch).ok_or_else(|| format_err!("no branch specified and HEAD does not point to a branch"))?;
+                let name = args.name.or(maybe_head_branch).ok_or_else(|| {
+                    format_err!("no branch specified and HEAD does not point to a branch")
+                })?;
+
+                let state = self.get_state()?;
+                let maybe_commit_ref = match state.head {
+                    Head::Empty => None,
+                    Head::Detached(commit_ref) => Some(commit_ref),
+                    Head::Branch(branch) => await!(plumbing::resolve_local_opt(self, branch))?,
+                };
+                let commit_ref = maybe_commit_ref.ok_or_else(|| format_err!("no prior commits"))?;
 
                 if args.unset_upstream || args.set_upstream.is_some() {
-                    await!(plumbing::branch::create(self, branch::Exists::DoNothing, name.clone()))?;
-                    await!(plumbing::branch::set_upstream(self, name.clone(), args.set_upstream))?;
+                    await!(plumbing::branch::create(
+                        self,
+                        branch::Exists::DoNothing,
+                        name.clone(),
+                        commit_ref,
+                    ))?;
+
+                    await!(plumbing::branch::set_upstream(
+                        self,
+                        name.clone(),
+                        args.set_upstream,
+                    ))?;
                 } else {
-                    await!(plumbing::branch::create(self, branch::Exists::Error, name.clone()))?;
+                    await!(plumbing::branch::create(
+                        self,
+                        branch::Exists::Error,
+                        name.clone(),
+                        commit_ref,
+                    ))?;
                 }
 
                 Ok(())

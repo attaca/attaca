@@ -3,7 +3,7 @@ use std::{collections::HashMap, io::{BufRead, Write}};
 use attaca::{digest::prelude::*, object::{CommitRef, TreeRef}, store::prelude::*};
 use capnp::{message, serialize_packed};
 use failure::*;
-use futures::{stream, prelude::*};
+use futures::prelude::*;
 
 use plumbing::Branches;
 use syntax::{Name, RemoteRef};

@@ -1,6 +1,6 @@
 use std::fmt;
 
-use attaca::{digest::prelude::*, store::{self, FsckError, prelude::*}};
+use attaca::{digest::prelude::*, store::{self, prelude::*}};
 use failure::*;
 use futures::prelude::*;
 use hex;

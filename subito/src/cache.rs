@@ -3,7 +3,7 @@ use std::{fmt, io::{BufRead, Write}, marker::PhantomData, ops::{BitAnd, BitOr, N
 
 use attaca::{digest::prelude::*, object::{LargeRef, ObjectRef, SmallRef}, path::ObjectPath,
              store::prelude::*};
-use capnp::{serialize_packed, Word, message::{self, ScratchSpace, ScratchSpaceHeapAllocator}};
+use capnp::{message, serialize_packed};
 use failure::*;
 use leveldb::{database::Database, kv::KV, options::{ReadOptions, WriteOptions}};
 use nix::{self, errno::Errno, libc::c_int, sys::stat::{lstat, FileStat}};

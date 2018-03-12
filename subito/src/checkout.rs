@@ -1,17 +1,12 @@
-use std::{fmt, usize, collections::{BTreeSet, HashMap}, fs::{self, OpenOptions}, path::PathBuf,
-          sync::Arc};
+use std::{fmt, path::PathBuf};
 
-use attaca::{digest::prelude::*, hierarchy::Hierarchy,
-             object::{CommitRef, Object, ObjectRef, TreeRef}, path::ObjectPath, store::prelude::*};
+use attaca::{path::ObjectPath, store::prelude::*};
 use failure::*;
-use futures::{stream, prelude::*};
-use ignore::WalkBuilder;
-use memmap::MmapMut;
+use futures::prelude::*;
 
 use Repository;
-use cache::{Cache, Certainty, Status};
-use state::{Head, State};
-use syntax::Ref;
+use state::Head;
+use syntax::{BranchRef, Ref};
 use plumbing;
 
 /// Copy files from the repository into the local workspace.
@@ -46,7 +41,45 @@ impl<B: Backend> Repository<B> {
             if args.paths.is_empty() {
                 // If there are no paths specified, we checkout an entire branch and update the
                 // HEAD (unless the HEAD is being checked out. Because that's silly.)
-                await!(plumbing::checkout::by_ref(self, args.refr))?;
+                match args.refr {
+                    Ref::Head => await!(plumbing::checkout::head(self))?,
+                    Ref::Branch(BranchRef::Local(name)) => {
+                        let maybe_commit_ref =
+                            await!(plumbing::resolve_local_opt(self, name.clone()))?;
+                        let commit_ref = match maybe_commit_ref {
+                            Some(commit_ref) => commit_ref,
+                            None => {
+                                let state = self.get_state()?;
+                                let remote_ref = state
+                                    .upstreams
+                                    .get(&name)
+                                    .ok_or_else(|| {
+                                        format_err!("no such branch or matching upstream")
+                                    })?
+                                    .clone();
+
+                                await!(plumbing::resolve_remote(
+                                    self,
+                                    remote_ref.remote,
+                                    remote_ref.branch
+                                ))?
+                            }
+                        };
+
+                        let tree_ref = await!(commit_ref.fetch())?.as_subtree().clone();
+                        await!(plumbing::checkout::tree(self, tree_ref))?;
+                        await!(plumbing::set_head(self, Head::Branch(name)))?;
+                    }
+                    Ref::Branch(BranchRef::Remote(remote_ref)) => {
+                        let commit_ref = await!(plumbing::resolve_remote(
+                            self,
+                            remote_ref.remote,
+                            remote_ref.branch
+                        ))?;
+                        let tree_ref = await!(commit_ref.fetch())?.as_subtree().clone();
+                        await!(plumbing::checkout::tree(self, tree_ref))?;
+                    }
+                }
             } else {
                 // If there are paths specified, we do not update HEAD.
                 let paths = args.paths

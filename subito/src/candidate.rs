@@ -1,7 +1,6 @@
-use std::{fmt, borrow::Borrow, ffi::OsStr, fs::File, path::PathBuf};
+use std::{fmt, ffi::OsStr, fs::File, path::PathBuf};
 
-use attaca::{batch::{Batch as ObjectBatch, Operation as ObjectOperation}, digest::prelude::*,
-             hierarchy::Hierarchy,
+use attaca::{batch::{Batch as ObjectBatch, Operation as ObjectOperation}, hierarchy::Hierarchy,
              object::{self, CommitAuthor, CommitBuilder, CommitRef, ObjectRef, TreeBuilder},
              path::ObjectPath, store::prelude::*};
 use failure::{self, *};

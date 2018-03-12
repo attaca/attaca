@@ -1,4 +1,4 @@
-use std::{usize, collections::BTreeSet, fs::{self, File, OpenOptions}, path::Path};
+use std::{usize, collections::BTreeSet, fs::{self, File, OpenOptions}};
 
 use attaca::{hierarchy::Hierarchy, object::{Large, Object, ObjectRef, TreeRef}, path::ObjectPath,
              store::prelude::*};
@@ -10,7 +10,6 @@ use ignore::WalkBuilder;
 use super::*;
 use Repository;
 use cache::{Certainty, Status};
-use state::State;
 
 const LARGE_CHILD_LOOKAHEAD_BUFFER_SIZE: usize = 32;
 
@@ -84,7 +83,7 @@ fn checkout_data_from_large_without_previous<B: Backend>(
 }
 
 pub fn checkout_file_from_data<B: Backend>(
-    this: &mut Repository<B>,
+    _this: &mut Repository<B>,
     data_ref: ObjectRef<Handle<B>>,
     previous_ref: Option<ObjectRef<Handle<B>>>,
     file: File,
@@ -326,47 +325,26 @@ where
     Box::new(blocking)
 }
 
-pub fn by_ref<B: Backend>(this: &mut Repository<B>, refr: Ref) -> FutureUnit {
+pub fn tree<B: Backend>(this: &mut Repository<B>, tree_ref: TreeRef<Handle<B>>) -> FutureUnit {
     let blocking = async_block! {
-        match refr {
-            Ref::Head => Ok(()),
-            Ref::Branch(BranchRef::Local(name)) => {
-                if let Some(commit_ref) =
-                    await!(resolve_local_opt(this, name.clone()))?
-                {
-                    let tree_ref = await!(commit_ref.fetch())?.as_subtree().clone();
-                    await!(checkout_path_from_tree(
-                        this,
-                        tree_ref,
-                        ObjectPath::new()
-                    ))?;
-                }
+        await!(checkout_path_from_tree(this, tree_ref.clone(), ObjectPath::new()))?;
+        await!(set_candidate(this, Some(tree_ref.clone())))?;
 
-                let state = this.get_state()?;
-                this.set_state(&State {
-                    head: Head::Branch(name),
-                    ..state
-                })?;
+        Ok(())
+    };
 
-                Ok(())
-            }
-            Ref::Branch(BranchRef::Remote(remote_ref)) => {
-                let commit_ref = await!(resolve_remote(this, remote_ref.remote, remote_ref.branch))?;
-                let tree_ref = await!(commit_ref.fetch())?.as_subtree().clone();
-                await!(checkout_path_from_tree(
-                    this,
-                    tree_ref,
-                    ObjectPath::new()
-                ))?;
-                let state = this.get_state()?;
-                this.set_state(&State {
-                    head: Head::Detached(commit_ref),
-                    ..state
-                })?;
+    Box::new(blocking)
+}
 
-                Ok(())
-            }
-        }
+// TODO detect checkout conflicts (currently using checkout::tree, which is and always will simply
+// clobber everything)
+pub fn head<B: Backend>(this: &mut Repository<B>) -> FutureUnit {
+    let blocking = async_block! {
+        let head_commit_ref = await!(resolve_head(this))?;
+        let tree_ref = await!(head_commit_ref.fetch())?.as_subtree().clone();
+        await!(tree(this, tree_ref))?;
+
+        Ok(())
     };
 
     Box::new(blocking)

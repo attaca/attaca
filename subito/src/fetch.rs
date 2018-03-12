@@ -1,15 +1,9 @@
-use std::collections::HashMap;
-
-use attaca::{Open, object::CommitRef, store::{self, prelude::*}};
-use attaca_leveldb::LevelDbBackend;
+use attaca::store::prelude::*;
 use failure::Error;
 use futures::prelude::*;
-use url::Url;
 
 use Repository;
-use config::StoreKind;
 use plumbing;
-use state::State;
 use syntax::Name;
 
 /// Fetch objects from a remote repository.

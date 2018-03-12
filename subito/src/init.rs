@@ -1,15 +1,18 @@
-use std::{env, fs, path::{Path, PathBuf}};
+use std::{fs, path::{Path, PathBuf}};
 
-use attaca::{Init, Open, digest::prelude::*, store::prelude::*};
+use attaca::{Init, Open, store::prelude::*};
 use attaca_leveldb::LevelDbBackend;
 use attaca_rados::RadosBackend;
 use failure::*;
-use leveldb::{database::Database, kv::KV, options::{Options, ReadOptions, WriteOptions}};
+use futures::Future;
+use leveldb::{database::Database, kv::KV, options::{Options, WriteOptions}};
 use url::{self, Url};
 
 use Repository;
 use config::{Config, StoreConfig, StoreKind};
 use db::Key;
+use plumbing;
+use state::Head;
 
 /// Create a local repository.
 #[derive(Debug, Clone, StructOpt, Builder)]
@@ -129,7 +132,7 @@ pub fn leveldb<P: AsRef<Path>>(
 }
 
 pub fn rados<P: AsRef<Path>>(
-    path: P,
+    _path: P,
     args: InitRados,
 ) -> Result<(StoreConfig, RadosBackend), Error> {
     let InitRados { ceph_conf, pool } = args;
@@ -172,6 +175,9 @@ impl<B: Backend> Repository<B> {
         config.encode(&mut buf)?;
         db.put(WriteOptions::new(), &Key::config(), &buf)?;
 
-        Ok(Self::new(path, db, backend))
+        let mut repository = Self::new(path, db, backend);
+        plumbing::set_head(&mut repository, Head::Branch("master".parse()?)).wait()?;
+
+        Ok(repository)
     }
 }
