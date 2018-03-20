@@ -7,6 +7,10 @@ upgradeable hashes and hashsplitting, providing both futureproofing and
 improved sharing of stored data. On top of it is Subito, a Git-like distributed
 version control system using Attaca as an object store.
 
+The attaca-announce mailing list can be found [here.](https://groups.google.com/forum/#!forum/attaca-announce)
+
+In addition, we have a #attaca IRC channel on MozNet (irc.mozilla.org).
+
 ## Why is this?
 
 There are currently few utilities out there to version ridiculously large
